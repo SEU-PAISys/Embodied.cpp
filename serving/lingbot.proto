@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package lingbot;
+
+enum TensorDType {
+  F32  = 0;
+  BF16 = 1;
+  F16  = 2;
+  U8   = 3;
+}
+
+message Tensor {
+  string name = 1;
+  TensorDType dtype = 2;
+  repeated uint64 shape = 3;
+  bytes data = 4;
+}
+
+message ResetRequest {
+  uint64 session_id = 1;
+  string instruction = 2;
+  bool clear_cache = 3;
+}
+
+message StepRequest {
+  uint64 session_id = 1;
+  repeated Tensor input_latents = 2;
+  Tensor action_noise = 3;
+  repeated float state = 4;
+  bool return_world_latents = 5;
+  uint32 action_horizon = 6;
+  repeated int32 lang_tokens = 7;
+  repeated Tensor input_images = 8;
+  Tensor action_condition = 9;
+  bool compute_kv_cache = 10;
+  bool imagine = 11;
+}
+
+message PingRequest {
+  string text = 1;
+}
+
+message LingBotRequest {
+  uint64 request_id = 1;
+  oneof kind {
+    PingRequest ping = 2;
+    ResetRequest reset = 3;
+    StepRequest step = 4;
+  }
+}
+
+message LingBotResponse {
+  uint64 request_id = 1;
+  string error = 2;
+  string status = 3;
+
+  repeated float action_chunk = 4;
+  uint32 chunk_size = 5;
+  uint32 action_dim = 6;
+
+  repeated Tensor output_latents = 7;
+
+  float latency_ms_total = 8;
+  float latency_ms_inference = 9;
+}
