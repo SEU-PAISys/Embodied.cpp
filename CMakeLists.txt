@@ -40,6 +40,16 @@ target_include_directories(vla_core
 )
 target_link_libraries(vla_core PUBLIC llama ggml mtmd)
 
+add_library(embodied_adapter
+    adapter/adapter.cpp
+)
+target_include_directories(embodied_adapter
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/runtime
+)
+target_link_libraries(embodied_adapter PUBLIC vla_core)
+
 if(GGML_CUDA)
     target_compile_definitions(vla_core PUBLIC GGML_USE_CUDA)
 
@@ -115,6 +125,7 @@ target_include_directories(vla-server PRIVATE
     ${Protobuf_INCLUDE_DIR}
 )
 target_link_libraries(vla-server PRIVATE
+    embodied_adapter
     vla_core
     ${Protobuf_LIBRARIES}
     PkgConfig::ZeroMQ

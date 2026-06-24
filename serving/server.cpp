@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "adapter/adapter.h"
 #include "model.h"
 #include "serving/vla.pb.h"
 
@@ -38,7 +39,7 @@ void on_signal(int) { g_shutdown.store(true, std::memory_order_relaxed); }
 bool decode_image(const vla::Image & img,
                   std::vector<uint8_t> & u8,
                   std::vector<float> & f32,
-                  vla::ImageView & view) {
+                  embodied::adapter::ImageView & view) {
     if (img.encoding() == vla::Image::JPEG) {
         int w = 0, h = 0, ch = 0;
         const auto & data = img.data();
@@ -53,7 +54,13 @@ bool decode_image(const vla::Image & img,
         }
         u8.assign(px, px + size_t(3) * w * h);
         stbi_image_free(px);
-        view = { u8.data(), w, h, vla::PixelFormat::U8 };
+        view.data = u8.data();
+        view.width = w;
+        view.height = h;
+        view.type = embodied::adapter::ElementType::U8;
+        view.layout = embodied::adapter::ImageLayout::HWC;
+        view.color = embodied::adapter::ImageColor::RGB;
+        view.encoding = embodied::adapter::ImageEncoding::RAW;
         return true;
     } else if (img.encoding() == vla::Image::RGB_U8) {
         const size_t expected = size_t(3) * img.width() * img.height();
@@ -64,7 +71,13 @@ bool decode_image(const vla::Image & img,
         }
         u8.assign(reinterpret_cast<const uint8_t*>(img.data().data()),
                   reinterpret_cast<const uint8_t*>(img.data().data()) + expected);
-        view = { u8.data(), int(img.width()), int(img.height()), vla::PixelFormat::U8 };
+        view.data = u8.data();
+        view.width = int(img.width());
+        view.height = int(img.height());
+        view.type = embodied::adapter::ElementType::U8;
+        view.layout = embodied::adapter::ImageLayout::HWC;
+        view.color = embodied::adapter::ImageColor::RGB;
+        view.encoding = embodied::adapter::ImageEncoding::RAW;
         return true;
     } else if (img.encoding() == vla::Image::F32_RGB_01) {
         const size_t pixels   = size_t(3) * img.width() * img.height();
@@ -77,8 +90,13 @@ bool decode_image(const vla::Image & img,
 
         f32.resize(pixels);
         std::memcpy(f32.data(), img.data().data(), expected);
-        view = { f32.data(), int(img.width()), int(img.height()),
-                 vla::PixelFormat::F32_RGB_01 };
+        view.data = f32.data();
+        view.width = int(img.width());
+        view.height = int(img.height());
+        view.type = embodied::adapter::ElementType::F32;
+        view.layout = embodied::adapter::ImageLayout::HWC;
+        view.color = embodied::adapter::ImageColor::RGB;
+        view.encoding = embodied::adapter::ImageEncoding::RAW;
         return true;
     } else {
         std::fprintf(stderr, "vla-server: unknown image encoding %d\n",
@@ -194,6 +212,15 @@ int main(int argc, char ** argv) {
                 (long long) cfg.n_lang, (long long) cfg.hidden, (long long) cfg.expert_h,
                 timing_detail == vla::TimingDetail::PHASE ? "phase" : "none");
 
+    embodied::adapter::VlaModelInputAdapter input_adapter(
+        embodied::adapter::AdapterConfig{
+            cfg.max_state_dim,
+            cfg.max_action_dim,
+            cfg.n_suffix,
+            true,
+            true,
+        });
+
     zmq::context_t zctx( 1);
     zmq::socket_t  sock(zctx, zmq::socket_type::rep);
 
@@ -288,7 +315,7 @@ int main(int argc, char ** argv) {
         const int n_views = req.images_size();
         std::vector<std::vector<uint8_t>> u8_bufs (n_views);
         std::vector<std::vector<float>>   f32_bufs(n_views);
-        std::vector<vla::ImageView>       img_views(n_views);
+        std::vector<embodied::adapter::ImageView> img_views(n_views);
 
         if (use_precomputed) {
             if (cfg.n_img > 0) {
@@ -347,55 +374,61 @@ int main(int argc, char ** argv) {
             if (!decode_ok) continue;
         }
 
-        std::vector<int32_t> lang_tokens(req.lang_tokens().begin(), req.lang_tokens().end());
-        std::vector<float>   state_vec(req.state().begin(), req.state().end());
+        embodied::adapter::Observation observation;
+        observation.language_tokens.assign(req.lang_tokens().begin(), req.lang_tokens().end());
+        observation.proprioception.assign(req.state().begin(), req.state().end());
+        observation.images = std::move(img_views);
         {
-            const int bad = find_non_finite(state_vec.data(), static_cast<int>(state_vec.size()));
+            const int bad = find_non_finite(observation.proprioception.data(),
+                                            static_cast<int>(observation.proprioception.size()));
             if (bad >= 0) {
                 char buf[128]; std::snprintf(buf, sizeof(buf),
-                    "state[%d] = %g is not finite (NaN/Inf)", bad, state_vec[bad]);
+                    "state[%d] = %g is not finite (NaN/Inf)", bad,
+                    observation.proprioception[bad]);
                 sock.send(zmq::buffer(make_error_response(rid, buf)), zmq::send_flags::none);
                 continue;
             }
         }
-        std::vector<float>   noise_vec;
         if (req.noise_size() == expected_noise_n) {
-            noise_vec.assign(req.noise().begin(), req.noise().end());
-            const int bad = find_non_finite(noise_vec.data(), static_cast<int>(noise_vec.size()));
+            observation.noise.assign(req.noise().begin(), req.noise().end());
+            const int bad = find_non_finite(observation.noise.data(),
+                                            static_cast<int>(observation.noise.size()));
             if (bad >= 0) {
                 char buf[128]; std::snprintf(buf, sizeof(buf),
-                    "noise[%d] = %g is not finite (NaN/Inf)", bad, noise_vec[bad]);
+                    "noise[%d] = %g is not finite (NaN/Inf)", bad,
+                    observation.noise[bad]);
                 sock.send(zmq::buffer(make_error_response(rid, buf)), zmq::send_flags::none);
                 continue;
             }
         }
 
-        vla::Inputs in;
-        if (use_precomputed) {
-            in.precomputed_img_emb = precomputed_emb.data();
-            in.n_img_views         = precomputed_n_views;
+        embodied::adapter::ModelInputStorage model_input;
+        embodied::adapter::AdapterStatus adapter_status =
+            input_adapter.build(observation, &model_input);
+        if (!adapter_status.ok) {
+            sock.send(zmq::buffer(make_error_response(rid, adapter_status.message)),
+                      zmq::send_flags::none);
+            continue;
+        }
 
-            in.images              = nullptr;
-            in.n_images            = 0;
+        if (use_precomputed) {
+            model_input.inputs.precomputed_img_emb = precomputed_emb.data();
+            model_input.inputs.n_img_views         = precomputed_n_views;
+            model_input.inputs.images              = nullptr;
+            model_input.inputs.n_images            = 0;
         } else {
-            in.images              = img_views.data();
-            in.n_images            = n_views;
-            in.precomputed_img_emb = nullptr;
-            in.n_img_views         = 0;
+            model_input.inputs.precomputed_img_emb = nullptr;
+            model_input.inputs.n_img_views         = 0;
         }
         std::vector<int32_t> attn_mask_vec;
         if (req.attention_mask_size() > 0) {
             attn_mask_vec.assign(req.attention_mask().begin(), req.attention_mask().end());
         }
-        in.lang_tokens      = lang_tokens.data();
-        in.n_lang           = static_cast<int>(lang_tokens.size());
-        in.state            = state_vec.data();
-        in.noise            = noise_vec.empty() ? nullptr : noise_vec.data();
-        in.attention_mask   = attn_mask_vec.empty() ? nullptr : attn_mask_vec.data();
-        in.attention_mask_n = static_cast<int>(attn_mask_vec.size());
-        in.timing_detail    = timing_detail;
+        model_input.inputs.attention_mask   = attn_mask_vec.empty() ? nullptr : attn_mask_vec.data();
+        model_input.inputs.attention_mask_n = static_cast<int>(attn_mask_vec.size());
+        model_input.inputs.timing_detail    = timing_detail;
 
-        std::vector<float> action_chunk = vla::predict(model, in);
+        std::vector<float> action_chunk = vla::predict(model, model_input.inputs);
         const auto & st = vla::last_stats(model);
 
         if (action_chunk.empty()) {

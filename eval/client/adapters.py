@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import math
+import sys
+from pathlib import Path
 from typing import Any
 import numpy as np
 import torch
@@ -23,6 +25,12 @@ from lerobot.processor.env_processor import LiberoProcessorStep
 from lerobot.processor.pipeline import PolicyProcessorPipeline
 from lerobot.utils.constants import ACTION
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from adapter.typed_io import EmbodiedObservation, ImageStream, TensorStream
+
 class BasePipelineAdapter:
     def __init__(self, client: Any = None):
         self._client = client
@@ -31,8 +39,8 @@ class BasePipelineAdapter:
         return self._client.reset()
 
     def get_action(self, obs: dict[str, Any]) -> np.ndarray:
-        parsed_obs = self.parse_observation(obs)
-        action = self._client.get_action(parsed_obs)
+        embodied_obs = self.parse_embodied_observation(obs)
+        action = self._client.get_action(embodied_obs.model_inputs)
         parsed_action = self.parse_action(action)
         return parsed_action
 
@@ -42,6 +50,9 @@ class BasePipelineAdapter:
 
     def parse_observation(self, obs: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
+
+    def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
+        return EmbodiedObservation(model_inputs=self.parse_observation(obs), raw=obs)
 
     def parse_action(self, action: np.ndarray) -> np.ndarray:
         raise NotImplementedError
@@ -61,6 +72,22 @@ class LeRobotPipelineAdapter(BasePipelineAdapter):
         )
         parsed_obs["task"] = obs.get("task_description", "")
         return parsed_obs
+
+    def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
+        model_inputs = self.parse_observation(obs)
+        images = []
+        for key in ("observation.images.image", "observation.images.image2"):
+            if key in model_inputs:
+                images.append(ImageStream(name=key, data=np.asarray(model_inputs[key]), layout="CHW"))
+        state = model_inputs.get("observation.state")
+        return EmbodiedObservation(
+            instruction=str(model_inputs.get("task", "")),
+            images=images,
+            proprioception=(TensorStream("observation.state", np.asarray(state))
+                            if state is not None else None),
+            model_inputs=model_inputs,
+            raw=obs,
+        )
 
     def parse_action(self, action: np.ndarray) -> np.ndarray:
         action_transition = {ACTION: torch.from_numpy(action[None])}
@@ -87,6 +114,19 @@ class Evo1PipelineAdapter(BasePipelineAdapter):
             "image_mask": [1, 1, 0],
             "action_mask": [1] * 7 + [0] * 17,
         }
+
+    def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
+        model_inputs = self.parse_observation(obs)
+        return EmbodiedObservation(
+            instruction=str(model_inputs.get("prompt", "")),
+            images=[
+                ImageStream("image.front", np.asarray(model_inputs["image"][0]), layout="HWC"),
+                ImageStream("image.wrist", np.asarray(model_inputs["image"][1]), layout="HWC"),
+            ],
+            proprioception=TensorStream("state", np.asarray(model_inputs["state"])),
+            model_inputs=model_inputs,
+            raw=obs,
+        )
 
     def parse_action(self, action: np.ndarray) -> np.ndarray:
         action = np.asarray(action[:7], dtype=np.float32).copy()

@@ -12,19 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
+from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from adapter.pipeline import AdapterPipeline
+from adapter.typed_io import EmbodiedObservation
 
 class BasePipelineAdapter:
     def __init__(self, client: Any, parser: Any, arch: str):
         self._client = client
         self._parser = parser
+        self._adapter_pipeline = AdapterPipeline(parser)
         self.arch = arch
 
     def reset(self):
         return self._client.reset()
 
+    def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
+        return self._adapter_pipeline.parse_embodied_observation(obs)
+
     def get_action(self, obs: dict[str, Any]) -> Any:
-        parsed_obs = self._parser.parse_observation(obs)
-        action = self._client.get_action(parsed_obs)
+        embodied_obs = self.parse_embodied_observation(obs)
+        action = self._client.get_action(embodied_obs.model_inputs)
         parsed_action = self._parser.parse_action(action)
         return parsed_action
