@@ -20,7 +20,6 @@ kernels/             custom CUDA kernels used by LingBot-VA when CUDA is enabled
 scripts/             GGUF conversion, quantization, and full-evaluation helpers
 tools/               local debug tools
 patches/             patches applied to third-party code
-third_party/         external code populated outside Git
 eval/                lightweight client/evaluation helpers kept for this project
 ```
 
@@ -259,10 +258,10 @@ Supported VLA models and WAM:
 
 Behavioural evaluation is built on:
 
-- [vla.cpp](https://github.com/VinRobotics/vla.cpp) - unified C++ inference
-  runtime for Vision-Language-Action models.
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) - LLM inference engine
   in C/C++.
+- [vla.cpp](https://github.com/VinRobotics/vla.cpp) - unified C++ inference
+  runtime for Vision-Language-Action models.
 - [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO) - the
   lifelong-robot-learning benchmark suite our success-rate sweeps run on.
 - [RoboTwin](https://github.com/RoboTwin-Platform/RoboTwin) - dual-arm robot
