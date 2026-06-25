@@ -4,199 +4,107 @@
   <img src="assets/20260622-145312.png" alt="embodied.cpp overview" width="100%">
 </p>
 
-`embodied.cpp` is a C++ inference project for embodied VLA models. The current
-tree keeps the project-owned implementation in the main source tree and keeps
-external upstream code under `third_party/`.
+`Embodied.cpp` is an inference runtime for **embodied AI models** — Vision-Language-Action (VLA) and World-Action Models (WAM) that let robots perceive and act in the real world. It runs these models efficiently on heterogeneous hardware (CPU / CUDA GPU / NPU) using GGUF weights, and ships ready-to-use servers and evaluation clients.
 
+---
 
-## Directory Layout
+## Table of Contents
 
-```text
-models/              C++ implementations of supported VLA models
-runtime/             common model API, architecture detection, model registry
-adapter/             typed embodied I/O boundary and simulator/deployment adapters
-serving/             ZeroMQ/protobuf servers for VLA and LingBot world-action APIs
-kernels/             custom CUDA kernels used by LingBot-VA when CUDA is enabled
-scripts/             GGUF conversion, quantization, and full-evaluation helpers
-tools/               local debug tools
-patches/             patches applied to third-party code
-eval/                lightweight client/evaluation helpers kept for this project
-```
+- [embodied.cpp](#embodiedcpp)
+  - [Table of Contents](#table-of-contents)
+  - [Supported Models](#supported-models)
+    - [VLA Models](#vla-models)
+    - [World-Action Models](#world-action-models)
+  - [Quick Start](#quick-start)
+    - [1. Prepare dependencies](#1-prepare-dependencies)
+    - [2. Build](#2-build)
+    - [3. Start a server](#3-start-a-server)
+    - [4. Evaluate in simulation (example: LIBERO with LingBot-VA)](#4-evaluate-in-simulation-example-libero-with-lingbot-va)
+  - [Run a Server](#run-a-server)
+  - [Evaluate in Simulation](#evaluate-in-simulation)
+    - [LIBERO](#libero)
+    - [RoboTwin](#robotwin)
+  - [Convert Your Own Model](#convert-your-own-model)
+  - [Project Structure](#project-structure)
+  - [License](#license)
+  - [Acknowledgements](#acknowledgements)
 
-## Models
+---
 
-`embodied.cpp` keeps project-maintained model implementations in the main tree
-and treats upstream reference code as third-party material. Supported models are
-loaded from GGUF metadata and routed to the matching C++ implementation
-automatically.
-
-The model list is split by runtime role. VLA models directly produce robot
-action chunks from embodied observations. World-action models use future
-world/video/latent prediction as part of action generation or action learning.
-Completed entries are available in the current C++ runtime; entries marked as
-under construction are roadmap targets for future ports.
+## Supported Models
 
 ### VLA Models
 
-| Status | Model | Runtime arch | Backbone / core | GGUF layout | Main server/client path |
-|---|---|---|---|---|---|
-| ✅ | [pi0.5](https://github.com/Physical-Intelligence/openpi) | `pi05` | PaliGemma + flow action expert | action/model GGUF plus matching mmproj GGUF | `vla-server` + generic VLA client |
-| ✅ | [HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA) | `hy_vla` | Hunyuan-VL / HY-VLA dual-tower policy | combined HY-VLA GGUF with vision/action weights | `vla-server` + `eval/client/run_robotwin_native_hy_vla.py` |
-| 🚧 | [StarVLA](https://github.com/starVLA/starVLA) | - | modular VLM/world-model backbone + swappable action heads | - | - |
-| 🚧 | [OpenVLA](https://github.com/openvla/openvla) | - | 7B open VLA with Llama 2 LM and DINOv2/SigLIP visual features | - | - |
-| 🚧 | [Qwen-VLA](https://github.com/QwenLM/Qwen-VLA) | - | Qwen3.5-4B VLM backbone + DiT flow-matching action decoder | - | - |
+VLA models take sensor images and language instructions as input and output robot action commands directly.
+
+| Model | Status | What it does |
+|---|:---:|---|
+| **[pi0.5](https://github.com/Physical-Intelligence/openpi)** | ✅ | PaliGemma-based policy — great starting point for experimentation |
+| **[HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA)** | ✅ | Hunyuan dual-tower vision-language model with action head; supports RoboTwin dual-arm evaluation |
+| [StarVLA](https://github.com/starVLA/starVLA) | 🚧 | Modular backbone with swappable action heads (coming soon) |
+| [OpenVLA](https://github.com/openvla/openvla) | 🚧 | 7B open VLA with Llama 2 + DINOv2/SigLIP features (coming soon) |
+| [Qwen-VLA](https://github.com/QwenLM/Qwen-VLA) | 🚧 | Qwen3.5-4B backbone with DiT flow-matching action decoder (coming soon) |
 
 ### World-Action Models
 
-| Status | Model | Runtime arch | Backbone / core | GGUF layout | Main server/client path |
-|---|---|---|---|---|---|
-| ✅ | [LingBot-VA](https://github.com/robbyant/lingbot-vla) | `lingbot_va` | video-action world model with VAE bridge | LingBot transformer GGUF plus text/VAE companion GGUFs | `lingbot-world-server` + LIBERO client |
-| 🚧 | [DreamZero](https://dreamzero0.github.io/) | - | 14B video-diffusion world-action model for zero-shot policies | - | - |
-| 🚧 | [UnifoLM-WMA-0](https://github.com/unitreerobotics/unifolm-world-model-action) | - | Unitree world-model-action architecture for multi-embodiment robot learning | - | - |
-| 🚧 | [Being-H0.7](https://research.beingbeyond.com/being-h07) | - | latent world-action model with future-aware latent reasoning | - | - |
-| 🚧 | [FastWAM](https://yuantianyuan01.github.io/FastWAM/) | - | fast WAM that keeps video co-training but removes test-time future generation | - | - |
+World-Action models predict future video or latent trajectories as part of planning actions — they reason about "what happens next" before deciding what to do.
 
-Conversion scripts are in [`scripts/`](scripts/). The retained converters are:
+| Model | Status | What it does |
+|---|:---:|---|
+| **[LingBot-VA](https://github.com/robbyant/lingbot-vla)** | ✅ | Video-action model with VAE bridge — evaluated on LIBERO task suites |
+| [DreamZero](https://dreamzero0.github.io/) | 🚧 | 14B video-diffusion world model for zero-shot policies (coming soon) |
+| [UnifoLM-WMA-0](https://github.com/unitreerobotics/unifolm-world-model-action) | 🚧 | Multi-embodiment robot learning with world-model action head (coming soon) |
+| [Being-H0.7](https://research.beingbeyond.com/being-h07) | 🚧 | Latent world-action model with future-aware reasoning (coming soon) |
+| [FastWAM](https://yuantianyuan01.github.io/FastWAM/) | 🚧 | Fast WAM that skips test-time future generation for speed (coming soon) |
 
-```text
-scripts/convert_pi05_to_gguf.py
-scripts/convert_pi05_mmproj_to_gguf.py
-scripts/convert_hy_vla_to_gguf.py
-scripts/convert_lingbot_va_to_gguf.py
-```
+---
 
-The retained GGUF quantizers are:
+## Quick Start
 
-```text
-scripts/quantize_hy_vla_gguf.py
-scripts/quantize_lingbot_wan_gguf.py
-```
-
-## Initialize Third-party Code
-
-Run this once after cloning the repository:
+### 1. Prepare dependencies
 
 ```bash
+# Clone the repo and fetch third-party code
+git clone <repo-url> && cd embodied.cpp
 ./patches/init_third_party.sh
 ```
 
-The script creates and populates:
+### 2. Build
 
-```text
-third_party/llama.cpp/
-```
-
-## Build
-
-Generic CPU build:
-
+**CPU-only:**
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target vla-server lingbot-world-server hy-vla-direct-debug -j
+cmake --build build --target vla-server lingbot-world-server -j$(nproc)
 ```
 
-
-The working configuration is:
-
+**CUDA GPU:**
 ```bash
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_CUDA=ON \
   -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-  -DCMAKE_CUDA_ARCHITECTURES= $CUDA_ARCHITECTURE$ \
+  -DCMAKE_CUDA_ARCHITECTURES=<your-arch> \
   -DProtobuf_PROTOC_EXECUTABLE=/usr/bin/protoc
-
-cmake --build build --target lingbot-world-server -j"$(nproc)"
+cmake --build build --target lingbot-world-server -j$(nproc)
 ```
 
-Notes:
-
-Identify your machine CUDA architecture and set `CMAKE_CUDA_ARCHITECTURES`
-accordingly:
-
-| GPU family | Example cards | `CUDA_ARCHITECTURE` |
-|---|---|---|
-| Ampere (Jetson) | Orin Nano, Orin NX | `87` |
-| Ampere (consumer) | RTX 30-series, A40 | `86` |
-| Ada Lovelace | RTX 40-series, L40 | `89` |
-| Hopper | H100, H200 | `90` |
-| Blackwell (consumer) | RTX 50-series | `120` |
-| Blackwell (datacenter) | B100, B200, GB200 | `100` |
-
-
-- Explicitly setting `CMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc` avoids
-  accidentally picking the older `/usr/bin/nvcc`.
-- Explicitly setting `Protobuf_PROTOC_EXECUTABLE=/usr/bin/protoc` avoids using
-  Conda's newer `protoc`, which can generate C++ headers incompatible with the
-  system protobuf library.
-- When `GGML_CUDA=ON`, the build enables `VLA_LINGBOT_FLEX_CUDA_KERNELS` and
-  compiles `kernels/lingbot/lingbot_flex_attn_cuda.cu`.
-
-The CMake file prefers `/usr/bin/protoc` when available, because Conda-provided
-`protoc` versions may generate protobuf files that do not match the system
-protobuf headers.
-
-After a successful build, check the server:
+### 3. Start a server
 
 ```bash
-./build/lingbot-world-server --help
-ldd ./build/lingbot-world-server | grep "not found" || true
+# VLA server (pi0.5, HY-VLA)
+./build/vla-server --model <path-to-gguf> (<path-to-mmproj>)
+
+# LingBot world-action server
+./build/lingbot-world-server --model <path-to-gguf>
 ```
 
-## Servers
-
-The main VLA server is:
+### 4. Evaluate in simulation (example: LIBERO with LingBot-VA)
 
 ```bash
-./build/vla-server <args>
-```
-
-LingBot world-action serving is:
-
-```bash
-./build/lingbot-world-server <args>
-```
-
-HY-VLA direct debugging is:
-
-```bash
-./build/hy-vla-direct-debug <args>
-```
-
-Use the executable help output for exact model/checkpoint arguments.
-
-## Model Conversion
-
-Conversion scripts live in `scripts/`; the core converters are listed in
-[Models](#models). Quantization helpers for HY-VLA and LingBot-VA are retained
-in the same directory.
-
-## LIBERO Evaluation
-
-LIBERO environments are set up under `eval/sim/libero/`.Install the LIBERO runtime once:
-
-```bash
+# Install the LIBERO runtime once
 bash eval/sim/libero/setup_libero.sh
-```
 
-
-The LIBERO client accepts a short sub-dataset selector:
-
-```text
---libero-suite spatial -> libero_spatial
---libero-suite object  -> libero_object
---libero-suite goal    -> libero_goal
---libero-suite 10      -> libero_10
---libero-suite long    -> libero_90
-```
-
-Use `--task-id` to choose the task inside that suite. The valid task range is
-`0..9` for `spatial`, `object`, `goal`, and `10`; it is `0..89` for `long`.
-
-
-For example, to test the LIBERO object suite instead:
-
-```bash
+# Run a test episode
 eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
   --arch lingbot_va \
   --libero-suite object \
@@ -206,63 +114,108 @@ eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py 
   --vla-addr tcp://localhost:5555
 ```
 
-## RobotWin Evaluation
+---
 
-The recommended RoboTwin path for HY-VLA is the native C++ runner. First clone and configure RoboTwin under `eval/sim/robotwin/`:
+## Run a Server
+
+| Executable | What it serves |
+|---|---|
+| `./build/vla-server` | VLA models — takes observations + text, outputs robot action chunks |
+| `./build/lingbot-world-server` | LingBot-VA world-action model — video-conditioned future-aware planning |
+| `./build/hy-vla-direct-debug` | Debug HY-VLA in-process (no server) |
+
+Run with `--help` to see all model, checkpoint, and quantization options.
+
+---
+
+## Evaluate in Simulation
+
+### LIBERO
+
+LIBERO tests robotic manipulation skills on four task suites: `spatial`, `object`, `goal`, and `10`. A fifth suite `long` (90 tasks) is also available.
 
 ```bash
-bash eval/sim/robotwin/setup_robotwin.sh
+--libero-suite spatial  → libero_spatial
+--libero-suite object   → libero_object
+--libero-suite goal     → libero_goal
+--libero-suite 10       → libero_10
+--libero-suite long     → libero_90
 ```
 
+Use `--task-id 0..9` (or `0..89` for `long`) to pick individual tasks.
 
-Run HY-VLA on RoboTwin with the native client:
+### RoboTwin
+
+RoboTWIN is a dual-arm robot benchmark with real-world-style manipulation tasks. Run HY-VLA natively in C++:
 
 ```bash
+bash eval/sim/robotwin/setup_robotwin.sh   # one-time setup
+
 GGML_CUDA_DISABLE_GRAPHS=1 \
 eval/sim/robotwin/robotwin_uv/.venv/bin/python \
   eval/client/run_robotwin_native_hy_vla.py \
-  --model /path/to/hy_vla_full_q4_K_vlmvisionstable.gguf \
-  --tokenizer /path/to/HY-VLA \
+  --model <path-to-gguf> \
   --task-name place_empty_cup \
-  --task-config demo_clean \
-  --episodes 1 \
-  --max-steps 0 \
-  --hy-vla-text-layers 32 \
-  --hy-vla-vision-layers all \
-  --no-hy-vla-cuda-oom-fallback-cpu
+  --episodes 1
 ```
 
-Detailed setup modes, troubleshooting notes and timing definitions are documented in [`eval/sim/robotwin/README.md`](eval/sim/robotwin/README.md).
+See [`eval/sim/robotwin/README.md`](eval/sim/robotwin/README.md) for detailed setup modes and troubleshooting.
 
-## Notes
+---
 
-- Large model/checkpoint/data files are ignored by `.gitignore`.
+## Convert Your Own Model
+
+GGUF conversion scripts are in [`scripts/`](scripts/):
+
+| Script | Converts |
+|---|---|
+| `convert_pi05_to_gguf.py` | pi0.5 model weights |
+| `convert_pi05_mmproj_to_gguf.py` | pi0.5 multimodal projector |
+| `convert_hy_vla_to_gguf.py` | HY-VLA combined vision+action |
+| `convert_lingbot_va_to_gguf.py` | LingBot-VA transformer + companion GGUFs |
+
+Quantization helpers:
+
+| Script | Quantizes |
+|---|---|
+| `quantize_hy_vla_gguf.py` | HY-VLA models |
+| `quantize_lingbot_wan_gguf.py` | LingBot-VA models |
+
+---
+
+## Project Structure
+
+What lives where, in plain language:
+
+| Directory | What it contains |
+|---|---|
+| `models/` | C++ model implementations (pi0.5, HY-VLA, LingBot-VA) |
+| `runtime/` | Model registry, architecture detection, shared utilities |
+| `adapter/` | I/O boundary — translates sensor/simulator data into typed inputs the models understand |
+| `serving/` | Server code (ZeroMQ/Protobuf) for VLA and LingBot APIs |
+| `kernels/` | Custom CUDA kernels (used when building with GPU support) |
+| `scripts/` | GGUF conversion, quantization, and evaluation helpers |
+| `tools/` | Local debug utilities |
+| `patches/` | Third-party code patches applied during setup |
+| `eval/` | Evaluation clients and simulation setups (LIBERO, RoboTwin) |
+
+---
 
 ## License
 
-This project is released under the Apache License 2.0. See
-[`LICENSE.md`](LICENSE.md) for details. Third-party dependencies, model
-checkpoints, datasets, and upstream reference implementations are distributed
-under their own licenses.
+This project is released under the [Apache License 2.0](LICENSE.md). Third-party dependencies, model checkpoints, datasets, and upstream reference implementations are distributed under their own licenses.
+
+---
 
 ## Acknowledgements
 
-Supported VLA models and WAM:
+**Supported models:**
+- [pi0.5 / OpenPI](https://github.com/Physical-Intelligence/openpi)
+- [HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA)
+- [LingBot-VA](https://github.com/robbyant/lingbot-vla)
 
-- [pi0.5 / OpenPI](https://github.com/Physical-Intelligence/openpi) - open
-  vision-language-action policy implementation used by the pi0.5 port.
-- [HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA) - Hunyuan
-  embodied VLA model used by the HY-VLA port.
-- [LingBot-VA](https://github.com/robbyant/lingbot-vla) - video-action
-  world model used by the LingBot-VA port.
-
-Behavioural evaluation is built on:
-
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) - LLM inference engine
-  in C/C++.
-- [vla.cpp](https://github.com/VinRobotics/vla.cpp) - unified C++ inference
-  runtime for Vision-Language-Action models.
-- [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO) - the
-  lifelong-robot-learning benchmark suite our success-rate sweeps run on.
-- [RoboTwin](https://github.com/RoboTwin-Platform/RoboTwin) - dual-arm robot
-  benchmark and dataset used by the RoboTwin evaluation path.
+**Foundational projects this build depends on:**
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) (LLM inference engine)
+- [vla.cpp](https://github.com/VinRobotics/vla.cpp) (unified VLA runtime)
+- [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO) (manipulation benchmark)
+- [RoboTwin](https://github.com/RoboTwin-Platform/RoboTwin) (dual-arm robot benchmark)
