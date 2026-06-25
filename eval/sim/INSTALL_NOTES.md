@@ -398,8 +398,8 @@ GPU has been verified with repeated forward passes.
 
 - The summary table uses the following timing definitions:
   - `inf (ms)`: one server-side model forward latency after warmup.
-  - `step (ms)`: per-action amortized inference latency, computed as
-    `inf / na`.
+  - `step (ms)`: wall-clock time per environment step, amortized over action
+    chunk replay.
   - `vision (ms)` and `action inf (ms)`: optional internal breakdowns.
 
 Example fixed-seed 20-episode command:
@@ -434,7 +434,7 @@ known-good Python reference seeds and skipping expert check:
 ```md
 | Model | Backbone | na | SR (%) | step (ms) | inf (ms) | vision (ms) | action inf (ms) | VRAM (MiB) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| HY-VLA-CPP | Hunyuan-VL / HY-VLA | 20 | 100.0 [83.9, 100.0] | 67.0 | 1340.3 | 691.7 | 598.9 | 6850 |
+| HY-VLA-CPP | Hunyuan-VL / HY-VLA | 20 | 100.0 [83.9, 100.0] | 735.9 | 1340.3 | 691.7 | 598.9 | 6850 |
 ```
 
 Output files:
