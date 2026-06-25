@@ -5,180 +5,38 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import numpy as np
-import torch
-from tree import map_structure
-
-from lerobot.envs.utils import preprocess_observation
-from lerobot.processor.env_processor import LiberoProcessorStep
-from lerobot.processor.pipeline import PolicyProcessorPipeline
-from lerobot.utils.constants import ACTION
 
 from adapter.pipeline import AdapterPipeline
 from adapter.typed_io import EmbodiedObservation, ImageStream, TensorStream
 
 
-def quat2axisangle(quat: np.ndarray) -> np.ndarray:
-    if quat[3] > 1.0:
-        quat[3] = 1.0
-    elif quat[3] < -1.0:
-        quat[3] = -1.0
-    den = np.sqrt(1.0 - quat[3] * quat[3])
-    if math.isclose(den, 0.0):
-        return np.zeros(3)
-    return (quat[:3] * 2.0 * math.acos(quat[3])) / den
-
-
-class LeRobotLIBEROParser:
-    _preprocessor = PolicyProcessorPipeline(
-        [LiberoProcessorStep()]
-    )
-    _postprocessor = PolicyProcessorPipeline()
-
+class LingBotLIBEROParser:
     def parse_observation(self, obs: dict[str, Any]) -> dict[str, Any]:
-        parsed_obs = map_structure(lambda x: x[None] if isinstance(x, np.ndarray) else x, obs)
-        parsed_obs = preprocess_observation(parsed_obs)
-        parsed_obs = self._preprocessor(parsed_obs)
-        parsed_obs = map_structure(
-            lambda x: (x.numpy()[0] if isinstance(x, torch.Tensor) else x), parsed_obs
-        )
-        parsed_obs["task"] = obs.get("task_description", "")
-        return parsed_obs
+        return obs
 
     def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
-        model_inputs = self.parse_observation(obs)
+        pixels = obs.get("pixels", {})
         images = []
-        for key in ("observation.images.image", "observation.images.image2"):
-            if key in model_inputs:
-                images.append(ImageStream(key, np.asarray(model_inputs[key]), layout="CHW"))
-        state = model_inputs.get("observation.state")
-        return EmbodiedObservation(
-            instruction=str(model_inputs.get("task", "")),
-            images=images,
-            proprioception=(TensorStream("observation.state", np.asarray(state))
-                            if state is not None else None),
-            model_inputs=model_inputs,
-            raw=obs,
-        )
-
-    def parse_action(self, action: np.ndarray) -> np.ndarray:
-        action_transition = {ACTION: torch.from_numpy(action[None])}
-        action_transition = self._postprocessor(action_transition)
-        action = action_transition[ACTION].cpu().numpy()[0]
-        return action
-
-
-class Evo1LIBEROParser:
-    def parse_observation(self, obs: dict[str, Any]) -> dict[str, Any]:
-        front_img = np.ascontiguousarray(obs["pixels"]["image"][::-1, ::-1])
-        wrist_img = np.ascontiguousarray(obs["pixels"]["image2"][::-1, ::-1])
-
-        return {
-            "image": [front_img, wrist_img, np.zeros_like(front_img)],
-            "state": np.concatenate((
-                obs["robot_state"]["eef"]["pos"],
-                quat2axisangle(obs["robot_state"]["eef"]["quat"]),
-                obs["robot_state"]["gripper"]["qpos"],
-            )),
-            "prompt": obs["task_description"],
-            "image_mask": [1, 1, 0],
-            "action_mask": [1] * 7 + [0] * 17,
-        }
-
-    def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
-        model_inputs = self.parse_observation(obs)
-        return EmbodiedObservation(
-            instruction=str(model_inputs.get("prompt", "")),
-            images=[
-                ImageStream("image.front", np.asarray(model_inputs["image"][0]), layout="HWC"),
-                ImageStream("image.wrist", np.asarray(model_inputs["image"][1]), layout="HWC"),
-            ],
-            proprioception=TensorStream("state", np.asarray(model_inputs["state"])),
-            model_inputs=model_inputs,
-            raw=obs,
-        )
-
-    def parse_action(self, action: np.ndarray) -> np.ndarray:
-        action = np.asarray(action[:7], dtype=np.float32).copy()
-        action[6] = -1.0 if action[6] > 0.5 else 1.0
-        return action
-
-    @staticmethod
-    def encode_image_array(img_array: np.ndarray):
-        return img_array.astype(np.uint8).tolist()
-
-
-class GR00TN16LIBEROParser:
-    def parse_observation(self, obs: dict[str, Any]) -> dict[str, Any]:
-        pos = obs["robot_state"]["eef"]["pos"].astype(np.float32)
-        angles = quat2axisangle(obs["robot_state"]["eef"]["quat"]).astype(np.float32)
-        gripper = obs["robot_state"]["gripper"]["qpos"].astype(np.float32)
-
-        return {
-            "video": {
-                "image": np.ascontiguousarray(obs["pixels"]["image"][::-1, ::-1])[None, None],
-                "wrist_image": np.ascontiguousarray(obs["pixels"]["image2"][::-1, ::-1])[None, None]
-            },
-            "state": {
-                "x": pos[0].reshape(1, 1, 1),
-                "y": pos[1].reshape(1, 1, 1),
-                "z": pos[2].reshape(1, 1, 1),
-                "roll": angles[0].reshape(1, 1, 1),
-                "pitch": angles[1].reshape(1, 1, 1),
-                "yaw": angles[2].reshape(1, 1, 1),
-                "gripper": gripper.reshape(1, 1, 2)
-            },
-            "language": {
-                "annotation.human.action.task_description": [[obs["task_description"]]]
-            }
-        }
-
-    def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
-        model_inputs = self.parse_observation(obs)
-        state = model_inputs["state"]
-        state_arrays = [
-            np.asarray(state[k]).reshape(-1)
-            for k in ("x", "y", "z", "roll", "pitch", "yaw", "gripper")
-        ]
+        for key in ("image", "image2"):
+            if key in pixels:
+                images.append(ImageStream(key, np.asarray(pixels[key]), layout="HWC"))
         return EmbodiedObservation(
             instruction=str(obs.get("task_description", "")),
-            images=[
-                ImageStream("video.image", np.asarray(model_inputs["video"]["image"]), layout="BTHWC"),
-                ImageStream("video.wrist_image", np.asarray(model_inputs["video"]["wrist_image"]), layout="BTHWC"),
-            ],
-            proprioception=TensorStream("state", np.concatenate(state_arrays).astype(np.float32)),
-            model_inputs=model_inputs,
+            images=images,
+            proprioception=TensorStream("libero_state", _extract_libero_state(obs)),
+            model_inputs=obs,
             raw=obs,
         )
 
-    def parse_action(self, action: dict[str, Any]) -> np.ndarray:
-        action = np.concatenate([
-            action["x"][0, 0],
-            action["y"][0, 0],
-            action["z"][0, 0],
-            action["roll"][0, 0],
-            action["pitch"][0, 0],
-            action["yaw"][0, 0],
-            action["gripper"][0, 0]
-        ], axis=0).astype(np.float32)
-
-        orig_low, orig_high = 0.0, 1.0
-        action[-1] = 2 * (action[-1] - orig_low) / (orig_high - orig_low) - 1
-        action[-1] = np.sign(action[-1])
-
-        action[-1] = action[-1] * -1.0
-        return action
+    def parse_action(self, action: np.ndarray) -> np.ndarray:
+        return np.asarray(action[:7], dtype=np.float32)
 
 
 LIBERO_PARSER_REGISTRY = {
-    "smolvla": LeRobotLIBEROParser,
-    "pi0": LeRobotLIBEROParser,
-    "gr00t-n15": LeRobotLIBEROParser,
-    "evo1": Evo1LIBEROParser,
-    "gr00t": GR00TN16LIBEROParser,
+    "lingbot_va": LingBotLIBEROParser,
 }
 
 
@@ -203,3 +61,26 @@ class LIBEROSimAdapter:
         embodied_obs = self.parse_embodied_observation(obs)
         action = self._client.get_action(embodied_obs.model_inputs)
         return self._parser.parse_action(action)
+
+
+def _extract_libero_state(obs: dict[str, Any]) -> np.ndarray:
+    robot_state = obs.get("robot_state", {})
+    eef = robot_state.get("eef", {})
+    gripper = robot_state.get("gripper", {})
+    pos = np.asarray(eef.get("pos", np.zeros(3)), dtype=np.float32).reshape(-1)[:3]
+    quat = np.asarray(eef.get("quat", np.array([0, 0, 0, 1])), dtype=np.float64).reshape(-1)[:4]
+    qpos = np.asarray(gripper.get("qpos", np.zeros(1)), dtype=np.float32).reshape(-1)
+    grip = qpos[:1] if qpos.size else np.zeros(1, dtype=np.float32)
+    return np.concatenate([pos, _quat2axisangle(quat).astype(np.float32), grip]).astype(np.float32)
+
+
+def _quat2axisangle(quat: np.ndarray) -> np.ndarray:
+    quat = np.asarray(quat, dtype=np.float64).reshape(-1)
+    if quat.size < 4:
+        return np.zeros(3, dtype=np.float32)
+    quat = quat[:4].copy()
+    quat[3] = np.clip(quat[3], -1.0, 1.0)
+    den = np.sqrt(max(0.0, 1.0 - quat[3] * quat[3]))
+    if den <= 1e-12:
+        return np.zeros(3, dtype=np.float32)
+    return (quat[:3] * 2.0 * np.arccos(quat[3]) / den).astype(np.float32)

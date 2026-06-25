@@ -1,9 +1,16 @@
+# Local agent / assistant state
+.codex/
+.claude/
+
 # Build
 build/
 build-*/
 out/
 cmake-build-*/
 _workdir*
+dist/
+release/
+debug/
 
 # CMake
 CMakeCache.txt
@@ -14,6 +21,25 @@ install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
 _deps/
+Testing/
+CMakeUserPresets.json
+
+# Compiled objects / libraries / generated binaries
+*.a
+*.dylib
+*.dll
+*.exe
+*.o
+*.obj
+*.so
+*.so.*
+*.d
+
+# Generated protobuf code
+*_pb2.py
+*_pb2_grpc.py
+*.pb.cc
+*.pb.h
 
 # Models / data
 *.gguf
@@ -21,16 +47,37 @@ _deps/
 *.safetensors
 *.pt
 *.pth
+*.ckpt
+*.h5
+*.npz
+*.npy
 *.onnx
+*.tflite
+*.engine
+*.plan
+checkpoints/
+weights/
+datasets/
+data/
+model_cache/
+hf_cache/
 
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 .venv/
 .venv-*/
 venv/
 .env
+.env.*
+!.env.example
 
 # Editors / OS
 .vscode/
@@ -41,15 +88,37 @@ venv/
 
 # Logs
 *.log
+*.pid
+*.tmp
+*.temp
 
-# Claude
-.claude/settings.local.json
+# Runtime outputs
 outputs/
-weights/
-CLAUDE.md
+wandb/
+runs/
 
-third_party/llama.cpp/
+# Third-party code populated by setup scripts
+third_party/*
+
+# Simulator/runtime dependencies populated by setup scripts
 eval/sim/libero/LIBERO/
 eval/sim/libero/libero_uv/
-eval/sim/simpler/SimplerEnv/
-eval/sim/simpler/simpler_uv/
+eval/sim/robotwin/RoboTwin/
+eval/sim/robotwin/robotwin_uv/
+
+# Local notes and accidental shell-redirection files
+CLAUDE.md
+=*
+
+#artifacts
+artifacts/
+
+
+#test cpp
+models/lingbot_va_original.cpp
+
+# Local porting notes
+/HY_VLA_PORT_PLAN.md
+/HY_VLA_PROGRESS.md
+/LINGBOT_VA_PORT_PLAN.md
+/LINGBOT_VA_PROGRESS.md

@@ -14,12 +14,13 @@ external upstream code under `third_party/`.
 ```text
 models/              C++ implementations of supported VLA models
 runtime/             common model API, architecture detection, model registry
+adapter/             typed embodied I/O boundary and simulator/deployment adapters
 serving/             ZeroMQ/protobuf servers for VLA and LingBot world-action APIs
 kernels/             custom CUDA kernels used by LingBot-VA when CUDA is enabled
-scripts/             conversion, inspection, parity, smoke-test, and setup scripts
+scripts/             GGUF conversion, quantization, and full-evaluation helpers
 tools/               local debug tools
 patches/             patches applied to third-party code
-third_party/         external code populated by scripts/init_third_party.sh
+third_party/         external code populated outside Git
 artifacts/           model graph notes and ONNX audit artifacts
 eval/                lightweight client/evaluation helpers kept for this project
 ```
@@ -37,8 +38,7 @@ implementation automatically.
 | HY-VLA | `hy_vla` | Hunyuan-VL / HY-VLA dual-tower policy | combined HY-VLA GGUF with vision/action weights | `vla-server` + `eval/client/run_robotwin_native_hy_vla.py` |
 | LingBot-VA | `lingbot_va` | video-action world model with VAE bridge | LingBot transformer GGUF plus text/VAE companion GGUFs | `lingbot-world-server` + LIBERO client |
 
-Conversion and inspection scripts are in [`scripts/`](scripts/). The core
-converters are:
+Conversion scripts are in [`scripts/`](scripts/). The retained converters are:
 
 ```text
 scripts/convert_pi05_to_gguf.py
@@ -47,22 +47,26 @@ scripts/convert_hy_vla_to_gguf.py
 scripts/convert_lingbot_va_to_gguf.py
 ```
 
-The model registry is intentionally narrower than upstream `vla.cpp`; model
-families that are not maintained in this repository are not compiled into the
-runtime.
+The retained GGUF quantizers are:
+
+```text
+scripts/quantize_hy_vla_gguf.py
+scripts/quantize_lingbot_wan_gguf.py
+```
 
 ## Initialize Third-party Code
 
 Run this once after cloning the repository:
 
 ```bash
-./scripts/init_third_party.sh
+./patches/init_third_party.sh
 ```
 
-The script creates and populates `third_party/`:
+The script creates and populates:
 
-- `third_party/llama.cpp`: required by the build
-- `third_party/vla.cpp`: original upstream reference repository
+```text
+third_party/llama.cpp/
+```
 
 It also applies:
 
@@ -70,17 +74,11 @@ It also applies:
 patches/llama.cpp-vla.patch
 ```
 
-to `third_party/llama.cpp`.
-
-The default refs can be overridden:
+to `third_party/llama.cpp`. The default llama.cpp ref can be overridden:
 
 ```bash
-LLAMA_REF=846262d7875dcabf502a150fa3d7b9c770dde7eb ./scripts/init_third_party.sh
-VLA_REF=main ./scripts/init_third_party.sh
+LLAMA_REF=b9016 ./patches/init_third_party.sh
 ```
-
-`third_party/llama.cpp/` and `third_party/vla.cpp/` are ignored by Git, so they
-can be deleted and recreated by the init script.
 
 ## Build
 
@@ -91,11 +89,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target vla-server lingbot-world-server hy-vla-direct-debug -j
 ```
 
-For LingBot-VA LIBERO evaluation, use a CUDA build. LingBot image input uses the
-video-to-latent VAE bridge, which depends on the LingBot CUDA kernel path being
-compiled into `vla_core`.
 
-On this machine the working configuration is:
+The working configuration is:
 
 ```bash
 cmake -S . -B build \
@@ -110,8 +105,20 @@ cmake --build build --target lingbot-world-server -j"$(nproc)"
 
 Notes:
 
-- `CMAKE_CUDA_ARCHITECTURES=86` matches the RTX 3070 Ti Laptop GPU. Use the
-  matching architecture for other GPUs.
+Identify your machine CUDA architecture and set `CMAKE_CUDA_ARCHITECTURES`
+accordingly:
+
+| GPU family | Example cards | `CUDA_ARCHITECTURE` |
+|---|---|---|
+| Ampere (Jetson) | Orin Nano, Orin NX | `87` |
+| Ampere (consumer) | RTX 30-series, A40 | `86` |
+| Ada Lovelace | RTX 40-series, L40 | `89` |
+| Hopper | H100, H200 | `90` |
+| Blackwell (consumer) | RTX 50-series | `120` |
+| Blackwell (datacenter) | B100, B200, GB200 | `100` |
+
+For example, pass `-DCMAKE_CUDA_ARCHITECTURES=86` for an RTX 30-series GPU.
+
 - Explicitly setting `CMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc` avoids
   accidentally picking the older `/usr/bin/nvcc`.
 - Explicitly setting `Protobuf_PROTOC_EXECUTABLE=/usr/bin/protoc` avoids using
@@ -153,12 +160,11 @@ HY-VLA direct debugging is:
 
 Use the executable help output for exact model/checkpoint arguments.
 
-## Model Conversion And Inspection
+## Model Conversion
 
 Conversion scripts live in `scripts/`; the core converters are listed in
-[Models](#models). Inspection, quantization, and parity scripts are also under
-`scripts/`; they are intended for debugging conversion correctness and matching
-Python reference behavior.
+[Models](#models). Quantization helpers for HY-VLA and LingBot-VA are retained
+in the same directory.
 
 ## LIBERO Evaluation
 
@@ -215,13 +221,6 @@ eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py 
   --n-episodes 1 \
   --tokenizer /path/to/lingbot-va-tokenizer \
   --vla-addr tcp://localhost:5555
-```
-
-The sweep helpers also accept `-s libero_long` and optional task ranges:
-
-```bash
-bash eval/run_libero_client.sh -s libero_long -T 0-2 -m pi0 -a tcp://<server-host>:5555
-python eval/collect_libero_results.py --suite libero_long
 ```
 
 ## RobotWin Evaluation For HY-VLA

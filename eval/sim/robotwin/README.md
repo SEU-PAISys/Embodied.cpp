@@ -169,7 +169,7 @@ The repository also keeps a generic adapter path:
 ```text
 eval/run_robotwin_hy_vla_client.sh
 eval/client/run_robotwin_eval.py
-eval/utils/sim_adapters/robotwin.py
+adapter/sim/robotwin.py
 ```
 
 Use it only when you need to connect to a registered gym-style RobotWin

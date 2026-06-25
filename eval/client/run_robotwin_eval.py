@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from utils.sim_adapters.robotwin import RobotWinHyVLAAdapter
+from adapter.sim.robotwin import RobotWinHyVLAAdapter
 
 
 def _jsonable(v):

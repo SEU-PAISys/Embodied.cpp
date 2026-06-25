@@ -56,24 +56,10 @@ bool detect_arch_gguf(const std::string& path, Arch* out) {
     bool ok = false;
     std::string arch_str;
     if (try_str("general.architecture",  arch_str) ||
-        try_str("smolvla.architecture",  arch_str) ||
-        try_str("pi0.architecture",      arch_str) ||
         try_str("pi05.architecture",     arch_str) ||
-        try_str("evo1.architecture",     arch_str) ||
-        try_str("gr00t_n1_5.architecture", arch_str) ||
-        try_str("gr00t_n1_6.architecture", arch_str) ||
-        try_str("gr00t_n1_7.architecture", arch_str) ||
-        try_str("bitvla.architecture",     arch_str) ||
         try_str("lingbot_va.architecture", arch_str) ||
         try_str("hy_vla.architecture",     arch_str)) {
-        if      (arch_str == "smolvla")    { *out = Arch::SMOLVLA;    ok = true; }
-        else if (arch_str == "pi0")        { *out = Arch::PI0;        ok = true; }
-        else if (arch_str == "pi05")       { *out = Arch::PI05;       ok = true; }
-        else if (arch_str == "evo1")       { *out = Arch::EVO1;       ok = true; }
-        else if (arch_str == "gr00t_n1_5") { *out = Arch::GR00T_N1_5; ok = true; }
-        else if (arch_str == "gr00t_n1_6") { *out = Arch::GR00T_N1_6; ok = true; }
-        else if (arch_str == "gr00t_n1_7") { *out = Arch::GR00T_N1_7; ok = true; }
-        else if (arch_str == "bitvla")     { *out = Arch::BITVLA;     ok = true; }
+        if      (arch_str == "pi05")       { *out = Arch::PI05;       ok = true; }
         else if (arch_str == "lingbot_va") { *out = Arch::LINGBOT_VA; ok = true; }
         else if (arch_str == "hy_vla")     { *out = Arch::HY_VLA;     ok = true; }
     }
@@ -92,18 +78,10 @@ bool detect_arch_safetensors(const std::string& path, Arch* out) {
     f.read(header.data(), header_size);
     if (!f) return false;
 
-    if (header.find("vlm_with_expert.vlm.") != std::string::npos) {
-        *out = Arch::SMOLVLA;
-        return true;
-    }
     if (header.find("paligemma_with_expert.paligemma.") != std::string::npos) {
-
-        if (header.find("action_time_mlp_in") != std::string::npos) {
-            *out = Arch::PI0;
-        } else if (header.find("time_mlp_in") != std::string::npos) {
+        if (header.find("time_mlp_in") != std::string::npos) {
             *out = Arch::PI05;
         } else {
-
             return false;
         }
         return true;
@@ -132,37 +110,9 @@ Model* model_load(const std::string& mmproj_path, const std::string& ckpt_path,
 
     std::unique_ptr<ModelArchBase> impl;
     switch (arch) {
-        case Arch::SMOLVLA:
-            std::printf("vla: arch = smolvla\n");
-            impl = smolvla_create(mmproj_path, ckpt_path, config_path);
-            break;
-        case Arch::PI0:
-            std::printf("vla: arch = pi0\n");
-            impl = pi0_create(mmproj_path, ckpt_path, config_path);
-            break;
         case Arch::PI05:
             std::printf("vla: arch = pi05\n");
             impl = pi05_create(mmproj_path, ckpt_path, config_path);
-            break;
-        case Arch::EVO1:
-            std::printf("vla: arch = evo1\n");
-            impl = evo1_create(mmproj_path, ckpt_path, config_path);
-            break;
-        case Arch::GR00T_N1_5:
-            std::printf("vla: arch = gr00t_n1_5\n");
-            impl = gr00t_n1_5_create(mmproj_path, ckpt_path, config_path);
-            break;
-        case Arch::GR00T_N1_6:
-            std::printf("vla: arch = gr00t_n1_6\n");
-            impl = gr00t_n1_6_create(mmproj_path, ckpt_path, config_path);
-            break;
-        case Arch::GR00T_N1_7:
-            std::printf("vla: arch = gr00t_n1_7\n");
-            impl = gr00t_n1_7_create(mmproj_path, ckpt_path, config_path);
-            break;
-        case Arch::BITVLA:
-            std::printf("vla: arch = bitvla\n");
-            impl = bitvla_create(mmproj_path, ckpt_path, config_path);
             break;
         case Arch::LINGBOT_VA:
             std::printf("vla: arch = lingbot_va\n");

@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
 from utils.service import RobotInferenceClient
-from utils.sim_adapters.libero import LIBEROSimAdapter
+from adapter.sim.libero import LIBEROSimAdapter
 
 import time
 import argparse

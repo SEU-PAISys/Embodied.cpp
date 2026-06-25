@@ -123,21 +123,16 @@ void usage(const char * prog) {
     std::fprintf(stderr,
         "usage: %s [--bind ADDR] [--timing-detail none|phase] [--config PATH] "
         "[<mmproj.gguf>] <ckpt>\n"
-        "  <mmproj.gguf>           vision-tower mmproj GGUF (SigLIP / PaliGemma /\n"
-        "                          connector). Required for SmolVLA, π0, Evo-1, GR00T.\n"
-        "                          Omit for BitVLA - its vision tower is baked into\n"
-        "                          the combined ckpt GGUF.\n"
-        "  <ckpt>                  SmolVLA .safetensors or .gguf, or any of the other\n"
-        "                          supported architectures' .gguf; the architecture is\n"
-        "                          auto-detected from the checkpoint.\n"
+        "  <mmproj.gguf>           pi0.5 vision-tower mmproj GGUF. Omit for HY-VLA\n"
+        "                          and LingBot-VA combined GGUF checkpoints.\n"
+        "  <ckpt>                  pi0.5, HY-VLA, or LingBot-VA GGUF checkpoint; the\n"
+        "                          architecture is auto-detected from metadata.\n"
         "  --bind ADDR             ZMQ bind address (default: tcp://*:5555)\n"
         "  --timing-detail LEVEL   per-request timing breakdown (default: none)\n"
         "                          'none'  : single ms_inference\n"
         "                          'phase' : ms_prefill + ms_denoise broken out\n"
-        "                          (π0 currently reports only the combined ms_inference)\n"
-        "  --config PATH           LeRobot policy config.json (SmolVLA safetensors only;\n"
-        "                          ignored for GGUF checkpoints). If omitted, uses\n"
-        "                          <dirname(ckpt)>/config.json.\n",
+        "  --config PATH           Reserved for compatibility; GGUF checkpoints carry\n"
+        "                          the required runtime metadata.\n",
         prog);
 }
 
@@ -185,8 +180,8 @@ int main(int argc, char ** argv) {
     } else {
         std::fprintf(stderr,
                      "vla-server: expected 1 or 2 positional args "
-                     "(<mmproj.gguf> <ckpt> for SmolVLA/π0/Evo-1/GR00T, "
-                     "or just <ckpt> for BitVLA), got %zu\n",
+                     "(<mmproj.gguf> <ckpt> for pi0.5, or just <ckpt> "
+                     "for HY-VLA/LingBot-VA), got %zu\n",
                      positionals.size());
         usage(argv[0]);
         return 1;

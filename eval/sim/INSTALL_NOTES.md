@@ -1,17 +1,16 @@
 # Simulator Dataset / Environment Install Notes
 
-This note records the practical setup points for the LIBERO and SimplerEnv
-evaluation environments used by `vla.cpp`.
+This note records the practical setup points for the LIBERO and RoboTwin
+evaluation environments used by embodied.cpp.
 
 ## Common prerequisites
 
 - Install `uv` and make sure it is on `PATH`.
 - Keep enough disk space free. A CUDA-enabled Python environment is large:
   - LIBERO env: about 9-10 GB.
-  - SimplerEnv env: about 6-7 GB.
 - Use Python 3.10. The setup scripts create local `uv` virtual environments:
   - `eval/sim/libero/libero_uv/.venv`
-  - `eval/sim/simpler/simpler_uv/.venv`
+  - `eval/sim/robotwin/robotwin_uv/.venv`
 - If downloads look stuck, they are often just fetching large PyTorch/CUDA
   wheels. Packages such as `torch`, `nvidia-cudnn-cu12`, `nvidia-cublas-cu12`,
   and `triton` can take many minutes.
@@ -77,7 +76,7 @@ LIBERO-LONG note:
 
 - Upstream LIBERO names the 90-task long suite `libero_90`.
 - This repository also accepts `libero_long` and `libero-long` as aliases in
-  the direct client and sweep scripts.
+  the direct client.
 - To verify that the installed LIBERO checkout exposes the long suite:
 
 ```bash
@@ -90,68 +89,16 @@ PY
 
 Expected result includes `tasks 90`.
 
-Example client-only smoke test:
+Example direct smoke test:
 
 ```bash
-bash eval/run_libero_client.sh -s libero_long -T 0 -n 1 -m pi0 -a tcp://<server-host>:5555
-```
-
-## SimplerEnv setup
-
-Run:
-
-```bash
-bash eval/sim/simpler/setup_SimplerEnv.sh
-```
-
-The script clones or reuses `eval/sim/simpler/SimplerEnv`, recreates
-`eval/sim/simpler/simpler_uv/.venv`, installs ManiSkill2_real2sim and
-SimplerEnv editable, then installs the pinned runtime dependencies.
-
-Important fixes / checks:
-
-- The setup script should compute the repository root from
-  `eval/sim/simpler` with `../../..`, not `../..`; otherwise `.gitmodules` is
-  looked up under `eval/`.
-- The last install step pulls `torchvision==0.22.0`, which brings
-  `torch==2.7.0` and CUDA 12.6 wheels. This is expected and can take several
-  minutes.
-- SimplerEnv should pass `uv pip check`; unlike the LIBERO environment, the
-  final installed package set is compatible.
-
-Useful verification:
-
-```bash
-eval/sim/simpler/simpler_uv/.venv/bin/python - <<'PY'
-import torch
-import numpy as np
-import simpler_env
-import mani_skill2_real2sim
-import sapien
-import cv2
-import transformers
-print("numpy", np.__version__)
-print("torch", torch.__version__, "cuda", torch.cuda.is_available())
-print("simpler_env", getattr(simpler_env, "__version__", "ok"))
-print("mani_skill2_real2sim", getattr(mani_skill2_real2sim, "__version__", "ok"))
-print("sapien", sapien.__version__)
-print("cv2", cv2.__version__)
-print("transformers", transformers.__version__)
-PY
-
-eval/sim/simpler/simpler_uv/.venv/bin/python eval/client/run_simpler_client_direct.py --help
-uv pip check --python eval/sim/simpler/simpler_uv/.venv/bin/python
-```
-
-Expected versions from a working install:
-
-```text
-numpy 1.26.4
-torch 2.7.0+cu126
-torchvision 0.22.0+cu126
-gymnasium 0.29.1
-sapien 2.2.2
-transformers 4.51.3
+eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
+  --arch lingbot_va \
+  --libero-suite long \
+  --task-id 0 \
+  --n-episodes 1 \
+  --vla-addr tcp://<server-host>:5555 \
+  --tokenizer /path/to/lingbot-va-tokenizer
 ```
 
 ## Running with the environments
@@ -162,10 +109,10 @@ Activate LIBERO:
 source eval/sim/libero/libero_uv/.venv/bin/activate
 ```
 
-Activate SimplerEnv:
+Activate RoboTwin:
 
 ```bash
-source eval/sim/simpler/simpler_uv/.venv/bin/activate
+source eval/sim/robotwin/robotwin_uv/.venv/bin/activate
 ```
 
 For actual evaluation, start `vla-server` separately with the matching model
@@ -189,7 +136,7 @@ evaluation/runtime requirements from `script/requirements.txt`, applies the
 small upstream sapien/mplib runtime patches, and downloads simulation assets
 through `script/_download_assets.sh`.
 
-This mirrors the LIBERO/Simpler setup pattern: each simulator gets its own
+This mirrors the LIBERO setup pattern: each simulator gets its own
 source checkout and its own local virtual environment under `eval/sim/<name>/`.
 
 The script defaults to eval mode and installs the pieces needed for RoboTwin

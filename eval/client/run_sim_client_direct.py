@@ -23,16 +23,9 @@ sys.path.insert(0, str(ROOT))
 import gymnasium as gym
 
 import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
-from client.vla_cpp_client import VlaCppClient, ARCH_PRESETS
 from client.lingbot_world_client import LingBotWorldClient
-from client.adapters import (
-    LeRobotPipelineAdapter,
-    Evo1PipelineAdapter,
-    Gr00tPipelineAdapter,
-    Gr00tN15PipelineAdapter,
-)
 
-ARCH_CHOICES = sorted(set(ARCH_PRESETS) | {"lingbot_va"})
+ARCH_CHOICES = ["lingbot_va"]
 LIBERO_SUITE_TASK_COUNTS = {
     "libero_spatial": 10,
     "libero_object": 10,
@@ -60,45 +53,23 @@ def normalize_libero_suite(name: str) -> str:
 
 
 def build_client(args):
-    if args.arch == "lingbot_va":
-        default_lerobot_image_keys = ["observation.images.image", "observation.images.image2"]
-        lingbot_image_keys = (
-            ["image", "image2"]
-            if list(args.image_keys) == default_lerobot_image_keys
-            else args.image_keys
-        )
-        return LingBotWorldClient(
-            vla_addr=args.vla_addr,
-            tokenizer_name=args.tokenizer,
-            image_size=args.image_size or 128,
-            image_keys=lingbot_image_keys,
-            max_length=args.max_length if args.max_length != 48 else 512,
-            recv_timeout_ms=args.recv_timeout_ms,
-            n_action_steps=args.n_action_steps,
-            session_id=args.lingbot_session_id,
-            max_cache_frames=args.lingbot_max_cache_frames,
-        )
-    client = VlaCppClient(
+    default_lerobot_image_keys = ["observation.images.image", "observation.images.image2"]
+    lingbot_image_keys = (
+        ["image", "image2"]
+        if list(args.image_keys) == default_lerobot_image_keys
+        else args.image_keys
+    )
+    return LingBotWorldClient(
         vla_addr=args.vla_addr,
-        arch=args.arch,
         tokenizer_name=args.tokenizer,
-        image_size=args.image_size,
-        max_state_dim=args.max_state_dim,
-        real_action_dim=args.real_action_dim,
-        image_keys=args.image_keys,
-        max_length=args.max_length,
+        image_size=args.image_size or 128,
+        image_keys=lingbot_image_keys,
+        max_length=args.max_length if args.max_length != 48 else 512,
         recv_timeout_ms=args.recv_timeout_ms,
         n_action_steps=args.n_action_steps,
-        stats_json=args.stats_json,
-        bitvla_unnorm_key=args.bitvla_unnorm_key,
+        session_id=args.lingbot_session_id,
+        max_cache_frames=args.lingbot_max_cache_frames,
     )
-    if args.arch == "evo1":
-        return Evo1PipelineAdapter(client=client)
-    if args.arch == "gr00t_n1_5":
-        return Gr00tN15PipelineAdapter(client=client)
-    if args.arch in ("gr00t_n1_6", "gr00t_n1_7"):
-        return Gr00tPipelineAdapter(client=client)
-    return LeRobotPipelineAdapter(client=client)
 
 
 def run_one_task(args, client, task: str, task_id: int) -> None:
@@ -245,13 +216,12 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42,
         help="Seed for the LIBERO env reset/init-state rollout (default: 42).")
 
-    parser.add_argument("--arch", choices=ARCH_CHOICES, default="smolvla",
-        help="Preprocessing preset + pipeline adapter. Also namespaces the output dir.")
+    parser.add_argument("--arch", choices=ARCH_CHOICES, default="lingbot_va",
+        help="Model/client path. Also namespaces the output dir.")
     parser.add_argument("--vla-addr", type=str, default="tcp://localhost:5555",
         help="ZMQ address of vla-server (the C++ inference daemon).")
     parser.add_argument("--tokenizer", type=str, default=None,
-        help="Override the arch preset's tokenizer (HF id or local dir). "
-             "For BitVLA: must be the local ckpt dir.")
+        help="LingBot-VA tokenizer directory.")
     parser.add_argument("--image-size", type=int, default=None,
         help="Override the arch preset's vision input size.")
     parser.add_argument("--max-state-dim", type=int, default=None,
@@ -261,8 +231,8 @@ if __name__ == "__main__":
     parser.add_argument("--image-keys", nargs="+",
         default=["observation.images.image", "observation.images.image2"])
     parser.add_argument("--max-length", type=int, default=48)
-    parser.add_argument("--recv-timeout-ms", type=int, default=120_000,
-        help="ZMQ receive timeout. π0 CPU inference is slow (~5–10 s/step with 2 views).")
+    parser.add_argument("--recv-timeout-ms", type=int, default=900_000,
+        help="ZMQ receive timeout for lingbot-world-server.")
     parser.add_argument("--lingbot-session-id", type=int, default=1,
         help="[lingbot_va] session id sent to lingbot-world-server.")
     parser.add_argument("--lingbot-max-cache-frames", type=int, default=4,
@@ -274,26 +244,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n-action-steps", type=int, default=1,
         help="How many actions to replay from each predicted chunk before "
-             "re-querying vla-server. Mirrors lerobot's PI0Policy._action_queue / "
-             "SmolVLAPolicy._action_queue. Defaults to 1 (re-predict every step - "
-             "historical SmolVLA path). For π0 set to the checkpoint's "
-             "`n_action_steps` (pi0_libero_base=10, pi0_libero_finetuned_v044=50); "
-             "for BitVLA pass 8 (= NUM_ACTIONS_CHUNK).",
-    )
-
-    parser.add_argument(
-        "--stats-json", type=str, default=None,
-        help="[bitvla/gr00t_n1_6/gr00t_n1_7] path to dataset_statistics.json. Default for bitvla: "
-             "<tokenizer>/dataset_statistics.json. For gr00t_n1_{6,7}, pass the canonical "
-             "<model-dir>/experiment_cfg/dataset_statistics.json explicitly. Without "
-             "it, gr00t_n1_7 returns the raw normalized [40, 132] chunk and gr00t_n1_6 "
-             "returns the raw [50, 128] chunk (won't drive LIBERO).",
-    )
-    parser.add_argument(
-        "--bitvla-unnorm-key", type=str, default=None,
-        help="[bitvla/gr00t_n1_6/gr00t_n1_7] embodiment key inside dataset_statistics.json "
-             "(default: auto-detect - bitvla picks the sole top-level key; "
-             "gr00t_n1_7 prefers 'libero_sim'; gr00t_n1_6 prefers 'libero_panda').",
+             "re-querying lingbot-world-server.",
     )
 
     args = parser.parse_args()

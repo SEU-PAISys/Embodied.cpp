@@ -39,14 +39,7 @@ namespace vla {
  * (@ref detect_arch_from_ckpt) and routed to the corresponding factory.
  */
 enum class Arch {
-    SMOLVLA,    ///< Hugging Face SmolVLA (mmproj + LM + flow-matching head).
-    PI0,        ///< Physical Intelligence pi0 (PaliGemma + flow-matching).
-    PI05,       ///< pi0.5 variant; reserved.
-    EVO1,       ///< MINT-SJTU Evo-1 (InternVL3 + cross-attention head).
-    GR00T_N1_5, ///< NVIDIA Isaac GR00T N1.5 (Eagle VLM + DiT action head).
-    GR00T_N1_6, ///< NVIDIA Isaac GR00T N1.6 (Eagle Block-2A + DiT).
-    GR00T_N1_7, ///< NVIDIA Isaac GR00T N1.7 (Qwen3 backbone + DiT).
-    BITVLA,     ///< Microsoft BitVLA (1.58-bit ternary LM/ViT).
+    PI05,       ///< Physical Intelligence pi0.5 policy.
     LINGBOT_VA, ///< Robbyant LingBot-VA video-action world model.
     HY_VLA,     ///< Tencent Hy-Embodied-0.5-VLA dual-tower flow policy.
 };
@@ -82,77 +75,23 @@ public:
 };
 
 /**
- * @brief Build a SmolVLA model from its mmproj and checkpoint GGUFs.
+ * @brief Build a pi0.5 model from its mmproj and checkpoint GGUFs.
  * @param mmproj_path Path to the vision-tower GGUF.
  * @param ckpt_path   Path to the LM + action-expert GGUF.
  * @param config_path Optional JSON override; pass empty to use bundled config.
  * @return Owning pointer to the constructed model.
- */
-std::unique_ptr<ModelArchBase> smolvla_create(const std::string& mmproj_path,
-                                              const std::string& ckpt_path,
-                                              const std::string& config_path);
-
-/**
- * @brief Build a pi0 model from its mmproj and checkpoint GGUFs.
- * @copydetails smolvla_create
- */
-std::unique_ptr<ModelArchBase> pi0_create(const std::string& mmproj_path,
-                                          const std::string& ckpt_path,
-                                          const std::string& config_path);
-
-/**
- * @brief Build a pi0.5 model from its mmproj and checkpoint GGUFs.
- * @copydetails smolvla_create
  */
 std::unique_ptr<ModelArchBase> pi05_create(const std::string& mmproj_path,
                                            const std::string& ckpt_path,
                                            const std::string& config_path);
 
 /**
- * @brief Build an Evo-1 model. Vision is baked into @p ckpt_path; pass
- *        an empty @p mmproj_path.
- * @copydetails smolvla_create
- */
-std::unique_ptr<ModelArchBase> evo1_create(const std::string& mmproj_path,
-                                           const std::string& ckpt_path,
-                                           const std::string& config_path);
-
-/**
- * @brief Build a GR00T N1.5 model. Vision is baked into @p ckpt_path.
- * @copydetails smolvla_create
- */
-std::unique_ptr<ModelArchBase> gr00t_n1_5_create(const std::string& mmproj_path,
-                                                 const std::string& ckpt_path,
-                                                 const std::string& config_path);
-
-/**
- * @brief Build a GR00T N1.6 model. Vision is baked into @p ckpt_path.
- * @copydetails smolvla_create
- */
-std::unique_ptr<ModelArchBase> gr00t_n1_6_create(const std::string& mmproj_path,
-                                                 const std::string& ckpt_path,
-                                                 const std::string& config_path);
-
-/**
- * @brief Build a GR00T N1.7 model. Vision is baked into @p ckpt_path.
- * @copydetails smolvla_create
- */
-std::unique_ptr<ModelArchBase> gr00t_n1_7_create(const std::string& mmproj_path,
-                                                 const std::string& ckpt_path,
-                                                 const std::string& config_path);
-
-/**
- * @brief Build a BitVLA model. Vision is baked into @p ckpt_path.
- * @copydetails smolvla_create
- */
-std::unique_ptr<ModelArchBase> bitvla_create(const std::string& mmproj_path,
-                                             const std::string& ckpt_path,
-                                             const std::string& config_path);
-
-/**
  * @brief Build a LingBot-VA model. Vision/text/world-model weights are
  *        planned to be bundled in @p ckpt_path.
- * @copydetails smolvla_create
+ * @param mmproj_path Ignored for LingBot-VA.
+ * @param ckpt_path   Path to the LingBot-VA transformer GGUF.
+ * @param config_path Optional JSON override; pass empty to use bundled config.
+ * @return Owning pointer to the constructed model.
  */
 std::unique_ptr<ModelArchBase> lingbot_va_create(const std::string& mmproj_path,
                                                  const std::string& ckpt_path,
@@ -160,7 +99,10 @@ std::unique_ptr<ModelArchBase> lingbot_va_create(const std::string& mmproj_path,
 
 /**
  * @brief Build a HY-VLA model. Full model weights are bundled in @p ckpt_path.
- * @copydetails smolvla_create
+ * @param mmproj_path Ignored for HY-VLA.
+ * @param ckpt_path   Path to the HY-VLA GGUF.
+ * @param config_path Optional JSON override; pass empty to use bundled config.
+ * @return Owning pointer to the constructed model.
  */
 std::unique_ptr<ModelArchBase> hy_vla_create(const std::string& mmproj_path,
                                              const std::string& ckpt_path,
