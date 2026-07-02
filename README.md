@@ -4,6 +4,17 @@
   <img src="assets/20260622-145312.png" alt="embodied.cpp overview" width="100%">
 </p>
 
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.md)
+<!-- Reserved for future badges:
+[![GitHub stars](https://img.shields.io/github/stars/SEU-PAISys/Embodied.cpp?style=social)](#)
+[![GitHub forks](https://img.shields.io/github/forks/SEU-PAISys/Embodied.cpp?style=social)](#)
+[![GitHub issues](https://img.shields.io/github/issues/SEU-PAISys/Embodied.cpp)](#)
+[![Last commit](https://img.shields.io/github/last-commit/SEU-PAISys/Embodied.cpp)](#)
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-coming_soon-yellow)](#)
+[![arXiv](https://img.shields.io/badge/arXiv-coming_soon-b31b1b)](#)
+[![Trending #1](https://img.shields.io/badge/Trending-%231-lightgrey)](#)
+-->
+
 `Embodied.cpp` is an inference runtime for **embodied AI models** — Vision-Language-Action (VLA) and World-Action Models (WAM) that let robots perceive and act in the real world. It runs these models efficiently on heterogeneous hardware (CPU / CUDA GPU / NPU) using GGUF weights, and ships ready-to-use servers and evaluation clients.
 
 ---
@@ -12,9 +23,7 @@
 
 - [embodied.cpp](#embodiedcpp)
   - [Table of Contents](#table-of-contents)
-  - [Supported Models](#supported-models)
-    - [VLA Models](#vla-models)
-    - [World-Action Models](#world-action-models)
+  - [Supported Models and Roadmap](#supported-models-and-roadmap)
   - [Quick Start](#quick-start)
     - [1. Prepare dependencies](#1-prepare-dependencies)
     - [2. Build](#2-build)
@@ -31,34 +40,24 @@
 
 ---
 
-## Supported Models
+## Supported Models and Roadmap
 
-### VLA Models
+The table below summarizes the models that `Embodied.cpp` already supports and the model families we plan to support next. For a more detailed taxonomy and the original architectural categorization, please refer to our technical report.
 
-VLA models take sensor images and language instructions as input and output robot action commands directly.
-
-| Model | Status | What it does |
-|---|:---:|---|
-| **[pi0.5](https://github.com/Physical-Intelligence/openpi)** | ✅ | PaliGemma-based policy — great starting point for experimentation |
-| **[HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA)** | ✅ | Hunyuan dual-tower vision-language model with action head; supports RoboTwin dual-arm evaluation |
-| [StarVLA](https://github.com/starVLA/starVLA) | 🚧 | Modular backbone with swappable action heads (coming soon) |
-| [OpenVLA](https://github.com/openvla/openvla) | 🚧 | 7B open VLA with Llama 2 + DINOv2/SigLIP features (coming soon) |
-| [Qwen-VLA](https://github.com/QwenLM/Qwen-VLA) | 🚧 | Qwen3.5-4B backbone with DiT flow-matching action decoder (coming soon) |
-
-### World-Action Models
-
-World-Action models predict future video or latent trajectories as part of planning actions — they reason about "what happens next" before deciding what to do.
-
-| Model | Status | What it does |
-|---|:---:|---|
-| **[LingBot-VA](https://github.com/robbyant/lingbot-vla)** | ✅ | Video-action model with VAE bridge — evaluated on LIBERO task suites |
-| [DreamZero](https://dreamzero0.github.io/) | 🚧 | 14B video-diffusion world model for zero-shot policies (coming soon) |
-| [UnifoLM-WMA-0](https://github.com/unitreerobotics/unifolm-world-model-action) | 🚧 | Multi-embodiment robot learning with world-model action head (coming soon) |
-| [Being-H0.7](https://research.beingbeyond.com/being-h07) | 🚧 | Latent world-action model with future-aware reasoning (coming soon) |
-| [FastWAM](https://yuantianyuan01.github.io/FastWAM/) | 🚧 | Fast WAM that skips test-time future generation for speed (coming soon) |
+| Family | Subtype | Implemented | Planned |
+|---|---|---|---|
+| VLA | AR-Token VLA | - | [OpenVLA](https://github.com/openvla/openvla), [RT-2](https://arxiv.org/abs/2307.15818)$\dagger$ |
+| VLA | VLM-Backboned VLA | [pi0.5](https://github.com/Physical-Intelligence/openpi), [HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA) | [Octo](https://github.com/octo-models/octo), [MuseVLA](https://arxiv.org/abs/2606.17598)$\dagger$ |
+| VLA | Hierarchical VLA | - | [Hi Robot](https://arxiv.org/abs/2502.19417), [GeneralVLA](https://github.com/AIGeeksGroup/GeneralVLA-2), [RT-H](https://arxiv.org/abs/2403.01823)$\dagger$, [Gemini Robotics 1.5](https://arxiv.org/abs/2510.03342)$\dagger$ |
+| VLA | Asynchronous VLA | - | [GR00T N1](https://developer.nvidia.com/isaac/gr00t), [Fast-in-Slow](https://github.com/CHEN-H01/Fast-in-Slow), [DAM-VLA](https://arxiv.org/abs/2606.12105)$\dagger$ |
+| WAM | Predict-then-Act WAM | - | [UniPi](https://github.com/flow-diffusion/AVDC_experiments/) |
+| WAM | Unified AR-Modeling WAM | [LingBot-VA](https://github.com/robbyant/lingbot-va) | [WorldVLA](https://github.com/alibaba-damo-academy/RynnVLA-002) |
+| WAM | Shared-Backbone WAM | - | [DreamZero](https://github.com/dreamzero0/dreamzero), [FastWAM](https://github.com/yuantianyuan01/FastWAM), [Cosmos Policy](https://github.com/nvlabs/cosmos-policy), [UWM](https://github.com/ShuangLI59/unified_video_action) |
+| WAM | Latent-space WAM | - | [LaWAM](https://arxiv.org/abs/2606.15768)$\dagger$, [Being-H0.7](https://github.com/BeingBeyond/Being-H) |
 
 ---
 
+$\dagger$ We plan to support this model once it is open sourcece :)
 ## Quick Start
 
 ### 1. Prepare dependencies
