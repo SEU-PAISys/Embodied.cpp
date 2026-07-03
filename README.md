@@ -1,17 +1,17 @@
-# embodied.cpp
+# Embodied.cpp
 
 <p align="center">
   <img src="assets/20260622-145312.png" alt="embodied.cpp overview" width="100%">
 </p>
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.md)
+[![arXiv](https://img.shields.io/badge/arXiv-2607.02501-b31b1b.svg)](https://arxiv.org/abs/2607.02501)
 <!-- Reserved for future badges:
 [![GitHub stars](https://img.shields.io/github/stars/SEU-PAISys/Embodied.cpp?style=social)](#)
 [![GitHub forks](https://img.shields.io/github/forks/SEU-PAISys/Embodied.cpp?style=social)](#)
 [![GitHub issues](https://img.shields.io/github/issues/SEU-PAISys/Embodied.cpp)](#)
 [![Last commit](https://img.shields.io/github/last-commit/SEU-PAISys/Embodied.cpp)](#)
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-coming_soon-yellow)](#)
-[![arXiv](https://img.shields.io/badge/arXiv-coming_soon-b31b1b)](#)
 [![Trending #1](https://img.shields.io/badge/Trending-%231-lightgrey)](#)
 -->
 
@@ -21,7 +21,7 @@
 
 ## Table of Contents
 
-- [embodied.cpp](#embodiedcpp)
+- [Embodied.cpp](#embodiedcpp)
   - [Table of Contents](#table-of-contents)
   - [Supported Models and Roadmap](#supported-models-and-roadmap)
   - [Quick Start](#quick-start)
@@ -35,6 +35,7 @@
     - [RoboTwin](#robotwin)
   - [Convert Your Own Model](#convert-your-own-model)
   - [Project Structure](#project-structure)
+  - [Citation](#citation)
   - [License](#license)
   - [Acknowledgements](#acknowledgements)
 
@@ -210,6 +211,23 @@ What lives where, in plain language:
 | `tools/` | Local debug utilities |
 | `patches/` | Third-party code patches applied during setup |
 | `eval/` | Evaluation clients and simulation setups (LIBERO, RoboTwin) |
+
+---
+
+## Citation
+
+If you find `Embodied.cpp` useful in your research, please consider citing:
+
+```bibtex
+@article{xu2026embodiedcpp,
+  title={Embodied.cpp: A Portable Inference Runtime of Embodied AI Models on Heterogeneous Robots},
+  author={Xu, Ling and Han, Chuyu and Li, Borui and Wu, Hao and Jiang, Shiqi and Cao, Ting and Li, Chuanyou and Zhong, Sheng and Wang, Shuai},
+  journal={arXiv preprint arXiv:2607.02501},
+  year={2026},
+  doi={10.48550/arXiv.2607.02501},
+  url={https://arxiv.org/abs/2607.02501}
+}
+```
 
 ---
 
