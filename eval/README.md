@@ -17,7 +17,7 @@ Important paths:
 
 - `client/`: direct and server-backed evaluation clients.
 - `client/lingbot_world_client.py`: ZeroMQ/Protobuf client for
-  `lingbot-world-server`.
+  `wam-lingbot-server`.
 - `sim/libero/`: LIBERO setup and local runtime.
 - `sim/robotwin/`: RoboTwin setup and HY-VLA native evaluation path.
 - `../adapter/sim/libero.py`: LIBERO typed I/O adapter.

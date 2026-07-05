@@ -35,7 +35,40 @@ class LingBotLIBEROParser:
         return np.asarray(action[:7], dtype=np.float32)
 
 
+class Pi05LIBEROParser:
+    def parse_observation(self, obs: dict[str, Any]) -> dict[str, Any]:
+        images = obs.get("pixels", {})
+        proprio = _extract_pi05_libero_state(obs)
+        task = str(obs.get("task_description", ""))
+        model_inputs = {
+            "observation.images.image": _to_chw_float01(images["image"]),
+            "observation.state": proprio,
+            "task": task,
+        }
+        if "image2" in images:
+            model_inputs["observation.images.image2"] = _to_chw_float01(images["image2"])
+        return model_inputs
+
+    def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
+        pixels = obs.get("pixels", {})
+        images = []
+        for key in ("image", "image2"):
+            if key in pixels:
+                images.append(ImageStream(key, np.asarray(pixels[key]), layout="HWC"))
+        return EmbodiedObservation(
+            instruction=str(obs.get("task_description", "")),
+            images=images,
+            proprioception=TensorStream("libero_state", _extract_pi05_libero_state(obs)),
+            model_inputs=self.parse_observation(obs),
+            raw=obs,
+        )
+
+    def parse_action(self, action: np.ndarray) -> np.ndarray:
+        return np.asarray(action[:7], dtype=np.float32)
+
+
 LIBERO_PARSER_REGISTRY = {
+    "pi05": Pi05LIBEROParser,
     "lingbot_va": LingBotLIBEROParser,
 }
 
@@ -72,6 +105,25 @@ def _extract_libero_state(obs: dict[str, Any]) -> np.ndarray:
     qpos = np.asarray(gripper.get("qpos", np.zeros(1)), dtype=np.float32).reshape(-1)
     grip = qpos[:1] if qpos.size else np.zeros(1, dtype=np.float32)
     return np.concatenate([pos, _quat2axisangle(quat).astype(np.float32), grip]).astype(np.float32)
+
+
+def _extract_pi05_libero_state(obs: dict[str, Any]) -> np.ndarray:
+    robot_state = obs.get("robot_state", {})
+    eef = robot_state.get("eef", {})
+    gripper = robot_state.get("gripper", {})
+    pos = np.asarray(eef.get("pos", np.zeros(3)), dtype=np.float32).reshape(-1)[:3]
+    quat = np.asarray(eef.get("quat", np.array([0, 0, 0, 1])), dtype=np.float64).reshape(-1)[:4]
+    qpos = np.asarray(gripper.get("qpos", np.zeros(2)), dtype=np.float32).reshape(-1)
+    grip = np.zeros(2, dtype=np.float32)
+    grip[: min(2, qpos.size)] = qpos[:2]
+    return np.concatenate([pos, _quat2axisangle(quat).astype(np.float32), grip]).astype(np.float32)
+
+
+def _to_chw_float01(image: Any) -> np.ndarray:
+    arr = np.asarray(image, dtype=np.float32)
+    if arr.ndim != 3 or arr.shape[-1] != 3:
+        raise ValueError(f"expected HWC image with 3 channels, got {arr.shape}")
+    return np.transpose(arr / 255.0, (2, 0, 1)).astype(np.float32, copy=False)
 
 
 def _quat2axisangle(quat: np.ndarray) -> np.ndarray:

@@ -19,10 +19,10 @@ from safetensors import safe_open
 
 import gguf
 
-
-PFX = "model.paligemma_with_expert.paligemma.model"
-VE = f"{PFX}.vision_tower.vision_model"
-MM = f"{PFX}.multi_modal_projector.linear"
+PFX_CANDIDATES = [
+    "model.paligemma_with_expert.paligemma.model",
+    "paligemma_with_expert.paligemma.model",
+]
 
 
 def _bf16_to_u16_bytes(t: torch.Tensor) -> np.ndarray:
@@ -33,6 +33,13 @@ def _bf16_to_u16_bytes(t: torch.Tensor) -> np.ndarray:
 
 def _f32_np(t: torch.Tensor) -> np.ndarray:
     return t.to(torch.float32).contiguous().cpu().numpy()
+
+
+def _pick_prefix(keys: set[str], candidates: list[str], probe_suffix: str) -> str:
+    for prefix in candidates:
+        if f"{prefix}.{probe_suffix}" in keys:
+            return prefix
+    raise SystemExit(f"cannot resolve checkpoint prefix for {probe_suffix!r}")
 
 
 def _add_tensor(writer: gguf.GGUFWriter, name: str, t: torch.Tensor, *,
@@ -91,6 +98,12 @@ def main() -> int:
     writer.add_file_type(gguf.LlamaFileType.MOSTLY_BF16)
 
     with safe_open(str(sf_path), framework="pt") as sf:
+        keys = set(sf.keys())
+        pfx = _pick_prefix(keys, PFX_CANDIDATES,
+                           "vision_tower.vision_model.embeddings.patch_embedding.weight")
+        ve = f"{pfx}.vision_tower.vision_model"
+        mm = f"{pfx}.multi_modal_projector.linear"
+
         def get(name: str) -> torch.Tensor:
             return sf.get_tensor(name)
 
@@ -99,15 +112,15 @@ def main() -> int:
         # PaliGemma projector is just Linear(weight, bias), so fold the inverse
         # scale into the exported tensors without changing third_party code.
         proj_scale = math.sqrt(2048.0)
-        _add_tensor(writer, "mm.input_projection.bias",   get(f"{MM}.bias").to(torch.float32) * proj_scale)
-        _add_tensor(writer, "mm.input_projection.weight", get(f"{MM}.weight") * proj_scale)
+        _add_tensor(writer, "mm.input_projection.bias",   get(f"{mm}.bias").to(torch.float32) * proj_scale)
+        _add_tensor(writer, "mm.input_projection.weight", get(f"{mm}.weight") * proj_scale)
 
-        _add_tensor(writer, "v.patch_embd.bias",      get(f"{VE}.embeddings.patch_embedding.bias"))
-        _add_tensor(writer, "v.patch_embd.weight",    get(f"{VE}.embeddings.patch_embedding.weight"))
-        _add_tensor(writer, "v.position_embd.weight", get(f"{VE}.embeddings.position_embedding.weight"))
+        _add_tensor(writer, "v.patch_embd.bias",      get(f"{ve}.embeddings.patch_embedding.bias"))
+        _add_tensor(writer, "v.patch_embd.weight",    get(f"{ve}.embeddings.patch_embedding.weight"))
+        _add_tensor(writer, "v.position_embd.weight", get(f"{ve}.embeddings.position_embedding.weight"))
 
         for i in range(27):
-            src = f"{VE}.encoder.layers.{i}"
+            src = f"{ve}.encoder.layers.{i}"
             dst = f"v.blk.{i}"
             _add_tensor(writer, f"{dst}.ln1.bias",         get(f"{src}.layer_norm1.bias").to(torch.float32))
             _add_tensor(writer, f"{dst}.ln1.weight",       get(f"{src}.layer_norm1.weight").to(torch.float32))
@@ -126,8 +139,8 @@ def main() -> int:
             _add_tensor(writer, f"{dst}.attn_v.bias",      get(f"{src}.self_attn.v_proj.bias").to(torch.float32))
             _add_tensor(writer, f"{dst}.attn_v.weight",    get(f"{src}.self_attn.v_proj.weight"))
 
-        _add_tensor(writer, "v.post_ln.bias",   get(f"{VE}.post_layernorm.bias").to(torch.float32))
-        _add_tensor(writer, "v.post_ln.weight", get(f"{VE}.post_layernorm.weight").to(torch.float32))
+        _add_tensor(writer, "v.post_ln.bias",   get(f"{ve}.post_layernorm.bias").to(torch.float32))
+        _add_tensor(writer, "v.post_ln.weight", get(f"{ve}.post_layernorm.weight").to(torch.float32))
 
     writer.write_header_to_file()
     writer.write_kv_data_to_file()

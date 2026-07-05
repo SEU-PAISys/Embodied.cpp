@@ -112,15 +112,33 @@ Model* model_load(const std::string& mmproj_path, const std::string& ckpt_path,
     switch (arch) {
         case Arch::PI05:
             std::printf("vla: arch = pi05\n");
+#if MODEL_BUILD_VLA_PI05
             impl = pi05_create(mmproj_path, ckpt_path, config_path);
+#else
+            std::fprintf(stderr,
+                         "vla: pi0.5 support was not built into this binary "
+                         "(reconfigure with -DMODEL_BUILD_VLA_PI05=ON)\n");
+#endif
             break;
         case Arch::LINGBOT_VA:
             std::printf("vla: arch = lingbot_va\n");
+#if MODEL_BUILD_WAM_LINGBOT_VA
             impl = lingbot_va_create(mmproj_path, ckpt_path, config_path);
+#else
+            std::fprintf(stderr,
+                         "vla: LingBot-VA support was not built into this binary "
+                         "(reconfigure with -DMODEL_BUILD_WAM_LINGBOT_VA=ON)\n");
+#endif
             break;
         case Arch::HY_VLA:
             std::printf("vla: arch = hy_vla\n");
+#if MODEL_BUILD_VLA_HY_VLA
             impl = hy_vla_create(mmproj_path, ckpt_path, config_path);
+#else
+            std::fprintf(stderr,
+                         "vla: HY-VLA support was not built into this binary "
+                         "(reconfigure with -DMODEL_BUILD_VLA_HY_VLA=ON)\n");
+#endif
             break;
     }
     if (!impl) return nullptr;

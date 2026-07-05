@@ -45,6 +45,7 @@ CMakeUserPresets.json
 *.gguf
 *.bin
 *.safetensors
+*.incomplete
 *.pt
 *.pth
 *.ckpt

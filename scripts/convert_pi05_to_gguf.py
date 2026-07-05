@@ -29,10 +29,22 @@ import gguf
 ARCH = "pi05"
 KV = lambda name: f"{ARCH}.{name}"
 
-PFX_VLM  = "model.paligemma_with_expert.paligemma.model.language_model"
-PFX_VLM_HEAD = "model.paligemma_with_expert.paligemma.lm_head.weight"
-PFX_AEX  = "model.paligemma_with_expert.gemma_expert.model"
-PFX_PROJ = "model"
+PFX_VLM_CANDIDATES = [
+    "model.paligemma_with_expert.paligemma.model.language_model",
+    "paligemma_with_expert.paligemma.model.language_model",
+]
+PFX_VLM_HEAD_CANDIDATES = [
+    "model.paligemma_with_expert.paligemma.lm_head.weight",
+    "paligemma_with_expert.paligemma.lm_head.weight",
+]
+PFX_AEX_CANDIDATES = [
+    "model.paligemma_with_expert.gemma_expert.model",
+    "paligemma_with_expert.gemma_expert.model",
+]
+PFX_PROJ_CANDIDATES = [
+    "model",
+    "",
+]
 
 GEMMA_2B   = dict(hidden=2048, n_q_heads=8, n_kv_heads=1, head_dim=256, intermediate=16384)
 GEMMA_300M = dict(expert_h=1024, expert_inter=4096)
@@ -49,6 +61,16 @@ def _bf16_to_u16_bytes(t: torch.Tensor) -> np.ndarray:
 def _f32_np(t: torch.Tensor) -> np.ndarray:
     assert t.dtype == torch.float32, t.dtype
     return t.contiguous().cpu().numpy()
+
+def _join_key(prefix: str, suffix: str) -> str:
+    return f"{prefix}.{suffix}" if prefix else suffix
+
+def _pick_prefix(keys: set[str], candidates: list[str], probe_suffix: str) -> str:
+    for prefix in candidates:
+        probe = _join_key(prefix, probe_suffix) if probe_suffix else prefix
+        if probe in keys:
+            return prefix
+    raise SystemExit(f"cannot resolve checkpoint prefix for {probe_suffix or candidates[0]!r}")
 
 def _add_one_tensor(writer: gguf.GGUFWriter, dst_name: str, t: torch.Tensor) -> None:
 
@@ -320,8 +342,13 @@ def main() -> int:
                     pass
         return m + 1
 
-    n_layers_vlm = _maxlayer(f"{PFX_VLM}.layers.")
-    n_layers_aex = _maxlayer(f"{PFX_AEX}.layers.")
+    pfx_vlm = _pick_prefix(keys, PFX_VLM_CANDIDATES, "layers.0.self_attn.q_proj.weight")
+    pfx_vlm_head = _pick_prefix(keys, PFX_VLM_HEAD_CANDIDATES, "")
+    pfx_aex = _pick_prefix(keys, PFX_AEX_CANDIDATES, "layers.0.self_attn.q_proj.weight")
+    pfx_proj = _pick_prefix(keys, PFX_PROJ_CANDIDATES, "action_in_proj.weight")
+
+    n_layers_vlm = _maxlayer(f"{pfx_vlm}.layers.")
+    n_layers_aex = _maxlayer(f"{pfx_aex}.layers.")
     if n_layers_vlm <= 0:
         raise SystemExit("cannot find PaliGemma language-model layers in checkpoint")
     if n_layers_aex != n_layers_vlm:
@@ -329,9 +356,9 @@ def main() -> int:
                          f"(pi0.5 expects them equal)")
     cfg["n_layers"] = n_layers_vlm
 
-    q0  = sf.get_slice(f"{PFX_VLM}.layers.0.self_attn.q_proj.weight").get_shape()
-    kv0 = sf.get_slice(f"{PFX_VLM}.layers.0.self_attn.k_proj.weight").get_shape()
-    gate0 = sf.get_slice(f"{PFX_VLM}.layers.0.mlp.gate_proj.weight").get_shape()
+    q0  = sf.get_slice(f"{pfx_vlm}.layers.0.self_attn.q_proj.weight").get_shape()
+    kv0 = sf.get_slice(f"{pfx_vlm}.layers.0.self_attn.k_proj.weight").get_shape()
+    gate0 = sf.get_slice(f"{pfx_vlm}.layers.0.mlp.gate_proj.weight").get_shape()
     if q0[1] != cfg["hidden"]:
         raise SystemExit(f"hidden mismatch: cfg={cfg['hidden']} ckpt={q0[1]}")
     if q0[0] != cfg["n_q_heads"] * cfg["head_dim"]:
@@ -341,23 +368,23 @@ def main() -> int:
     if gate0[0] != cfg["intermediate"]:
         raise SystemExit(f"intermediate mismatch: cfg={cfg['intermediate']} ckpt={gate0[0]}")
 
-    aex_gate0 = sf.get_slice(f"{PFX_AEX}.layers.0.mlp.gate_proj.weight").get_shape()
+    aex_gate0 = sf.get_slice(f"{pfx_aex}.layers.0.mlp.gate_proj.weight").get_shape()
     if aex_gate0[1] != cfg["expert_h"]:
         raise SystemExit(f"expert_h mismatch: cfg={cfg['expert_h']} ckpt={aex_gate0[1]}")
     if aex_gate0[0] != cfg["expert_inter"]:
         raise SystemExit(f"expert_inter mismatch: cfg={cfg['expert_inter']} ckpt={aex_gate0[0]}")
-    aex_o0 = sf.get_slice(f"{PFX_AEX}.layers.0.self_attn.o_proj.weight").get_shape()
+    aex_o0 = sf.get_slice(f"{pfx_aex}.layers.0.self_attn.o_proj.weight").get_shape()
     if aex_o0 != [cfg["expert_h"], cfg["n_q_heads"] * cfg["head_dim"]]:
         raise SystemExit(f"expert o_proj shape {aex_o0} != [expert_h, n_q*head_dim] "
                          f"{[cfg['expert_h'], cfg['n_q_heads']*cfg['head_dim']]}")
 
     # AdaRMSNorm dense modulators must project expert_h -> 3*expert_h.
-    adarms0 = sf.get_slice(f"{PFX_AEX}.layers.0.input_layernorm.dense.weight").get_shape()
+    adarms0 = sf.get_slice(f"{pfx_aex}.layers.0.input_layernorm.dense.weight").get_shape()
     if adarms0 != [3 * cfg["expert_h"], cfg["expert_h"]]:
         raise SystemExit(f"expert AdaRMS dense shape {adarms0} != "
                          f"{[3 * cfg['expert_h'], cfg['expert_h']]}")
 
-    head_w = sf.get_slice(PFX_VLM_HEAD).get_shape()
+    head_w = sf.get_slice(pfx_vlm_head).get_shape()
     if head_w[1] != cfg["hidden"]:
         raise SystemExit(f"lm_head hidden mismatch: cfg={cfg['hidden']} ckpt={head_w[1]}")
     cfg["vocab_size"] = int(head_w[0])
@@ -379,18 +406,18 @@ def main() -> int:
     writer = gguf.GGUFWriter(str(out), arch=ARCH)
     _add_kv(writer, cfg)
 
-    _add_one_tensor(writer, "token_embd.weight",      sf.get_tensor(PFX_VLM_HEAD))
-    _add_one_tensor(writer, "vlm.output_norm.weight", sf.get_tensor(f"{PFX_VLM}.norm.weight"))
-    _stream_block(writer, sf, PFX_VLM, "vlm", cfg["n_layers"])
+    _add_one_tensor(writer, "token_embd.weight",      sf.get_tensor(pfx_vlm_head))
+    _add_one_tensor(writer, "vlm.output_norm.weight", sf.get_tensor(f"{pfx_vlm}.norm.weight"))
+    _stream_block(writer, sf, pfx_vlm, "vlm", cfg["n_layers"])
 
-    _add_one_tensor(writer, "aex.output_norm.dense.weight", sf.get_tensor(f"{PFX_AEX}.norm.dense.weight"))
-    _add_one_tensor(writer, "aex.output_norm.dense.bias",   sf.get_tensor(f"{PFX_AEX}.norm.dense.bias"))
-    _stream_adarms_block(writer, sf, PFX_AEX, "aex", cfg["n_layers"])
+    _add_one_tensor(writer, "aex.output_norm.dense.weight", sf.get_tensor(f"{pfx_aex}.norm.dense.weight"))
+    _add_one_tensor(writer, "aex.output_norm.dense.bias",   sf.get_tensor(f"{pfx_aex}.norm.dense.bias"))
+    _stream_adarms_block(writer, sf, pfx_aex, "aex", cfg["n_layers"])
 
     # pi0.5 embeds state in text, so there is no state_proj in the runtime path.
     for suf in ["action_in_proj.weight", "action_in_proj.bias",
                 "action_out_proj.weight", "action_out_proj.bias"]:
-        _add_one_tensor(writer, suf, sf.get_tensor(f"{PFX_PROJ}.{suf}"))
+        _add_one_tensor(writer, suf, sf.get_tensor(_join_key(pfx_proj, suf)))
     for src, dst in [
         ("time_mlp_in.weight",  "time_mlp_in.weight"),
         ("time_mlp_in.bias",    "time_mlp_in.bias"),
@@ -399,9 +426,9 @@ def main() -> int:
     ]:
         # Some converted LeRobot checkpoints keep the older pi0 key prefix;
         # normalize it here so C++ only has one set of tensor names to load.
-        src_key = f"{PFX_PROJ}.{src}"
+        src_key = _join_key(pfx_proj, src)
         if src_key not in keys:
-            src_key = f"{PFX_PROJ}.{src.replace('time_mlp_', 'action_time_mlp_')}"
+            src_key = _join_key(pfx_proj, src.replace('time_mlp_', 'action_time_mlp_'))
         _add_one_tensor(writer, dst, sf.get_tensor(src_key))
 
     for k, v in stats.items():

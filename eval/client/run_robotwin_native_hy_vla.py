@@ -115,14 +115,14 @@ def _wait_server_ready(proc: subprocess.Popen, log_path: Path, timeout_s: int) -
     while time.time() < deadline:
         if proc.poll() is not None:
             tail = log_path.read_text(errors="replace")[-4000:] if log_path.exists() else ""
-            raise RuntimeError(f"vla-server exited early with code {proc.returncode}\n{tail}")
+            raise RuntimeError(f"vla-hy-vla-server exited early with code {proc.returncode}\n{tail}")
         if log_path.exists():
             text = log_path.read_text(errors="replace")
             last = text[-4000:]
             if "ready." in text:
                 return
         time.sleep(1)
-    raise TimeoutError(f"vla-server did not become ready within {timeout_s}s\n{last}")
+    raise TimeoutError(f"vla-hy-vla-server did not become ready within {timeout_s}s\n{last}")
 
 
 def _image_chw(img: Any) -> np.ndarray:
@@ -481,7 +481,7 @@ def main() -> None:
     ap.add_argument("--model", default="/home/xuling/robotic_dataset/models/hy_vla_full_bf16_vlmvisionstable.gguf")
     ap.add_argument("--tokenizer", default="/home/xuling/robotic_dataset/HY-VLA")
     ap.add_argument("--robotwin-root", default=str(REPO_ROOT / "eval/sim/robotwin/RoboTwin"))
-    ap.add_argument("--server-bin", default=str(REPO_ROOT / "build/vla-server"))
+    ap.add_argument("--server-bin", default=str(REPO_ROOT / "build/vla-hy-vla-server"))
     ap.add_argument("--addr", default="tcp://127.0.0.1:5555")
     ap.add_argument("--bind", default="tcp://*:5555")
     ap.add_argument("--task-name", default="place_empty_cup")
@@ -527,9 +527,9 @@ def main() -> None:
     ap.add_argument("--start-server-after-env", action="store_true",
                     help="Initialize RoboTwin/curobo before loading the HY-VLA server.")
     ap.add_argument("--hy-vla-text-layers", default="32",
-                    help="Resident HY-VLA VLM text layers loaded by vla-server; use 32 for full HY-VLA.")
+                    help="Resident HY-VLA VLM text layers loaded by vla-hy-vla-server; use 32 for full HY-VLA.")
     ap.add_argument("--hy-vla-vision-layers", default="all",
-                    help="HyViT2 visual frontend layers loaded by vla-server; use all for full HY-VLA.")
+                    help="HyViT2 visual frontend layers loaded by vla-hy-vla-server; use all for full HY-VLA.")
     ap.add_argument("--hy-vla-vision-cpu-sideload", action=argparse.BooleanOptionalAction, default=False,
                     help="Load the HyViT2 visual frontend on CPU. Default is CUDA vision; use this only when CUDA vision does not fit.")
     ap.add_argument("--hy-vla-cuda-oom-fallback-cpu", action=argparse.BooleanOptionalAction, default=True,
@@ -537,7 +537,7 @@ def main() -> None:
     ap.add_argument("--action-noise-mode", choices=["server", "zero", "torch_cuda_seed"], default="torch_cuda_seed",
                     help="HY-VLA flow initial noise. torch_cuda_seed mirrors the official Python seed-controlled CUDA torch noise.")
     ap.add_argument("--noise-chunk-size", type=int, default=0,
-                    help="Noise sequence length sent to vla-server. 0 uses 2 * action_chunk_size for rel_abs/abs_only, else action_chunk_size.")
+                    help="Noise sequence length sent to vla-hy-vla-server. 0 uses 2 * action_chunk_size for rel_abs/abs_only, else action_chunk_size.")
     ap.add_argument("--noise-action-dim", type=int, default=32,
                     help="HY-VLA max_action_dim for flow noise.")
     ap.add_argument("--dump-action-dir", default=None,
@@ -545,7 +545,7 @@ def main() -> None:
     ap.add_argument("--clear-cache-each-episode", action=argparse.BooleanOptionalAction, default=True,
                     help="Close each RoboTwin episode with SAPIEN cache cleanup and clear Python torch CUDA cache.")
     ap.add_argument("--stop-server-between-episodes", action=argparse.BooleanOptionalAction, default=False,
-                    help="Free vla-server GPU memory between episodes before the next RoboTwin expert seed search.")
+                    help="Free vla-hy-vla-server GPU memory between episodes before the next RoboTwin expert seed search.")
     ap.add_argument("--debug-seed-search", action="store_true",
                     help="Print per-candidate expert seed search status and exceptions.")
     args = ap.parse_args()

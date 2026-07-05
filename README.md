@@ -1,4 +1,4 @@
-# Embodied.cpp
+# Embodied.cpp 🤖
 
 <p align="center">
   <img src="assets/20260622-145312.png" alt="embodied.cpp overview" width="100%">
@@ -6,44 +6,48 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.md)
 [![arXiv](https://img.shields.io/badge/arXiv-2607.02501-b31b1b.svg)](https://arxiv.org/abs/2607.02501)
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-SEU--PAISys%2FEmbodied.cpp-yellow)](https://huggingface.co/SEU-PAISys/Embodied.cpp)
 <!-- Reserved for future badges:
 [![GitHub stars](https://img.shields.io/github/stars/SEU-PAISys/Embodied.cpp?style=social)](#)
 [![GitHub forks](https://img.shields.io/github/forks/SEU-PAISys/Embodied.cpp?style=social)](#)
 [![GitHub issues](https://img.shields.io/github/issues/SEU-PAISys/Embodied.cpp)](#)
 [![Last commit](https://img.shields.io/github/last-commit/SEU-PAISys/Embodied.cpp)](#)
-[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-coming_soon-yellow)](#)
 [![Trending #1](https://img.shields.io/badge/Trending-%231-lightgrey)](#)
 -->
 
-`Embodied.cpp` is an inference runtime for **embodied AI models** — Vision-Language-Action (VLA) and World-Action Models (WAM) that let robots perceive and act in the real world. It runs these models efficiently on heterogeneous hardware (CPU / CUDA GPU / NPU) using GGUF weights, and ships ready-to-use servers and evaluation clients.
+`Embodied.cpp` is an inference runtime for **embodied AI models**: Vision-Language-Action (VLA) models and World-Action Models (WAMs) for robotic perception and control. It runs these models efficiently on heterogeneous hardware (CPU / CUDA GPU / NPU) using GGUF weights, and ships with ready-to-use servers and evaluation clients.
 
 ---
 
 ## Table of Contents
 
-- [Embodied.cpp](#embodiedcpp)
+- [Embodied.cpp 🤖](#embodiedcpp-)
   - [Table of Contents](#table-of-contents)
-  - [Supported Models and Roadmap](#supported-models-and-roadmap)
-  - [Quick Start](#quick-start)
-    - [1. Prepare dependencies](#1-prepare-dependencies)
-    - [2. Build](#2-build)
-    - [3. Start a server](#3-start-a-server)
-    - [4. Evaluate in simulation (example: LIBERO with LingBot-VA)](#4-evaluate-in-simulation-example-libero-with-lingbot-va)
-  - [Run a Server](#run-a-server)
-  - [Evaluate in Simulation](#evaluate-in-simulation)
-    - [LIBERO](#libero)
-    - [RoboTwin](#robotwin)
-  - [Convert Your Own Model](#convert-your-own-model)
-  - [Project Structure](#project-structure)
-  - [Citation](#citation)
-  - [License](#license)
-  - [Acknowledgements](#acknowledgements)
+  - [1. 🧭 Current Support and Roadmap](#1--current-support-and-roadmap)
+    - [1.1 Model Support Roadmap](#11-model-support-roadmap)
+    - [1.2 Runtime Roadmap](#12-runtime-roadmap)
+  - [2. 🚀 Quick Start](#2--quick-start)
+    - [2.1 Clone the Repo](#21-clone-the-repo)
+    - [2.2 Get GGUF Weights](#22-get-gguf-weights)
+    - [2.3 Install System Dependencies](#23-install-system-dependencies)
+    - [2.4 Build by Model and Backend](#24-build-by-model-and-backend)
+    - [2.5 Start a Server](#25-start-a-server)
+    - [2.6 Evaluate in Simulation](#26-evaluate-in-simulation)
+  - [3. 🧪 Evaluate in Simulation](#3--evaluate-in-simulation)
+    - [3.1 LIBERO](#31-libero)
+    - [3.2 RoboTwin](#32-robotwin)
+  - [4. 🔧 Convert Your Own Model](#4--convert-your-own-model)
+  - [5. 🗂️ Project Structure](#5-️-project-structure)
+  - [6. 📄 Citation](#6--citation)
+  - [7. ⚖️ License](#7-️-license)
+  - [8. 🙏 Acknowledgements](#8--acknowledgements)
 
 ---
 
-## Supported Models and Roadmap
+## 1. 🧭 Current Support and Roadmap
 
-The table below summarizes the models that `Embodied.cpp` already supports and the model families we plan to support next. For a more detailed taxonomy and the original architectural categorization, please refer to our technical report.
+### 1.1 Model Support Roadmap
+The table below summarizes the embodied AI model families that `Embodied.cpp` already supports and the ones we plan to support next. For a more detailed taxonomy and architectural discussion, please refer to our technical report.
 
 <!-- Backup of the previous table before removing non-open-source models:
 | Family | Subtype | Implemented | Planned |
@@ -59,7 +63,7 @@ The table below summarizes the models that `Embodied.cpp` already supports and t
 $\dagger$ We plan to support this model once it is open sourcece :)
 -->
 
-| Family | Subtype | Implemented | Planned |
+| Family | Subtype | Support ✅ | Planned 🚧 |
 |---|---|---|---|
 | VLA | AR-Token VLA | - | [OpenVLA](https://github.com/openvla/openvla) |
 | VLA | VLM-Backboned VLA | [pi0.5](https://github.com/Physical-Intelligence/openpi), [HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA) | [Octo](https://github.com/octo-models/octo) |
@@ -70,48 +74,194 @@ $\dagger$ We plan to support this model once it is open sourcece :)
 | WAM | Shared-Backbone WAM | - | [DreamZero](https://github.com/dreamzero0/dreamzero), [FastWAM](https://github.com/yuantianyuan01/FastWAM), [Cosmos Policy](https://github.com/nvlabs/cosmos-policy), [UWM](https://github.com/ShuangLI59/unified_video_action) |
 | WAM | Latent-space WAM | - | [Being-H0.7](https://github.com/BeingBeyond/Being-H) |
 
+### 1.2 Runtime Roadmap
+- This part of the project is still under active construction 🚧
+- [ ] A more modular and maintainable runtime architecture for `Embodied.cpp`
+- [ ] Additional inference optimizations, such as real-time chunking and VLA caching
+- [ ] More hardware backends, including Metal on macOS
 ---
 
-## Quick Start
+## 2. 🚀 Quick Start
 
-### 1. Prepare dependencies
+### 2.1 Clone the Repo
 
 ```bash
-# Clone the repo and fetch third-party code
 git clone <repo-url> && cd embodied.cpp
 ./patches/init_third_party.sh
 ```
 
-### 2. Build
+### 2.2 Get GGUF Weights
 
-**CPU-only:**
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target vla-server lingbot-world-server -j$(nproc)
+Pre-converted GGUF releases for `Embodied.cpp` are available on Hugging Face:
+
+- https://huggingface.co/SEU-PAISys/Embodied.cpp
+
+The repository currently hosts GGUF artifacts prepared for the current
+`Embodied.cpp` runtime, including:
+
+- `pi0.5`: main policy GGUF plus multimodal projector GGUF
+- `HY-VLA-0.5`: combined VLA GGUF for RoboTwin and related runtime paths
+- `LingBot-VA`: transformer GGUF and companion artifacts used by the LingBot path
+
+Recommended local layout:
+
+```text
+checkpoints/
+  pi05/
+    pi05.gguf
+    pi05-mmproj.gguf
+  hy_vla/
+    hy_vla.gguf
+  lingbot_va/
+    lingbot_transformer.gguf
+    ...
 ```
 
-**CUDA GPU:**
+You can also convert upstream checkpoints yourself with the scripts in
+[`scripts/`](scripts/), but for most users the Hugging Face GGUF releases are
+the fastest way to get started.
+
+### 2.3 Install System Dependencies
+
+Install the required system packages for your platform before building.
+
+**Linux:**
+Make sure `cmake`, `protobuf`, `zeromq`, and `cppzmq` are available from your package manager before building.
+
+**macOS (Apple Silicon, CPU-only verified for pi0.5):**
+```bash
+brew install cmake protobuf zeromq cppzmq
+```
+
+### 2.4 Build by Model and Backend
+
+Model switches default to `OFF`. Enable only the runtimes you need.
+
+**pi0.5, CPU-only:**
+
 ```bash
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
+  -DMODEL_BUILD_VLA_PI05=ON
+cmake --build build --target vla-pi05-server -j$(nproc)
+```
+
+**pi0.5 on macOS / Apple Silicon, CPU-only:**
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMODEL_BUILD_VLA_PI05=ON
+cmake --build build --target vla-pi05-server -j$(sysctl -n hw.logicalcpu)
+```
+
+**HY-VLA, CPU-only:**
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMODEL_BUILD_VLA_HY_VLA=ON
+cmake --build build --target vla-hy-vla-server hy-vla-direct-debug -j$(nproc)
+```
+
+**LingBot-VA, CPU-only:**
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMODEL_BUILD_WAM_LINGBOT_VA=ON
+cmake --build build --target wam-lingbot-server -j$(nproc)
+```
+
+**HY-VLA + LingBot-VA, CUDA GPU:**
+
+```bash
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMODEL_BUILD_VLA_HY_VLA=ON \
+  -DMODEL_BUILD_WAM_LINGBOT_VA=ON \
   -DGGML_CUDA=ON \
   -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
   -DCMAKE_CUDA_ARCHITECTURES=<your-arch> \
   -DProtobuf_PROTOC_EXECUTABLE=/usr/bin/protoc
-cmake --build build --target lingbot-world-server -j$(nproc)
+cmake --build build --target vla-hy-vla-server wam-lingbot-server -j$(nproc)
 ```
 
-### 3. Start a server
+If you want a single build with all currently supported runtimes enabled:
 
 ```bash
-# VLA server (pi0.5, HY-VLA)
-./build/vla-server --model <path-to-gguf> (<path-to-mmproj>)
-
-# LingBot world-action server
-./build/lingbot-world-server --model <path-to-gguf>
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMODEL_BUILD_VLA_PI05=ON \
+  -DMODEL_BUILD_VLA_HY_VLA=ON \
+  -DMODEL_BUILD_WAM_LINGBOT_VA=ON
+cmake --build build --target vla-pi05-server vla-hy-vla-server wam-lingbot-server hy-vla-direct-debug -j$(nproc)
 ```
 
-### 4. Evaluate in simulation (example: LIBERO with LingBot-VA)
+### 2.5 Start a Server
+
+```bash
+# VLA server (pi0.5)
+./build/vla-pi05-server \
+  checkpoints/pi05/pi05-mmproj.gguf \
+  checkpoints/pi05/pi05.gguf
+
+# VLA server (HY-VLA)
+./build/vla-hy-vla-server checkpoints/hy_vla/hy_vla.gguf
+
+# LingBot world-action server (bind to 5555 to match the client example below)
+./build/wam-lingbot-server \
+  --bind tcp://*:5555 \
+  checkpoints/lingbot_va/lingbot_transformer.gguf
+```
+
+Each executable is generated only when its corresponding `MODEL_BUILD_*` switch
+is enabled at configure time.
+
+### 2.6 Evaluate in Simulation
+
+**pi0.5 on LIBERO:**
+
+```bash
+# Start the pi0.5 server in another shell first.
+./build/vla-pi05-server \
+  checkpoints/pi05/pi05-mmproj.gguf \
+  checkpoints/pi05/pi05.gguf
+
+# Install the LIBERO runtime once
+bash eval/sim/libero/setup_libero.sh
+
+# Run one LIBERO smoke-test episode
+eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
+  --arch pi05 \
+  --libero-suite object \
+  --task-id 0 \
+  --n-episodes 1 \
+  --max-steps 80 \
+  --seed 42 \
+  --tokenizer lerobot/pi05_libero \
+  --vla-addr tcp://127.0.0.1:5555
+```
+
+**HY-VLA on RoboTwin:**
+
+```bash
+# Build with MODEL_BUILD_VLA_HY_VLA=ON first, and use a HY-VLA GGUF from the
+# released Embodied.cpp checkpoint set.
+
+# Install the RoboTwin runtime once
+bash eval/sim/robotwin/setup_robotwin.sh
+
+# Run one RoboTwin episode
+GGML_CUDA_DISABLE_GRAPHS=1 \
+eval/sim/robotwin/robotwin_uv/.venv/bin/python \
+  eval/client/run_robotwin_native_hy_vla.py \
+  --model checkpoints/hy_vla/hy_vla.gguf \
+  --task-name place_empty_cup \
+  --episodes 1
+```
+
+**LingBot-VA on LIBERO:**
 
 ```bash
 # Install the LIBERO runtime once
@@ -126,24 +276,11 @@ eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py 
   --tokenizer /path/to/lingbot-va-tokenizer \
   --vla-addr tcp://localhost:5555
 ```
-
 ---
 
-## Run a Server
+## 3. 🧪 Evaluate in Simulation
 
-| Executable | What it serves |
-|---|---|
-| `./build/vla-server` | VLA models — takes observations + text, outputs robot action chunks |
-| `./build/lingbot-world-server` | LingBot-VA world-action model — video-conditioned future-aware planning |
-| `./build/hy-vla-direct-debug` | Debug HY-VLA in-process (no server) |
-
-Run with `--help` to see all model, checkpoint, and quantization options.
-
----
-
-## Evaluate in Simulation
-
-### LIBERO
+### 3.1 LIBERO
 
 LIBERO tests robotic manipulation skills on four task suites: `spatial`, `object`, `goal`, and `10`. A fifth suite `long` (90 tasks) is also available.
 
@@ -155,11 +292,30 @@ LIBERO tests robotic manipulation skills on four task suites: `spatial`, `object
 --libero-suite long     → libero_90
 ```
 
-Use `--task-id 0..9` (or `0..89` for `long`) to pick individual tasks.
+Use `--task-id 0..9` (or `0..89` for `long`) to select an individual task.
 
-### RoboTwin
+The direct simulation client currently supports:
 
-RoboTWIN is a dual-arm robot benchmark with real-world-style manipulation tasks. Run HY-VLA natively in C++:
+- `--arch pi05`
+- `--arch lingbot_va`
+
+Example pi0.5 smoke test:
+
+```bash
+eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
+  --arch pi05 \
+  --libero-suite object \
+  --task-id 0 \
+  --n-episodes 1 \
+  --max-steps 80 \
+  --tokenizer lerobot/pi05_libero \
+  --vla-addr tcp://127.0.0.1:5555 \
+  --output-dir outputs/pi05_libero_smoke
+```
+
+### 3.2 RoboTwin
+
+RoboTwin is a dual-arm robot benchmark with real-world-style manipulation tasks. Run HY-VLA natively in C++:
 
 ```bash
 bash eval/sim/robotwin/setup_robotwin.sh   # one-time setup
@@ -167,16 +323,14 @@ bash eval/sim/robotwin/setup_robotwin.sh   # one-time setup
 GGML_CUDA_DISABLE_GRAPHS=1 \
 eval/sim/robotwin/robotwin_uv/.venv/bin/python \
   eval/client/run_robotwin_native_hy_vla.py \
-  --model <path-to-gguf> \
+  --model <path-to-hy-vla.gguf> \
   --task-name place_empty_cup \
   --episodes 1
 ```
 
 See [`eval/sim/robotwin/README.md`](eval/sim/robotwin/README.md) for detailed setup modes and troubleshooting.
 
----
-
-## Convert Your Own Model
+## 4. 🔧 Convert Your Own Model
 
 GGUF conversion scripts are in [`scripts/`](scripts/):
 
@@ -194,9 +348,11 @@ Quantization helpers:
 | `quantize_hy_vla_gguf.py` | HY-VLA models |
 | `quantize_lingbot_wan_gguf.py` | LingBot-VA models |
 
----
+If you do not need a custom conversion, prefer the prebuilt GGUF releases at:
 
-## Project Structure
+- https://huggingface.co/SEU-PAISys/Embodied.cpp
+
+## 5. 🗂️ Project Structure
 
 What lives where, in plain language:
 
@@ -212,9 +368,7 @@ What lives where, in plain language:
 | `patches/` | Third-party code patches applied during setup |
 | `eval/` | Evaluation clients and simulation setups (LIBERO, RoboTwin) |
 
----
-
-## Citation
+## 6. 📄 Citation
 
 If you find `Embodied.cpp` useful in your research, please consider citing:
 
@@ -229,15 +383,11 @@ If you find `Embodied.cpp` useful in your research, please consider citing:
 }
 ```
 
----
-
-## License
+## 7. ⚖️ License
 
 This project is released under the [Apache License 2.0](LICENSE.md). Third-party dependencies, model checkpoints, datasets, and upstream reference implementations are distributed under their own licenses.
 
----
-
-## Acknowledgements
+## 8. 🙏 Acknowledgements
 
 **Supported models:**
 - [pi0.5 / OpenPI](https://github.com/Physical-Intelligence/openpi)

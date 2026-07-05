@@ -112,7 +112,7 @@ class LingBotWorldClient:
         resp = self.pb.LingBotResponse()
         resp.ParseFromString(self.sock.recv())
         if resp.error:
-            raise RuntimeError(f"lingbot-world-server reset error: {resp.error}")
+            raise RuntimeError(f"wam-lingbot-server reset error: {resp.error}")
 
     def get_action(self, obs: dict[str, Any]) -> np.ndarray:
         if not self._action_queue:
@@ -154,7 +154,7 @@ class LingBotWorldClient:
         resp = self.pb.LingBotResponse()
         resp.ParseFromString(self.sock.recv())
         if resp.error:
-            raise RuntimeError(f"lingbot-world-server cache update error: {resp.error}")
+            raise RuntimeError(f"wam-lingbot-server cache update error: {resp.error}")
         self._last_response = resp
         return resp.status
 
@@ -188,7 +188,7 @@ class LingBotWorldClient:
         resp = self.pb.LingBotResponse()
         resp.ParseFromString(self.sock.recv())
         if resp.error:
-            raise RuntimeError(f"lingbot-world-server error: {resp.error}")
+            raise RuntimeError(f"wam-lingbot-server error: {resp.error}")
         self._last_response = resp
         if resp.chunk_size <= 0 or resp.action_dim <= 0:
             raise RuntimeError(f"invalid LingBot response shape: chunk={resp.chunk_size} action_dim={resp.action_dim}")

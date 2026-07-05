@@ -10,7 +10,7 @@ Usage: $(basename "$0") -e ENV_ID -t TOKENIZER [-a ADDR] [-o OUTPUT_ROOT] [-n N_
 
   -e ENV_ID        RobotWin gymnasium env id.
   -t TOKENIZER     HY-VLA tokenizer/checkpoint directory.
-  -a ADDR          vla-server address (default: tcp://localhost:5555).
+  -a ADDR          vla-hy-vla-server address (default: tcp://localhost:5555).
   -o OUTPUT_ROOT   output directory (default: ${REPO_ROOT}/outputs/robotwin_hy_vla).
   -n N_EPISODES    episodes (default: 10).
   -m MODULE        module to import before gym.make; repeatable.

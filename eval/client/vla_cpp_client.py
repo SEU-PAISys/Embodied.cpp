@@ -32,6 +32,12 @@ except locale.Error:
 
 
 ARCH_PRESETS = {
+    "pi05": {
+        "image_size": 224,
+        "tokenizer": None,
+        "max_state_dim": 8,
+        "use_fast_tokenizer": True,
+    },
     "hy_vla": {
         "image_size": 224,
         "tokenizer": None,
@@ -270,7 +276,7 @@ class VlaCppClient:
         resp = self.pb.PredictResponse()
         resp.ParseFromString(body)
         if resp.error:
-            raise RuntimeError(f"vla-server error: {resp.error}")
+            raise RuntimeError(f"VLA server error: {resp.error}")
         self._last_response = resp
         return np.array(resp.action_chunk, dtype=np.float32).reshape(
             resp.chunk_size,

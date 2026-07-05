@@ -69,7 +69,13 @@ the generic gym-style client:
 Build the server first:
 
 ```bash
-cmake --build build --target vla-server -j"$(nproc)"
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMODEL_BUILD_VLA_HY_VLA=ON \
+  -DGGML_CUDA=ON \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+  -DCMAKE_CUDA_ARCHITECTURES=<your-arch>
+cmake --build build --target vla-hy-vla-server -j"$(nproc)"
 ```
 
 Run one `place_empty_cup/demo_clean` episode:

@@ -115,14 +115,14 @@ Activate RoboTwin:
 source eval/sim/robotwin/robotwin_uv/.venv/bin/activate
 ```
 
-For actual evaluation, start `vla-server` separately with the matching model
+For actual evaluation, start the matching model server separately
 and then run the relevant client script from the corresponding venv.
 
 ## RobotWin / HY-VLA setup
 
 RobotWin is not vendored in this repository. Install or clone RobotWin in its
 own Python environment, then run the HY-VLA client against an already-running
-`vla-server`.
+`vla-hy-vla-server`.
 
 The helper script for a local setup is:
 
@@ -246,7 +246,7 @@ bash eval/sim/robotwin/setup_robotwin.sh --download-dataset
 Start the server with the HY-VLA GGUF on the machine that owns the model:
 
 ```bash
-./build/vla-server --bind tcp://*:5555 /path/to/hy_vla_robotwin.gguf
+./build/vla-hy-vla-server --bind tcp://*:5555 /path/to/hy_vla_robotwin.gguf
 ```
 
 Then run the client from the RobotWin Python environment:
@@ -296,7 +296,13 @@ The client accepts common observation layouts by default, including
 Native HY-VLA C++ RoboTwin deployment:
 
 ```bash
-cmake --build build --target vla-server -j"$(nproc)"
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMODEL_BUILD_VLA_HY_VLA=ON \
+  -DGGML_CUDA=ON \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+  -DCMAKE_CUDA_ARCHITECTURES=<your-arch>
+cmake --build build --target vla-hy-vla-server -j"$(nproc)"
 
 eval/sim/robotwin/robotwin_uv/.venv/bin/python \
   eval/client/run_robotwin_native_hy_vla.py \
@@ -324,7 +330,7 @@ Important runtime notes:
 export GGML_CUDA_DISABLE_GRAPHS=1
 ```
 
-The native runner sets this for the spawned `vla-server` by default. Full
+The native runner sets this for the spawned `vla-hy-vla-server` by default. Full
 HY-VLA vision plus RoboTwin/curobo leaves little VRAM headroom, and CUDA graph
 instantiation can fail or become unstable. Disable it long-term unless a larger
 GPU has been verified with repeated forward passes.
@@ -332,7 +338,7 @@ GPU has been verified with repeated forward passes.
 - `--max-steps 0` means "use the RoboTwin task's own `step_lim`"; it does not
   mean stop after one step.
 - The original Python evaluation first uses an expert policy to find
-  solvable/stable seeds. Keeping a resident `vla-server` on an 8GB GPU while
+  solvable/stable seeds. Keeping a resident `vla-hy-vla-server` on an 8GB GPU while
   also running expert/curobo seed search can make the planner path fail. For
   exact reproducibility, use a known successful seed list from the Python
   reference and pass `--skip-expert-check`.

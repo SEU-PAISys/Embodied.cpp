@@ -60,7 +60,9 @@ QTYPE_BY_NAME = {
 def _load_ggml(lib_path: Path) -> ctypes.CDLL:
     if not lib_path.exists():
         raise SystemExit(
-            f"missing {lib_path}; build first, e.g. cmake --build build --target lingbot-world-server"
+            f"missing {lib_path}; build first, e.g. "
+            f"cmake -S . -B build -DMODEL_BUILD_WAM_LINGBOT_VA=ON && "
+            f"cmake --build build --target wam-lingbot-server"
         )
     lib = ctypes.CDLL(str(lib_path))
     lib.ggml_quantize_chunk.argtypes = [

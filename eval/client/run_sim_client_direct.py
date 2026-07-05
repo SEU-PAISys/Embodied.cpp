@@ -23,9 +23,11 @@ sys.path.insert(0, str(ROOT))
 import gymnasium as gym
 
 import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
+from adapter.sim.libero import LIBEROSimAdapter
 from client.lingbot_world_client import LingBotWorldClient
+from client.vla_cpp_client import VlaCppClient
 
-ARCH_CHOICES = ["lingbot_va"]
+ARCH_CHOICES = ["pi05", "lingbot_va"]
 LIBERO_SUITE_TASK_COUNTS = {
     "libero_spatial": 10,
     "libero_object": 10,
@@ -59,6 +61,21 @@ def build_client(args):
         if list(args.image_keys) == default_lerobot_image_keys
         else args.image_keys
     )
+    if args.arch == "pi05":
+        return LIBEROSimAdapter(
+            client=VlaCppClient(
+                vla_addr=args.vla_addr,
+                arch=args.arch,
+                tokenizer_name=args.tokenizer,
+                image_size=args.image_size,
+                max_state_dim=args.max_state_dim,
+                real_action_dim=args.real_action_dim,
+                image_keys=args.image_keys,
+                max_length=args.max_length,
+                recv_timeout_ms=args.recv_timeout_ms,
+                n_action_steps=args.n_action_steps,
+            )
+        )
     return LingBotWorldClient(
         vla_addr=args.vla_addr,
         tokenizer_name=args.tokenizer,
@@ -219,22 +236,22 @@ if __name__ == "__main__":
     parser.add_argument("--arch", choices=ARCH_CHOICES, default="lingbot_va",
         help="Model/client path. Also namespaces the output dir.")
     parser.add_argument("--vla-addr", type=str, default="tcp://localhost:5555",
-        help="ZMQ address of vla-server (the C++ inference daemon).")
+        help="ZMQ address of the C++ inference daemon, for example vla-pi05-server or vla-hy-vla-server.")
     parser.add_argument("--tokenizer", type=str, default=None,
-        help="LingBot-VA tokenizer directory.")
+        help="Tokenizer directory or Hugging Face snapshot path for the selected model.")
     parser.add_argument("--image-size", type=int, default=None,
         help="Override the arch preset's vision input size.")
     parser.add_argument("--max-state-dim", type=int, default=None,
-        help="Override the state vector length sent to vla-server "
+        help="Override the state vector length sent to the VLA server "
              "(default: arch preset).")
     parser.add_argument("--real-action-dim", type=int, default=7)
     parser.add_argument("--image-keys", nargs="+",
         default=["observation.images.image", "observation.images.image2"])
     parser.add_argument("--max-length", type=int, default=48)
     parser.add_argument("--recv-timeout-ms", type=int, default=900_000,
-        help="ZMQ receive timeout for lingbot-world-server.")
+        help="ZMQ receive timeout for the selected C++ inference server.")
     parser.add_argument("--lingbot-session-id", type=int, default=1,
-        help="[lingbot_va] session id sent to lingbot-world-server.")
+        help="[lingbot_va] session id sent to wam-lingbot-server.")
     parser.add_argument("--lingbot-max-cache-frames", type=int, default=4,
         help="[lingbot_va] maximum observation frames sent to compute_kv_cache. "
              "Default 4 matches the original-style LIBERO key-frame update window.")
@@ -244,7 +261,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--n-action-steps", type=int, default=1,
         help="How many actions to replay from each predicted chunk before "
-             "re-querying lingbot-world-server.",
+             "re-querying wam-lingbot-server.",
     )
 
     args = parser.parse_args()

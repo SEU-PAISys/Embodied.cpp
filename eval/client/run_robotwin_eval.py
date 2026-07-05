@@ -36,7 +36,7 @@ def _is_success(info: dict) -> float:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run RobotWin evaluation against a remote or local vla-server for HY-VLA.",
+        description="Run RobotWin evaluation against a remote or local vla-hy-vla-server.",
     )
     parser.add_argument("--env-id", required=True,
         help="RobotWin gymnasium env id, for example the id registered by the local RobotWin install.")
