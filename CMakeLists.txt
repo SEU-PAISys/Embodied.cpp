@@ -153,19 +153,6 @@ if(MODEL_BUILD_VLA_HY_VLA)
     add_vla_server_target(vla-hy-vla-server)
 endif()
 
-if(MODEL_BUILD_VLA_HY_VLA)
-    add_executable(hy-vla-direct-debug
-        tools/hy_vla_direct_debug.cpp
-    )
-    target_include_directories(hy-vla-direct-debug PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/runtime
-    )
-    target_link_libraries(hy-vla-direct-debug PRIVATE
-        vla_core
-    )
-endif()
-
 if(MODEL_BUILD_WAM_LINGBOT_VA)
     set(LINGBOT_PROTO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/serving/lingbot.proto)
     set(LINGBOT_PROTO_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/proto-gen/serving)

@@ -1,7 +1,7 @@
 # Embodied.cpp 🤖
 
 <p align="center">
-  <img src="assets/20260622-145312.png" alt="embodied.cpp overview" width="100%">
+  <img src="assets/embodied-cpp-icon.png" alt="embodied.cpp overview" width="100%">
 </p>
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.md)
@@ -110,8 +110,9 @@ checkpoints/
   pi05/
     pi05.gguf
     pi05-mmproj.gguf
-  hy_vla/
-    hy_vla.gguf
+  Hy-Embodied-0.5-VLA-RoboTwin/
+    Hy-Embodied-0.5-VLA-RoboTwin_bf16.gguf
+    Hy-Embodied-0.5-VLA-RoboTwin_q4_K.gguf
   lingbot_va/
     lingbot_transformer.gguf
     ...
@@ -161,7 +162,7 @@ cmake --build build --target vla-pi05-server -j$(sysctl -n hw.logicalcpu)
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DMODEL_BUILD_VLA_HY_VLA=ON
-cmake --build build --target vla-hy-vla-server hy-vla-direct-debug -j$(nproc)
+cmake --build build --target vla-hy-vla-server -j$(nproc)
 ```
 
 **LingBot-VA, CPU-only:**
@@ -195,7 +196,7 @@ cmake -S . -B build \
   -DMODEL_BUILD_VLA_PI05=ON \
   -DMODEL_BUILD_VLA_HY_VLA=ON \
   -DMODEL_BUILD_WAM_LINGBOT_VA=ON
-cmake --build build --target vla-pi05-server vla-hy-vla-server wam-lingbot-server hy-vla-direct-debug -j$(nproc)
+cmake --build build --target vla-pi05-server vla-hy-vla-server wam-lingbot-server -j$(nproc)
 ```
 
 ### 2.5 Start a Server
@@ -207,7 +208,8 @@ cmake --build build --target vla-pi05-server vla-hy-vla-server wam-lingbot-serve
   checkpoints/pi05/pi05.gguf
 
 # VLA server (HY-VLA)
-./build/vla-hy-vla-server checkpoints/hy_vla/hy_vla.gguf
+./build/vla-hy-vla-server \
+  checkpoints/Hy-Embodied-0.5-VLA-RoboTwin/Hy-Embodied-0.5-VLA-RoboTwin_bf16.gguf
 
 # LingBot world-action server (bind to 5555 to match the client example below)
 ./build/wam-lingbot-server \
@@ -256,7 +258,7 @@ bash eval/sim/robotwin/setup_robotwin.sh
 GGML_CUDA_DISABLE_GRAPHS=1 \
 eval/sim/robotwin/robotwin_uv/.venv/bin/python \
   eval/client/run_robotwin_native_hy_vla.py \
-  --model checkpoints/hy_vla/hy_vla.gguf \
+  --model checkpoints/Hy-Embodied-0.5-VLA-RoboTwin/Hy-Embodied-0.5-VLA-RoboTwin_bf16.gguf \
   --task-name place_empty_cup \
   --episodes 1
 ```
@@ -364,7 +366,6 @@ What lives where, in plain language:
 | `serving/` | Server code (ZeroMQ/Protobuf) for VLA and LingBot APIs |
 | `kernels/` | Custom CUDA kernels (used when building with GPU support) |
 | `scripts/` | GGUF conversion, quantization, and evaluation helpers |
-| `tools/` | Local debug utilities |
 | `patches/` | Third-party code patches applied during setup |
 | `eval/` | Evaluation clients and simulation setups (LIBERO, RoboTwin) |
 

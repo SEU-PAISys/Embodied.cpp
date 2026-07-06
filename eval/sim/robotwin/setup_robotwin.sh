@@ -516,7 +516,7 @@ To run HY-VLA RobotWin evaluation from this environment:
   export GGML_CUDA_DISABLE_GRAPHS=1
   \$(command -v python) \\
     eval/client/run_robotwin_native_hy_vla.py \\
-    --model /path/to/hy_vla.gguf \\
+    --model /path/to/Hy-Embodied-0.5-VLA-RoboTwin_bf16.gguf \\
     --tokenizer /path/to/HY-VLA \\
     --episodes 1 \\
     --max-steps 0
