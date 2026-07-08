@@ -186,7 +186,11 @@
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright 2026 VinRobotics
+   Copyright 2026 SEU-PAISys
+
+   This project includes code derived from VinRobotics/vla.cpp.
+   Original portions are Copyright 2026 VinRobotics.
+   Modifications and new files are Copyright 2026 SEU-PAISys.
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
