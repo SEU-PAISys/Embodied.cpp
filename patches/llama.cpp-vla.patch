@@ -1,3 +1,13 @@
+# Copyright 2026 SEU-PAISys
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# This patch carries Embodied.cpp changes applied on top of llama.cpp.
+
 diff --git a/convert_hf_to_gguf.py b/convert_hf_to_gguf.py
 index 7f4a4018f..6be188287 100755
 --- a/convert_hf_to_gguf.py
