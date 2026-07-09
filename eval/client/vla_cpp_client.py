@@ -19,6 +19,7 @@ from typing import Any, Sequence
 import numpy as np
 import torch
 import torch.nn.functional as F
+import sentencepiece
 from transformers import AutoTokenizer
 import zmq
 
@@ -36,13 +37,17 @@ ARCH_PRESETS = {
     "pi05": {
         "image_size": 224,
         "tokenizer": None,
-        "max_state_dim": 8,
+        "max_state_dim": 32,
+        "max_length": 200,
+        "n_action_steps": 5,
         "use_fast_tokenizer": True,
     },
     "hy_vla": {
         "image_size": 224,
         "tokenizer": None,
         "max_state_dim": 20,
+        "max_length": 48,
+        "n_action_steps": 1,
         "use_fast_tokenizer": True,
     },
 }
@@ -73,6 +78,45 @@ def _load_pb():
     sys.path.insert(0, str(tmpdir))
     import vla_pb2
     return vla_pb2
+
+
+def _load_paligemma_sentencepiece(tokenizer_name: str) -> sentencepiece.SentencePieceProcessor:
+    candidates = []
+    tok_path = Path(tokenizer_name)
+    if tok_path.is_file():
+        candidates.append(tok_path)
+    else:
+        candidates.extend([
+            tok_path / "tokenizer.model",
+            tok_path / "paligemma_tokenizer.model",
+        ])
+    candidates.extend([
+        Path("/home/xuling/robotic_code/embodied.cpp/pi0.5实现/models/paligemma-3b-pt-224-tokenizer/tokenizer.model"),
+        Path.home() / ".cache" / "openpi" / "paligemma_tokenizer.model",
+    ])
+    for path in candidates:
+        if path.exists():
+            print(f"vla-cpp-direct: using PaliGemma SentencePiece {path}", flush=True)
+            with path.open("rb") as f:
+                return sentencepiece.SentencePieceProcessor(model_proto=f.read())
+    raise FileNotFoundError(
+        "PaliGemma tokenizer.model not found. Pass --tokenizer as a tokenizer.model "
+        "file or a directory containing it."
+    )
+
+
+def _tokenize_paligemma_prompt(
+    tok: sentencepiece.SentencePieceProcessor,
+    prompt: str,
+    max_len: int,
+) -> np.ndarray:
+    cleaned_text = prompt.strip().replace("_", " ").replace("\n", " ")
+    tokens = tok.encode(cleaned_text, add_bos=True) + tok.encode("\n")
+    if len(tokens) < max_len:
+        tokens = tokens + [0] * (max_len - len(tokens))
+    else:
+        tokens = tokens[:max_len]
+    return np.asarray(tokens, dtype=np.int32)
 
 
 def _resize_with_pad(
@@ -115,9 +159,9 @@ class VlaCppClient:
             "observation.images.image",
             "observation.images.image2",
         ),
-        max_length: int = 48,
+        max_length: int | None = None,
         recv_timeout_ms: int = DEFAULT_RECV_TIMEOUT_MS,
-        n_action_steps: int = 1,
+        n_action_steps: int | None = None,
     ):
         if arch not in ARCH_PRESETS:
             raise ValueError(f"unknown arch {arch!r}; expected one of {sorted(ARCH_PRESETS)}")
@@ -126,6 +170,10 @@ class VlaCppClient:
         image_size = image_size if image_size is not None else preset["image_size"]
         max_state_dim = (
             max_state_dim if max_state_dim is not None else preset.get("max_state_dim", 32)
+        )
+        max_length = max_length if max_length is not None else preset.get("max_length", 48)
+        n_action_steps = (
+            n_action_steps if n_action_steps is not None else preset.get("n_action_steps", 1)
         )
         if tokenizer_name is None:
             raise ValueError(f"arch={arch} has no default tokenizer; pass --tokenizer.")
@@ -145,26 +193,29 @@ class VlaCppClient:
             f"{' (use_fast=False)' if not use_fast else ''}",
             flush=True,
         )
-        tokenizer_kwargs = {}
-        chat_template_path = Path(tokenizer_name) / "chat_template.jinja"
-        if chat_template_path.exists():
-            tokenizer_kwargs["chat_template"] = chat_template_path.read_text(encoding="utf-8")
-        orig_open = builtins.open
+        if arch == "pi05":
+            self.tok = _load_paligemma_sentencepiece(tokenizer_name)
+        else:
+            tokenizer_kwargs = {}
+            chat_template_path = Path(tokenizer_name) / "chat_template.jinja"
+            if chat_template_path.exists():
+                tokenizer_kwargs["chat_template"] = chat_template_path.read_text(encoding="utf-8")
+            orig_open = builtins.open
 
-        def open_utf8_chat_template(file, *args, **kwargs):
-            if str(file).endswith("chat_template.jinja") and "encoding" not in kwargs:
-                kwargs["encoding"] = "utf-8"
-            return orig_open(file, *args, **kwargs)
+            def open_utf8_chat_template(file, *args, **kwargs):
+                if str(file).endswith("chat_template.jinja") and "encoding" not in kwargs:
+                    kwargs["encoding"] = "utf-8"
+                return orig_open(file, *args, **kwargs)
 
-        try:
-            builtins.open = open_utf8_chat_template
-            self.tok = AutoTokenizer.from_pretrained(
-                tokenizer_name,
-                use_fast=use_fast,
-                **tokenizer_kwargs,
-            )
-        finally:
-            builtins.open = orig_open
+            try:
+                builtins.open = open_utf8_chat_template
+                self.tok = AutoTokenizer.from_pretrained(
+                    tokenizer_name,
+                    use_fast=use_fast,
+                    **tokenizer_kwargs,
+                )
+            finally:
+                builtins.open = orig_open
 
         self.image_size = image_size
         self.max_state_dim = max_state_dim
@@ -244,16 +295,10 @@ class VlaCppClient:
                 add_special_tokens=False,
             )
         else:
-            if not task.endswith("\n"):
-                task = task + "\n"
-            toks = self.tok(
-                task,
-                padding=False,
-                truncation=True,
-                max_length=self.max_length,
-                return_tensors="np",
-            )
-        lang = toks["input_ids"][0].astype(np.int32)
+            lang = _tokenize_paligemma_prompt(self.tok, task, self.max_length)
+            toks = None
+        if toks is not None:
+            lang = toks["input_ids"][0].astype(np.int32)
 
         req = self.pb.PredictRequest()
         req.request_id = self._step

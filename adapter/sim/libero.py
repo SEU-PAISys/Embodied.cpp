@@ -123,6 +123,9 @@ def _to_chw_float01(image: Any) -> np.ndarray:
     arr = np.asarray(image, dtype=np.float32)
     if arr.ndim != 3 or arr.shape[-1] != 3:
         raise ValueError(f"expected HWC image with 3 channels, got {arr.shape}")
+    # openpi's LIBERO eval rotates both agentview and wrist images by 180 degrees
+    # before resize/pad to match the training preprocessing.
+    arr = np.ascontiguousarray(arr[::-1, ::-1])
     return np.transpose(arr / 255.0, (2, 0, 1)).astype(np.float32, copy=False)
 
 

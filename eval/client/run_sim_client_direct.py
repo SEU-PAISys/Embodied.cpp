@@ -19,13 +19,16 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(1, str(ROOT))
 
 import gymnasium as gym
 
 import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
 from adapter.sim.libero import LIBEROSimAdapter
 from client.lingbot_world_client import LingBotWorldClient
+from client.vla_cpp_client import ARCH_PRESETS as VLA_ARCH_PRESETS
 from client.vla_cpp_client import VlaCppClient
 
 ARCH_CHOICES = ["pi05", "lingbot_va"]
@@ -56,6 +59,20 @@ def normalize_libero_suite(name: str) -> str:
 
 
 def build_client(args):
+    if args.arch == "pi05":
+        preset = VLA_ARCH_PRESETS["pi05"]
+        args.max_length = (
+            args.max_length if args.max_length is not None else preset.get("max_length", 48)
+        )
+        args.n_action_steps = (
+            args.n_action_steps
+            if args.n_action_steps is not None
+            else preset.get("n_action_steps", 1)
+        )
+    else:
+        args.max_length = args.max_length if args.max_length is not None else 512
+        args.n_action_steps = args.n_action_steps if args.n_action_steps is not None else 1
+
     default_lerobot_image_keys = ["observation.images.image", "observation.images.image2"]
     lingbot_image_keys = (
         ["image", "image2"]
@@ -82,7 +99,7 @@ def build_client(args):
         tokenizer_name=args.tokenizer,
         image_size=args.image_size or 128,
         image_keys=lingbot_image_keys,
-        max_length=args.max_length if args.max_length != 48 else 512,
+        max_length=args.max_length,
         recv_timeout_ms=args.recv_timeout_ms,
         n_action_steps=args.n_action_steps,
         session_id=args.lingbot_session_id,
@@ -248,7 +265,9 @@ if __name__ == "__main__":
     parser.add_argument("--real-action-dim", type=int, default=7)
     parser.add_argument("--image-keys", nargs="+",
         default=["observation.images.image", "observation.images.image2"])
-    parser.add_argument("--max-length", type=int, default=48)
+    parser.add_argument("--max-length", type=int, default=None,
+        help="Maximum language token count. Defaults to the selected arch preset "
+             "(pi05=200, lingbot_va=512).")
     parser.add_argument("--recv-timeout-ms", type=int, default=900_000,
         help="ZMQ receive timeout for the selected C++ inference server.")
     parser.add_argument("--lingbot-session-id", type=int, default=1,
@@ -260,9 +279,10 @@ if __name__ == "__main__":
         help="[lingbot_va] skip post-chunk world/cache update. Useful for validating "
              "the dense no-cache C++ parity path before enabling cached evaluation.")
     parser.add_argument(
-        "--n-action-steps", type=int, default=1,
+        "--n-action-steps", type=int, default=None,
         help="How many actions to replay from each predicted chunk before "
-             "re-querying wam-lingbot-server.",
+             "re-querying the model. Defaults to the selected arch preset "
+             "(pi05=5 to match openpi LIBERO replan_steps, lingbot_va=1).",
     )
 
     args = parser.parse_args()

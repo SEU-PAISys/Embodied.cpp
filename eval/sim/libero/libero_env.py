@@ -80,11 +80,11 @@ ACTION_DIM = 7
 ACTION_LOW = -1.0
 ACTION_HIGH = 1.0
 TASK_SUITE_MAX_STEPS: dict[str, int] = {
-    "libero_spatial": 500,
-    "libero_object": 500,
-    "libero_goal": 500,
-    "libero_10": 500,
-    "libero_90": 500,
+    "libero_spatial": 220,
+    "libero_object": 280,
+    "libero_goal": 300,
+    "libero_10": 520,
+    "libero_90": 400,
 }
 
 class LiberoEnv(gym.Env):

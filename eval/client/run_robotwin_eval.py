@@ -14,7 +14,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(1, str(ROOT))
 
 from adapter.sim.robotwin import RobotWinHyVLAAdapter
 
