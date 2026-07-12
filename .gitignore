@@ -62,6 +62,7 @@ datasets/
 data/
 model_cache/
 hf_cache/
+models/paligemma-3b-pt-224-tokenizer
 
 # Python
 __pycache__/

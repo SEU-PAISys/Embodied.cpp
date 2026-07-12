@@ -52,7 +52,10 @@ uv pip install transformers==4.51.3 msgpack==1.1.0 msgpack-numpy==0.4.8 gymnasiu
 uv pip install pandas==2.0.3
 uv pip install pyarrow==12.0.1
 uv pip install diffusers==0.30.1
+uv pip install mujoco==3.3.2
+uv pip install robosuite==1.4.0
 uv pip install numpy==1.26.4
+uv pip install sentencepiece==0.2.1
 
 LIBERO_CONFIG_DIR="${LIBERO_CONFIG_PATH:-$HOME/.libero}"
 LIBERO_PKG_DIR="$LIBERO_REPO/libero/libero"

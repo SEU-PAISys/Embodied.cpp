@@ -127,11 +127,11 @@ the fastest way to get started.
 Install the required system packages for your platform before building.
 
 **Linux:**
-Make sure `cmake`, `protobuf`, `zeromq`, and `cppzmq` are available from your package manager before building.
+Make sure `cmake`, `protobuf`, `zeromq`, `cppzmq`, `pkg-config` and `uv` are available from your package manager before building.
 
 **macOS (Apple Silicon, CPU-only verified for pi0.5):**
 ```bash
-brew install cmake protobuf zeromq cppzmq
+brew install cmake protobuf zeromq cppzmq pkg-config uv
 ```
 
 ### 2.4 Build by Model and Backend
