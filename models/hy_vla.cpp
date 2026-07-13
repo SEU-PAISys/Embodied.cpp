@@ -301,6 +301,7 @@ struct HyVLAModelArch final : ModelArchBase {
     ggml_type matmul_type = GGML_TYPE_BF16;
     bool is_cuda = false;
     bool vlm_only = false;
+    int32_t eos_token_id = 120020;
     int n_threads = 4;
     int text_layers_loaded = 0;
     bool prefix_vision_loaded = false;
@@ -315,6 +316,7 @@ struct HyVLAModelArch final : ModelArchBase {
     bool vision_cpu_sideload = false;
     ggml_tensor * Wnorm = nullptr;
     ggml_tensor * Wtext_norm = nullptr;
+    ggml_tensor * W_vocab = nullptr;
     ggml_tensor * W_sp = nullptr;
     ggml_tensor * b_sp = nullptr;
     ggml_tensor * W_ain = nullptr;
@@ -1483,6 +1485,9 @@ std::unique_ptr<ModelArchBase> hy_vla_create(const std::string & mmproj_path,
     // expert) carries none of the expert/action keys or tensors.
     m->vlm_only = !g.has_key("hy_vla.expert_hidden");
     if (!load_config(g, m->cfg, m->vlm_only)) return nullptr;
+    if (g.has_key("hy_vla.eos_token_id")) {
+        m->eos_token_id = (int32_t) g.u32("hy_vla.eos_token_id");
+    }
 
 #ifdef GGML_USE_CUDA
     m->backend = ggml_backend_cuda_init(0);
@@ -1629,6 +1634,14 @@ std::unique_ptr<ModelArchBase> hy_vla_create(const std::string & mmproj_path,
         }
         m->Wtext_norm = mk_f32(g.first_existing("vlm.output_norm.weight",
                                                 "dual_tower.vlm.model.language_model.model.norm.weight"));
+    }
+    // Text generation multiplies hidden states by the tied vocab matrix.
+    // Only make it resident when the generate mode is requested so action
+    // inference does not pay for it.
+    if (const char * e = std::getenv("VLA_HY_VLA_DEBUG_OUTPUT")) {
+        if (std::strcmp(e, "generate") == 0) {
+            m->W_vocab = mk_mm(hy_vla_embedding_name(g));
+        }
     }
 
     if (const char * e = std::getenv("VLA_HY_VLA_VISION_LAYERS")) {
@@ -2008,6 +2021,136 @@ std::vector<float> HyVLAModelArch::predict(const Inputs & in) {
         ggml_gallocr_free(galloc);
         ggml_free(P);
         return out;
+    }
+
+    // Greedy text generation over the causal prefill graph. Inputs stay
+    // ids-in/ids-out: lang_tokens carries the prompt ids (plus optionally
+    // images through the standard vision frontend + prefix builder), the
+    // return vector carries the generated ids. Each step re-runs the
+    // prefill over the grown prefix; fine for short demo generations.
+    if (debug_output == "generate") {
+        if (!W_vocab) {
+            std::fprintf(stderr, "vla(hy_vla): generate requires VLA_HY_VLA_DEBUG_OUTPUT=generate at load time\n");
+            return {};
+        }
+        if (text_layers_loaded < 1) {
+            std::fprintf(stderr, "vla(hy_vla): generate requires VLA_HY_VLA_TEXT_LAYERS >= 1\n");
+            return {};
+        }
+        if (!in.lang_tokens || in.n_lang < 1) {
+            std::fprintf(stderr, "vla(hy_vla): generate requires lang_tokens\n");
+            return {};
+        }
+        int n_predict = 64;
+        if (const char * e = std::getenv("VLA_HY_VLA_N_PREDICT")) {
+            n_predict = std::max(1, std::atoi(e));
+        }
+
+        gguf_reader g;
+        if (!g.open(ckpt_path)) return {};
+
+        std::vector<float> prefix;
+        std::vector<int32_t> modality_mask;
+        const bool with_images = in.images && in.n_images > 0;
+        if (with_images) {
+            if (!prefix_vision_loaded) {
+                std::fprintf(stderr, "vla(hy_vla): generate with images requires stable GGUF VLM text/vision branches\n");
+                return {};
+            }
+            std::vector<float> visual_tokens;
+            int visual_views = 0;
+            if (!run_hy_vision_frontend_224(*this, in, visual_tokens, visual_views)) {
+                return {};
+            }
+            Inputs prefix_inputs = in;
+            prefix_inputs.precomputed_img_emb = visual_tokens.data();
+            prefix_inputs.n_img_views = visual_views * 49;
+            prefix_inputs.images = nullptr;
+            prefix_inputs.n_images = 0;
+            if (!build_hy_vla_prefix_from_visual_tokens(*this, prefix_inputs, 49,
+                                                        prefix, modality_mask)) {
+                return {};
+            }
+        } else {
+            const std::vector<int32_t> ids(in.lang_tokens, in.lang_tokens + in.n_lang);
+            if (!append_token_embeddings(g, ids, cfg.hidden, prefix)) return {};
+            modality_mask.assign(ids.size(), 0);
+        }
+        // Generated tokens are all text, so the vision patch groups are
+        // fixed for the whole loop.
+        const std::vector<std::vector<int64_t>> patch_groups =
+            make_visual_patch_groups(modality_mask.data(), (int) modality_mask.size());
+        const int gen_layers = std::max<int>(1, std::min<int>(text_layers_loaded, (int) run_layers));
+
+        std::vector<float> gen_ids;
+        gen_ids.reserve((size_t) n_predict);
+        for (int step = 0; step < n_predict; ++step) {
+            const int64_t n_tok = (int64_t) modality_mask.size();
+            ggml_init_params gp{(size_t) 512 * 1024 * 1024, nullptr, true};
+            ggml_context * G = ggml_init(gp);
+            if (!G) return {};
+            ggml_tensor * t_pref = ggml_new_tensor_2d(G, GGML_TYPE_F32, cfg.hidden, n_tok); ggml_set_input(t_pref);
+            ggml_tensor * t_pos = ggml_new_tensor_1d(G, GGML_TYPE_I32, n_tok); ggml_set_input(t_pos);
+            ggml_tensor * t_mask = ggml_new_tensor_2d(G, GGML_TYPE_F16, n_tok, n_tok); ggml_set_input(t_mask);
+            ggml_tensor * h = t_pref;
+            if (with_images) {
+                const std::vector<HyPrefixRun> runs =
+                    make_prefix_runs(modality_mask.data(), (int) modality_mask.size());
+                const std::vector<HyPrefixRange> visual_segments;
+                for (int i = 0; i < gen_layers; ++i) {
+                    h = build_hy_prefix_routed_layer(G, text_layers[(size_t) i], vision_layers[(size_t) i],
+                                                     h, t_pos, t_mask, cfg, runs, visual_segments, true);
+                }
+            } else {
+                for (int i = 0; i < gen_layers; ++i) {
+                    h = build_hy_text_layer(G, text_layers[(size_t) i], h, t_pos, t_mask, cfg, n_tok);
+                }
+            }
+            if (Wtext_norm) {
+                h = ggml_mul(G, ggml_rms_norm(G, h, cfg.rms_eps), Wtext_norm);
+            }
+            const size_t rb = (size_t) cfg.hidden * sizeof(float);
+            ggml_tensor * h_last = ggml_view_2d(G, h, cfg.hidden, 1, rb, rb * (size_t) (n_tok - 1));
+            ggml_tensor * logits = mm_w(G, W_vocab, h_last);
+            ggml_set_output(logits);
+            ggml_cgraph * gf = ggml_new_graph_custom(G, hy_vla_graph_size(1048576), false);
+            ggml_build_forward_expand(gf, logits);
+            ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+            if (!galloc || !ggml_gallocr_alloc_graph(galloc, gf)) {
+                std::fprintf(stderr, "vla(hy_vla): generate graph allocation failed\n");
+                if (galloc) ggml_gallocr_free(galloc);
+                ggml_free(G);
+                return {};
+            }
+            ggml_backend_tensor_set(t_pref, prefix.data(), 0, ggml_nbytes(t_pref));
+            std::vector<int32_t> pos((size_t) n_tok);
+            for (int64_t i = 0; i < n_tok; ++i) pos[(size_t) i] = (int32_t) i;
+            ggml_backend_tensor_set(t_pos, pos.data(), 0, ggml_nbytes(t_pos));
+            const std::vector<ggml_fp16_t> mask =
+                make_prefix_mask(n_tok, with_images ? &patch_groups : nullptr);
+            ggml_backend_tensor_set(t_mask, mask.data(), 0, ggml_nbytes(t_mask));
+            if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+                std::fprintf(stderr, "vla(hy_vla): generate graph compute failed\n");
+                ggml_gallocr_free(galloc);
+                ggml_free(G);
+                return {};
+            }
+            std::vector<float> logits_row((size_t) ggml_nelements(logits));
+            ggml_backend_tensor_get(logits, logits_row.data(), 0, logits_row.size() * sizeof(float));
+            ggml_gallocr_free(galloc);
+            ggml_free(G);
+
+            int32_t next = 0;
+            for (size_t i = 1; i < logits_row.size(); ++i) {
+                if (logits_row[i] > logits_row[(size_t) next]) next = (int32_t) i;
+            }
+            gen_ids.push_back((float) next);
+            if (next == eos_token_id) break;
+            if (!append_token_embeddings(g, {next}, cfg.hidden, prefix)) return {};
+            modality_mask.push_back(0);
+        }
+        stats.ms_total = std::chrono::duration<float, std::milli>(clk::now() - t0).count();
+        return gen_ids;
     }
 
     if (debug_output == "mixed_prefix") {
