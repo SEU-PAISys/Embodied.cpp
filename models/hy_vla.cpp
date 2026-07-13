@@ -1293,13 +1293,19 @@ std::vector<ggml_fp16_t> make_prefix_mask(int64_t n, const std::vector<std::vect
     return mask;
 }
 
+// The vocab matrix doubles as the input embedding: the VLA GGUF materializes
+// it as lm_head, a VLM-only GGUF keeps the tied embed_tokens tensor instead.
+const char * hy_vla_embedding_name(const gguf_reader & g) {
+    return g.first_existing("dual_tower.vlm.model.language_model.lm_head.weight",
+                            "language_model.model.embed_tokens.weight");
+}
+
 bool append_token_embeddings(gguf_reader & g, const std::vector<int32_t> & ids,
                              int64_t hidden, std::vector<float> & out) {
     if (ids.empty()) return true;
     const size_t old = out.size();
     out.resize(old + (size_t) ids.size() * (size_t) hidden);
-    return g.fetch_rows_f32("dual_tower.vlm.model.language_model.lm_head.weight",
-                            ids, out.data() + old, hidden);
+    return g.fetch_rows_f32(hy_vla_embedding_name(g), ids, out.data() + old, hidden);
 }
 
 bool write_binary_file(const char * path, const void * data, size_t bytes) {
