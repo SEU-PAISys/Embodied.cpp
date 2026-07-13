@@ -17,6 +17,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -54,8 +55,66 @@ LIBERO_SUITE_ALIASES = {
 }
 
 
+def _load_yaml_config(path: str | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    try:
+        import yaml
+    except ModuleNotFoundError as e:
+        raise SystemExit(
+            "PyYAML is required for --conf. Install it in the eval environment "
+            "with `pip install pyyaml` or run without --conf."
+        ) from e
+
+    conf_path = Path(path)
+    if not conf_path.exists() and not conf_path.is_absolute():
+        candidate = ROOT / "conf" / path
+        if candidate.exists():
+            conf_path = candidate
+    if not conf_path.exists():
+        raise FileNotFoundError(f"config file not found: {path}")
+
+    with conf_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{conf_path} must contain a YAML mapping at top level")
+    return {str(k).replace("-", "_"): v for k, v in data.items()}
+
+
 def normalize_libero_suite(name: str) -> str:
     return LIBERO_SUITE_ALIASES.get(name, name)
+
+
+def resolve_task_ids(args) -> list[int]:
+    n_tasks = LIBERO_SUITE_TASK_COUNTS[args.task]
+
+    task_id = args.task_id
+    if isinstance(task_id, str):
+        if task_id.lower() != "all":
+            raise ValueError(f"task_id must be an int or 'all', got {task_id!r}")
+        return list(range(n_tasks))
+    if task_id is not None:
+        task_ids = [task_id]
+    else:
+        task_ids = args.task_ids
+
+    if task_ids is None:
+        task_ids = [0]
+    elif isinstance(task_ids, str):
+        if task_ids.lower() != "all":
+            raise ValueError(f"task_ids must be 'all' or a list of ints, got {task_ids!r}")
+        task_ids = list(range(n_tasks))
+    else:
+        task_ids = list(task_ids)
+
+    for tid in task_ids:
+        if not isinstance(tid, int):
+            raise ValueError(f"task id must be int, got {tid!r}")
+        if tid < 0 or tid >= n_tasks:
+            raise ValueError(
+                f"task-id {tid} out of range for {args.task}; expected 0..{n_tasks - 1}."
+            )
+    return task_ids
 
 
 def build_client(args):
@@ -220,9 +279,20 @@ def run_one_task(args, client, task: str, task_id: int) -> None:
     print(f"- Saved videos to: {output_dir.resolve()}")
 
 if __name__ == "__main__":
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument(
+        "--conf", "--config",
+        dest="conf",
+        default=None,
+        help="YAML benchmark config. Relative names are resolved under eval/conf/.",
+    )
+    conf_args, _ = pre_parser.parse_known_args()
+    conf_defaults = _load_yaml_config(conf_args.conf)
+
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[pre_parser],
     )
     parser.add_argument(
         "--task", type=str, default="libero_object",
@@ -235,8 +305,10 @@ if __name__ == "__main__":
         help="Short LIBERO sub-dataset name: spatial | object | goal | 10 | long. "
              "Overrides --task when set. Full names like libero_object are also accepted.",
     )
-    parser.add_argument("--task-id", type=int, default=0,
+    parser.add_argument("--task-id", type=int, default=None,
         help="Task variation id within the suite.")
+    parser.add_argument("--task-ids", nargs="+", type=int, default=None,
+        help="Task variation ids to run. YAML configs may also set task_ids: all.")
     parser.add_argument("--n-episodes", type=int, default=30)
     parser.add_argument("--max-steps", type=int, default=0,
         help="Stop each episode after this many env steps for smoke tests. "
@@ -285,6 +357,16 @@ if __name__ == "__main__":
              "(pi05=5 to match openpi LIBERO replan_steps, lingbot_va=1).",
     )
 
+    if conf_defaults:
+        valid_dests = {action.dest for action in parser._actions}
+        unknown = sorted(set(conf_defaults) - valid_dests)
+        if unknown:
+            raise ValueError(
+                f"unknown keys in {conf_args.conf}: {', '.join(unknown)}. "
+                f"Valid keys are: {', '.join(sorted(valid_dests))}"
+            )
+        parser.set_defaults(**conf_defaults)
+
     args = parser.parse_args()
     requested_suite = args.libero_suite or args.task
     args.task = normalize_libero_suite(requested_suite)
@@ -294,11 +376,8 @@ if __name__ == "__main__":
             "spatial, object, goal, 10, long, libero_spatial, libero_object, "
             "libero_goal, libero_10, libero_90."
         )
-    if args.task_id < 0 or args.task_id >= LIBERO_SUITE_TASK_COUNTS[args.task]:
-        raise ValueError(
-            f"task-id {args.task_id} out of range for {args.task}; "
-            f"expected 0..{LIBERO_SUITE_TASK_COUNTS[args.task] - 1}."
-        )
+    task_ids = resolve_task_ids(args)
 
     client = build_client(args)
-    run_one_task(args, client, args.task, args.task_id)
+    for task_id in task_ids:
+        run_one_task(args, client, args.task, task_id)

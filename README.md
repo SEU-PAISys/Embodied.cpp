@@ -257,7 +257,7 @@ bash eval/sim/robotwin/setup_robotwin.sh
 # Run one RoboTwin episode
 GGML_CUDA_DISABLE_GRAPHS=1 \
 eval/sim/robotwin/robotwin_uv/.venv/bin/python \
-  eval/client/run_robotwin_native_hy_vla.py \
+  eval/client/run_robotwin_eval.py \
   --model checkpoints/Hy-Embodied-0.5-VLA-RoboTwin/Hy-Embodied-0.5-VLA-RoboTwin_bf16.gguf \
   --task-name place_empty_cup \
   --episodes 1
@@ -324,7 +324,7 @@ bash eval/sim/robotwin/setup_robotwin.sh   # one-time setup
 
 GGML_CUDA_DISABLE_GRAPHS=1 \
 eval/sim/robotwin/robotwin_uv/.venv/bin/python \
-  eval/client/run_robotwin_native_hy_vla.py \
+  eval/client/run_robotwin_eval.py \
   --model <path-to-hy-vla.gguf> \
   --task-name place_empty_cup \
   --episodes 1
