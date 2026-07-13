@@ -2076,10 +2076,13 @@ std::vector<float> HyVLAModelArch::predict(const Inputs & in) {
             if (!append_token_embeddings(g, ids, cfg.hidden, prefix)) return {};
             modality_mask.assign(ids.size(), 0);
         }
-        // Generated tokens are all text, so the vision patch groups are
-        // fixed for the whole loop.
-        const std::vector<std::vector<int64_t>> patch_groups =
-            make_visual_patch_groups(modality_mask.data(), (int) modality_mask.size());
+        // Generated tokens are all text, so the vision segments are fixed
+        // for the whole loop. The override recomputes segment rows with
+        // bidirectional attention confined to the segment, matching the
+        // reference; without it patch rows leak causal attention to the
+        // pre-vision tokens and split tokens stay causal.
+        const std::vector<HyPrefixRange> visual_segments =
+            make_visual_override_segments(modality_mask.data(), (int) modality_mask.size());
         const int gen_layers = std::max<int>(1, std::min<int>(text_layers_loaded, (int) run_layers));
 
         std::vector<float> gen_ids;
@@ -2096,7 +2099,6 @@ std::vector<float> HyVLAModelArch::predict(const Inputs & in) {
             if (with_images) {
                 const std::vector<HyPrefixRun> runs =
                     make_prefix_runs(modality_mask.data(), (int) modality_mask.size());
-                const std::vector<HyPrefixRange> visual_segments;
                 for (int i = 0; i < gen_layers; ++i) {
                     h = build_hy_prefix_routed_layer(G, text_layers[(size_t) i], vision_layers[(size_t) i],
                                                      h, t_pos, t_mask, cfg, runs, visual_segments, true);
@@ -2126,8 +2128,7 @@ std::vector<float> HyVLAModelArch::predict(const Inputs & in) {
             std::vector<int32_t> pos((size_t) n_tok);
             for (int64_t i = 0; i < n_tok; ++i) pos[(size_t) i] = (int32_t) i;
             ggml_backend_tensor_set(t_pos, pos.data(), 0, ggml_nbytes(t_pos));
-            const std::vector<ggml_fp16_t> mask =
-                make_prefix_mask(n_tok, with_images ? &patch_groups : nullptr);
+            const std::vector<ggml_fp16_t> mask = make_prefix_mask(n_tok, nullptr);
             ggml_backend_tensor_set(t_mask, mask.data(), 0, ggml_nbytes(t_mask));
             if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
                 std::fprintf(stderr, "vla(hy_vla): generate graph compute failed\n");
