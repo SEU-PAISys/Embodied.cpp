@@ -300,6 +300,7 @@ struct HyVLAModelArch final : ModelArchBase {
     mutable ggml_gallocr_t routed_galloc = nullptr;
     ggml_type matmul_type = GGML_TYPE_BF16;
     bool is_cuda = false;
+    bool vlm_only = false;
     int n_threads = 4;
     int text_layers_loaded = 0;
     bool prefix_vision_loaded = false;
@@ -1081,41 +1082,50 @@ ggml_tensor * build_hy_expert_layer_with_prefix(
     return ggml_add(ctx, h1, mm_w(ctx, w.Wdown, inter));
 }
 
-bool load_config(const gguf_reader & g, Config & cfg) {
-    for (const char * k : {"hy_vla.architecture", "hy_vla.expert_hidden", "hy_vla.expert_intermediate",
+bool load_config(const gguf_reader & g, Config & cfg, bool vlm_only) {
+    for (const char * k : {"hy_vla.architecture",
                            "hy_vla.n_q_heads", "hy_vla.n_kv_heads", "hy_vla.head_dim",
-                           "hy_vla.n_layers", "hy_vla.n_action_steps", "hy_vla.num_steps",
-                           "hy_vla.max_state_dim", "hy_vla.max_action_dim",
-                           "hy_vla.flow_min_period", "hy_vla.flow_max_period",
+                           "hy_vla.n_layers",
                            "hy_vla.rms_norm_eps", "hy_vla.rope_theta"}) {
         if (!g.has_key(k)) {
             std::fprintf(stderr, "vla(hy_vla): GGUF missing key %s\n", k);
             return false;
         }
     }
+    if (!vlm_only) {
+        for (const char * k : {"hy_vla.expert_hidden", "hy_vla.expert_intermediate",
+                               "hy_vla.n_action_steps", "hy_vla.num_steps",
+                               "hy_vla.max_state_dim", "hy_vla.max_action_dim",
+                               "hy_vla.flow_min_period", "hy_vla.flow_max_period"}) {
+            if (!g.has_key(k)) {
+                std::fprintf(stderr, "vla(hy_vla): GGUF missing key %s\n", k);
+                return false;
+            }
+        }
+    }
     cfg = Config{};
     cfg.hidden = g.u32("hy_vla.vlm_hidden");
     cfg.intermediate = g.u32("hy_vla.vlm_intermediate");
-    cfg.expert_h = g.u32("hy_vla.expert_hidden");
-    cfg.expert_inter = g.u32("hy_vla.expert_intermediate");
+    cfg.expert_h = vlm_only ? 0 : g.u32("hy_vla.expert_hidden");
+    cfg.expert_inter = vlm_only ? 0 : g.u32("hy_vla.expert_intermediate");
     cfg.n_q_heads = g.u32("hy_vla.n_q_heads");
     cfg.n_kv_heads = g.u32("hy_vla.n_kv_heads");
     cfg.head_dim = g.u32("hy_vla.head_dim");
     cfg.q_full_dim = cfg.n_q_heads * cfg.head_dim;
     cfg.kv_full_dim = cfg.n_kv_heads * cfg.head_dim;
     cfg.n_layers = g.u32("hy_vla.n_layers");
-    cfg.n_lang = g.u32("hy_vla.tokenizer_max_length");
+    cfg.n_lang = vlm_only ? 0 : g.u32("hy_vla.tokenizer_max_length");
     cfg.n_img = 0;
-    cfg.n_suffix = g.u32("hy_vla.n_action_steps");
-    cfg.num_steps = (int) g.u32("hy_vla.num_steps");
-    cfg.max_state_dim = g.u32("hy_vla.max_state_dim");
-    cfg.max_action_dim = g.u32("hy_vla.max_action_dim");
+    cfg.n_suffix = vlm_only ? 0 : g.u32("hy_vla.n_action_steps");
+    cfg.num_steps = vlm_only ? 1 : (int) g.u32("hy_vla.num_steps");
+    cfg.max_state_dim = vlm_only ? 0 : g.u32("hy_vla.max_state_dim");
+    cfg.max_action_dim = vlm_only ? 0 : g.u32("hy_vla.max_action_dim");
     cfg.real_state_dim = 20;
     cfg.real_action_dim = 20;
     cfg.n_state = 1;
     cfg.n_full = cfg.n_suffix + 1;
-    cfg.min_period = g.f32("hy_vla.flow_min_period");
-    cfg.max_period = g.f32("hy_vla.flow_max_period");
+    cfg.min_period = vlm_only ? 1.0 : g.f32("hy_vla.flow_min_period");
+    cfg.max_period = vlm_only ? 1.0 : g.f32("hy_vla.flow_max_period");
     cfg.rms_eps = g.f32("hy_vla.rms_norm_eps");
     cfg.norm_eps = 1e-8f;
     cfg.rope_mode = GGML_ROPE_TYPE_NEOX;
@@ -1469,7 +1479,10 @@ std::unique_ptr<ModelArchBase> hy_vla_create(const std::string & mmproj_path,
     auto m = std::make_unique<HyVLAModelArch>();
     m->ckpt_path = ckpt_path;
     m->matmul_type = hy_vla_matmul_type_from_env();
-    if (!load_config(g, m->cfg)) return nullptr;
+    // A VLM-only GGUF (tied-embedding language/vision towers, no action
+    // expert) carries none of the expert/action keys or tensors.
+    m->vlm_only = !g.has_key("hy_vla.expert_hidden");
+    if (!load_config(g, m->cfg, m->vlm_only)) return nullptr;
 
 #ifdef GGML_USE_CUDA
     m->backend = ggml_backend_cuda_init(0);
@@ -1525,44 +1538,46 @@ std::unique_ptr<ModelArchBase> hy_vla_create(const std::string & mmproj_path,
         return t;
     };
 
-    m->layers.resize((size_t) m->cfg.n_layers);
-    for (int64_t i = 0; i < m->cfg.n_layers; ++i) {
-        char b[256];
-        auto nm = [&](const char * s) {
-            std::snprintf(b, sizeof(b), "expert.blk.%lld.%s", (long long) i, s);
-            return b;
-        };
-        HyLayerW & w = m->layers[(size_t) i];
-        w.ln_in = mk_f32(nm("attn_norm_v.weight"));
-        w.Wq = mk_mm(nm("attn_q_v.weight"));
-        w.Wk = mk_mm(nm("attn_k_v.weight"));
-        w.Wv = mk_mm(nm("attn_v_v.weight"));
-        w.Wo = mk_mm(nm("attn_o_v.weight"));
-        {
-            char qn[256];
-            char kn[256];
-            char qn_old[256];
-            char kn_old[256];
-            std::snprintf(qn, sizeof(qn), "vlm.blk.%lld.attn_q_norm.weight", (long long) i);
-            std::snprintf(kn, sizeof(kn), "vlm.blk.%lld.attn_k_norm.weight", (long long) i);
-            std::snprintf(qn_old, sizeof(qn_old), "dt.vlm.model.lm.model.layers.%lld.attn.query_layernorm.weight", (long long) i);
-            std::snprintf(kn_old, sizeof(kn_old), "dt.vlm.model.lm.model.layers.%lld.attn.key_layernorm.weight", (long long) i);
-            const char * q_name = g.first_existing(qn, qn_old);
-            const char * k_name = g.first_existing(kn, kn_old);
-            w.q_norm = mk_f32(q_name);
-            w.k_norm = mk_f32(k_name);
+    if (!m->vlm_only) {
+        m->layers.resize((size_t) m->cfg.n_layers);
+        for (int64_t i = 0; i < m->cfg.n_layers; ++i) {
+            char b[256];
+            auto nm = [&](const char * s) {
+                std::snprintf(b, sizeof(b), "expert.blk.%lld.%s", (long long) i, s);
+                return b;
+            };
+            HyLayerW & w = m->layers[(size_t) i];
+            w.ln_in = mk_f32(nm("attn_norm_v.weight"));
+            w.Wq = mk_mm(nm("attn_q_v.weight"));
+            w.Wk = mk_mm(nm("attn_k_v.weight"));
+            w.Wv = mk_mm(nm("attn_v_v.weight"));
+            w.Wo = mk_mm(nm("attn_o_v.weight"));
+            {
+                char qn[256];
+                char kn[256];
+                char qn_old[256];
+                char kn_old[256];
+                std::snprintf(qn, sizeof(qn), "vlm.blk.%lld.attn_q_norm.weight", (long long) i);
+                std::snprintf(kn, sizeof(kn), "vlm.blk.%lld.attn_k_norm.weight", (long long) i);
+                std::snprintf(qn_old, sizeof(qn_old), "dt.vlm.model.lm.model.layers.%lld.attn.query_layernorm.weight", (long long) i);
+                std::snprintf(kn_old, sizeof(kn_old), "dt.vlm.model.lm.model.layers.%lld.attn.key_layernorm.weight", (long long) i);
+                const char * q_name = g.first_existing(qn, qn_old);
+                const char * k_name = g.first_existing(kn, kn_old);
+                w.q_norm = mk_f32(q_name);
+                w.k_norm = mk_f32(k_name);
+            }
+            w.ln_post = mk_f32(nm("ffn_norm_v.weight"));
+            w.Wgate = mk_mm(nm("ffn_gate_v.weight"));
+            w.Wup = mk_mm(nm("ffn_up_v.weight"));
+            w.Wdown = mk_mm(nm("ffn_down_v.weight"));
         }
-        w.ln_post = mk_f32(nm("ffn_norm_v.weight"));
-        w.Wgate = mk_mm(nm("ffn_gate_v.weight"));
-        w.Wup = mk_mm(nm("ffn_up_v.weight"));
-        w.Wdown = mk_mm(nm("ffn_down_v.weight"));
+        m->Wnorm = mk_f32("expert.output_norm.weight");
+        m->W_sp = mk_f32("state_proj.weight");              m->b_sp = mk_f32("state_proj.bias");
+        m->W_ain = mk_mm("action_in_proj.weight");          m->b_ain = mk_f32("action_in_proj.bias");
+        m->W_at1 = mk_mm("action_time_mlp_in.weight");      m->b_at1 = mk_f32("action_time_mlp_in.bias");
+        m->W_at2 = mk_mm("action_time_mlp_out.weight");     m->b_at2 = mk_f32("action_time_mlp_out.bias");
+        m->W_aout = mk_f32("action_out_proj.weight");       m->b_aout = mk_f32("action_out_proj.bias");
     }
-    m->Wnorm = mk_f32("expert.output_norm.weight");
-    m->W_sp = mk_f32("state_proj.weight");              m->b_sp = mk_f32("state_proj.bias");
-    m->W_ain = mk_mm("action_in_proj.weight");          m->b_ain = mk_f32("action_in_proj.bias");
-    m->W_at1 = mk_mm("action_time_mlp_in.weight");      m->b_at1 = mk_f32("action_time_mlp_in.bias");
-    m->W_at2 = mk_mm("action_time_mlp_out.weight");     m->b_at2 = mk_f32("action_time_mlp_out.bias");
-    m->W_aout = mk_f32("action_out_proj.weight");       m->b_aout = mk_f32("action_out_proj.bias");
 
     if (const char * e = std::getenv("VLA_HY_VLA_TEXT_LAYERS")) {
         m->text_layers_loaded = std::max(0, std::min<int>((int) m->cfg.n_layers, std::atoi(e)));
@@ -1838,6 +1853,11 @@ std::vector<float> HyVLAModelArch::predict(const Inputs & in) {
     const char * debug_output_env = std::getenv("VLA_HY_VLA_DEBUG_OUTPUT");
     const std::string debug_output = debug_output_env ? std::string(debug_output_env) : std::string();
     const float dt = -1.0f / (float) cfg.num_steps;
+
+    if (vlm_only && debug_output != "generate") {
+        std::fprintf(stderr, "vla(hy_vla): VLM-only GGUF has no action expert; only VLA_HY_VLA_DEBUG_OUTPUT=generate is supported\n");
+        return {};
+    }
 
     if (debug_output == "lang") {
         if (!in.lang_tokens || in.n_lang < 1) {
