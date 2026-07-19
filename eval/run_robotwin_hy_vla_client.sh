@@ -86,7 +86,7 @@ if [[ -z "${ROBOTWIN_PYTHON:-}" && -x "${DEFAULT_ROBOTWIN_PY}" ]]; then
 else
     PY="${ROBOTWIN_PYTHON:-python3}"
 fi
-CLIENT="${REPO_ROOT}/eval/client/run_robotwin_eval.py"
+CLIENT="${REPO_ROOT}/eval/client/run_robotwin_eval_simple.py"
 
 args=(
     "${CLIENT}"

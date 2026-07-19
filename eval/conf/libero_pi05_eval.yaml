@@ -1,0 +1,26 @@
+# pi0.5 C++ server on LIBERO-object.
+# Override with --task-id from CLI for single-task smoke tests.
+
+arch: pi05
+libero_suite: object
+task_ids: all
+n_episodes: 1
+max_steps: 0
+seed: 42
+
+tokenizer: /home/xuling/robotic_dataset/models/pi05cpp/tokenizer.model
+vla_addr: tcp://127.0.0.1:5555
+
+output_dir: outputs/pi05_libero_object
+view_mode: multi-view
+fps: 30
+
+image_size: 224
+max_state_dim: 32
+real_action_dim: 7
+image_keys:
+  - observation.images.image
+  - observation.images.image2
+max_length: 200
+n_action_steps: 5
+recv_timeout_ms: 900000

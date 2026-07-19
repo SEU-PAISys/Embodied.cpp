@@ -42,6 +42,7 @@ enum class Arch {
     PI05,       ///< Physical Intelligence pi0.5 policy.
     LINGBOT_VA, ///< Robbyant LingBot-VA video-action world model.
     HY_VLA,     ///< Tencent Hy-Embodied-0.5-VLA dual-tower flow policy.
+    GROOT_N1,   ///< NVIDIA GR00T N1 vision-language-action policy.
 };
 
 /**
@@ -107,6 +108,10 @@ std::unique_ptr<ModelArchBase> lingbot_va_create(const std::string& mmproj_path,
 std::unique_ptr<ModelArchBase> hy_vla_create(const std::string& mmproj_path,
                                              const std::string& ckpt_path,
                                              const std::string& config_path);
+
+std::unique_ptr<ModelArchBase> groot_n1_create(const std::string& mmproj_path,
+                                               const std::string& ckpt_path,
+                                               const std::string& config_path);
 
 /**
  * @brief Inspect a GGUF and identify the architecture tag.

@@ -67,8 +67,42 @@ class Pi05LIBEROParser:
         return np.asarray(action[:7], dtype=np.float32)
 
 
+class GrootN1LIBEROParser:
+    def parse_observation(self, obs: dict[str, Any]) -> dict[str, Any]:
+        images = obs.get("pixels", {})
+        model_inputs = {
+            "observation.images.image": _to_chw_float01(images["image"]),
+            "observation.state": _extract_pi05_libero_state(obs),
+            "task": str(obs.get("task_description", "")),
+        }
+        if "image2" in images:
+            model_inputs["observation.images.image2"] = _to_chw_float01(images["image2"])
+        return model_inputs
+
+    def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
+        pixels = obs.get("pixels", {})
+        images = [
+            ImageStream(key, np.asarray(pixels[key]), layout="HWC")
+            for key in ("image", "image2")
+            if key in pixels
+        ]
+        return EmbodiedObservation(
+            instruction=str(obs.get("task_description", "")),
+            images=images,
+            proprioception=TensorStream("libero_state", _extract_pi05_libero_state(obs)),
+            model_inputs=self.parse_observation(obs),
+            raw=obs,
+        )
+
+    def parse_action(self, action: np.ndarray) -> np.ndarray:
+        result = np.asarray(action[:7], dtype=np.float32).copy()
+        result[-1] = -np.sign(2.0 * result[-1] - 1.0)
+        return result
+
+
 LIBERO_PARSER_REGISTRY = {
     "pi05": Pi05LIBEROParser,
+    "groot_n1": GrootN1LIBEROParser,
     "lingbot_va": LingBotLIBEROParser,
 }
 
@@ -86,6 +120,10 @@ class LIBEROSimAdapter:
 
     def reset(self):
         return self._client.reset()
+
+    def get_last_inference_profile(self) -> dict[str, float | int] | None:
+        getter = getattr(self._client, "get_last_inference_profile", None)
+        return getter() if getter is not None else None
 
     def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
         return self._adapter_pipeline.parse_embodied_observation(obs)

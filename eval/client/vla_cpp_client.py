@@ -11,6 +11,7 @@ from collections import deque
 import locale
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -49,6 +50,15 @@ ARCH_PRESETS = {
         "max_length": 48,
         "n_action_steps": 1,
         "use_fast_tokenizer": True,
+    },
+    "groot_n1": {
+        "image_size": 256,
+        "image_crop_size": 230,
+        "tokenizer": None,
+        "max_state_dim": 132,
+        "max_length": 1024,
+        "n_action_steps": 8,
+        "use_server_tokenizer": True,
     },
 }
 
@@ -143,6 +153,37 @@ def _resize_with_pad(
     return t.squeeze(0).numpy()
 
 
+def _resize_center_crop(
+    img_chw: np.ndarray,
+    target_size: int,
+    crop_size: int,
+) -> np.ndarray:
+    tensor = torch.from_numpy(img_chw).unsqueeze(0)
+    tensor = F.interpolate(
+        tensor,
+        size=(target_size, target_size),
+        mode="bilinear",
+        align_corners=False,
+        antialias=True,
+    )
+    crop_top = (target_size - crop_size) // 2
+    crop_left = (target_size - crop_size) // 2
+    tensor = tensor[
+        :,
+        :,
+        crop_top : crop_top + crop_size,
+        crop_left : crop_left + crop_size,
+    ]
+    tensor = F.interpolate(
+        tensor,
+        size=(target_size, target_size),
+        mode="bilinear",
+        align_corners=False,
+        antialias=True,
+    )
+    return tensor.squeeze(0).numpy()
+
+
 class VlaCppClient:
     DEFAULT_RECV_TIMEOUT_MS = 30_000
 
@@ -175,7 +216,8 @@ class VlaCppClient:
         n_action_steps = (
             n_action_steps if n_action_steps is not None else preset.get("n_action_steps", 1)
         )
-        if tokenizer_name is None:
+        use_server_tokenizer = bool(preset.get("use_server_tokenizer", False))
+        if tokenizer_name is None and not use_server_tokenizer:
             raise ValueError(f"arch={arch} has no default tokenizer; pass --tokenizer.")
 
         self.arch = arch
@@ -187,15 +229,19 @@ class VlaCppClient:
         self.sock.connect(vla_addr)
         print(f"vla-cpp-direct[arch={arch}]: connected to {vla_addr}", flush=True)
 
-        use_fast = bool(preset.get("use_fast_tokenizer", True))
-        print(
-            f"vla-cpp-direct: loading tokenizer {tokenizer_name}"
-            f"{' (use_fast=False)' if not use_fast else ''}",
-            flush=True,
-        )
+        self.tok = None
+        if not use_server_tokenizer:
+            use_fast = bool(preset.get("use_fast_tokenizer", True))
+            print(
+                f"vla-cpp-direct: loading tokenizer {tokenizer_name}"
+                f"{' (use_fast=False)' if not use_fast else ''}",
+                flush=True,
+            )
         if arch == "pi05":
+            assert tokenizer_name is not None
             self.tok = _load_paligemma_sentencepiece(tokenizer_name)
-        else:
+        elif not use_server_tokenizer:
+            assert tokenizer_name is not None
             tokenizer_kwargs = {}
             chat_template_path = Path(tokenizer_name) / "chat_template.jinja"
             if chat_template_path.exists():
@@ -218,12 +264,15 @@ class VlaCppClient:
                 builtins.open = orig_open
 
         self.image_size = image_size
+        self.image_crop_size = int(preset.get("image_crop_size", image_size))
         self.max_state_dim = max_state_dim
         self.real_action_dim = real_action_dim
         self.image_keys = list(image_keys)
         self.max_length = max_length
         self._step = 0
         self._last_response = None
+        self._inference_sequence = 0
+        self._last_inference_profile: dict[str, float | int] | None = None
 
         if n_action_steps < 1:
             raise ValueError(f"n_action_steps must be >= 1, got {n_action_steps}")
@@ -239,6 +288,12 @@ class VlaCppClient:
     def reset(self) -> None:
         self._action_queue.clear()
         self._step = 0
+        self._last_inference_profile = None
+
+    def get_last_inference_profile(self) -> dict[str, float | int] | None:
+        if self._last_inference_profile is None:
+            return None
+        return dict(self._last_inference_profile)
 
     def get_action(self, observations: dict[str, Any]) -> np.ndarray:
         if not self._action_queue:
@@ -263,7 +318,14 @@ class VlaCppClient:
             img = np.asarray(img, dtype=np.float32)
             if img.ndim != 3 or img.shape[0] != 3:
                 raise ValueError(f"{key}: expected CHW float32 [3, H, W], got {img.shape}")
-            img = _resize_with_pad(img, self.image_size, self.image_size, pad_value=0.0)
+            if self.arch == "groot_n1":
+                img = _resize_center_crop(
+                    img,
+                    self.image_size,
+                    self.image_crop_size,
+                )
+            else:
+                img = _resize_with_pad(img, self.image_size, self.image_size, pad_value=0.0)
             img_hwc = np.transpose(img, (1, 2, 0))
             images_f32.append(np.ascontiguousarray(img_hwc, dtype=np.float32))
 
@@ -282,7 +344,11 @@ class VlaCppClient:
         if isinstance(task, bytes):
             task = task.decode()
         task = str(task)
-        if self.arch == "hy_vla":
+        if self.arch == "groot_n1":
+            task = re.sub(r"[^\w\s]", "", task.lower()).strip()
+            lang = None
+            toks = None
+        elif self.arch == "hy_vla":
             suffix = "<｜hy_Assistant｜>"
             task = task.strip().replace("_", " ").replace("\n", " ")
             task = task if task.endswith(suffix) else f"{task}{suffix}"
@@ -295,6 +361,7 @@ class VlaCppClient:
                 add_special_tokens=False,
             )
         else:
+            assert self.tok is not None
             lang = _tokenize_paligemma_prompt(self.tok, task, self.max_length)
             toks = None
         if toks is not None:
@@ -309,7 +376,11 @@ class VlaCppClient:
             ip.height = img.shape[0]
             ip.width = img.shape[1]
             ip.data = img.tobytes()
-        req.lang_tokens.extend(lang.tolist())
+        if self.arch == "groot_n1":
+            req.language_text = task
+        else:
+            assert lang is not None
+            req.lang_tokens.extend(lang.tolist())
         req.state.extend(state_padded.tolist())
 
         action_noise = observations.get("action_noise")
@@ -324,6 +395,19 @@ class VlaCppClient:
         if resp.error:
             raise RuntimeError(f"VLA server error: {resp.error}")
         self._last_response = resp
+        self._inference_sequence += 1
+        self._last_inference_profile = {
+            "sequence": self._inference_sequence,
+            "request_id": int(resp.request_id),
+            "server_total_ms": float(resp.latency_ms_total),
+            "server_vision_ms": float(resp.latency_ms_vision),
+            "server_inference_ms": float(resp.latency_ms_inference),
+            "server_prefill_ms": float(resp.latency_ms_prefill),
+            "server_denoise_ms": float(resp.latency_ms_denoise),
+            "model_chunk_size": int(resp.chunk_size),
+            "model_action_dim": int(resp.action_dim),
+            "replay_chunk_size": int(self.n_action_steps),
+        }
         return np.array(resp.action_chunk, dtype=np.float32).reshape(
             resp.chunk_size,
             resp.action_dim,

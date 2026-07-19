@@ -123,6 +123,7 @@ int find_non_finite(const float * data, int n) {
 void usage(const char * prog) {
     std::fprintf(stderr,
         "usage: %s [--bind ADDR] [--timing-detail none|phase] [--config PATH] "
+        "[--backbone PATH] "
         "[<mmproj.gguf>] <ckpt>\n"
         "  <mmproj.gguf>           pi0.5 vision-tower mmproj GGUF. Omit for HY-VLA\n"
         "                          and LingBot-VA combined GGUF checkpoints.\n"
@@ -133,7 +134,9 @@ void usage(const char * prog) {
         "                          'none'  : single ms_inference\n"
         "                          'phase' : ms_prefill + ms_denoise broken out\n"
         "  --config PATH           Reserved for compatibility; GGUF checkpoints carry\n"
-        "                          the required runtime metadata.\n",
+        "                          the required runtime metadata.\n"
+        "  --backbone PATH         GR00T Qwen3-VL text GGUF; use the first positional\n"
+        "                          argument for its matching mmproj GGUF.\n",
         prog);
 }
 
@@ -156,6 +159,8 @@ int main(int argc, char ** argv) {
         if (a == "--bind" && i + 1 < argc) {
             bind_addr = argv[++i];
         } else if (a == "--config" && i + 1 < argc) {
+            config_path = argv[++i];
+        } else if (a == "--backbone" && i + 1 < argc) {
             config_path = argv[++i];
         } else if (a == "--timing-detail" && i + 1 < argc) {
             const std::string v = argv[++i];
@@ -268,9 +273,10 @@ int main(int argc, char ** argv) {
             sock.send(zmq::buffer(body), zmq::send_flags::none);
             continue;
         }
-        if (req.lang_tokens_size() < 1 || req.lang_tokens_size() > int(cfg.n_lang)) {
+        if ((req.lang_tokens_size() < 1 && req.language_text().empty()) ||
+            req.lang_tokens_size() > int(cfg.n_lang)) {
             char buf[128]; std::snprintf(buf, sizeof(buf),
-                "lang_tokens length %d out of range [1, %lld]",
+                "lang_tokens length %d out of range [0, %lld] without language_text",
                 req.lang_tokens_size(), (long long) cfg.n_lang);
             sock.send(zmq::buffer(make_error_response(rid, buf)), zmq::send_flags::none);
             continue;
@@ -307,6 +313,10 @@ int main(int argc, char ** argv) {
         const bool use_precomputed = req.precomputed_img_emb_size() > 0;
         std::vector<float> precomputed_emb;
         int precomputed_n_views = 0;
+        const bool use_precomputed_backbone = req.precomputed_backbone_features_size() > 0;
+        std::vector<float> precomputed_backbone;
+        std::vector<int32_t> backbone_attention_mask;
+        std::vector<int32_t> backbone_image_mask;
 
         const int n_views = req.images_size();
         std::vector<std::vector<uint8_t>> u8_bufs (n_views);
@@ -370,7 +380,48 @@ int main(int argc, char ** argv) {
             if (!decode_ok) continue;
         }
 
+        if (use_precomputed_backbone) {
+            const int backbone_seq_len = static_cast<int>(req.precomputed_backbone_seq_len());
+            const int64_t expected = static_cast<int64_t>(backbone_seq_len) * cfg.hidden;
+            if (backbone_seq_len < 1 ||
+                static_cast<int64_t>(req.precomputed_backbone_features_size()) != expected) {
+                char buf[192]; std::snprintf(buf, sizeof(buf),
+                    "precomputed_backbone_features size %d != seq_len=%d * hidden=%lld",
+                    req.precomputed_backbone_features_size(), backbone_seq_len,
+                    (long long) cfg.hidden);
+                sock.send(zmq::buffer(make_error_response(rid, buf)),
+                          zmq::send_flags::none);
+                continue;
+            }
+            if (req.backbone_attention_mask_size() != backbone_seq_len ||
+                req.backbone_image_mask_size() != backbone_seq_len) {
+                char buf[192]; std::snprintf(buf, sizeof(buf),
+                    "backbone masks must both have seq_len=%d entries (attention=%d image=%d)",
+                    backbone_seq_len, req.backbone_attention_mask_size(),
+                    req.backbone_image_mask_size());
+                sock.send(zmq::buffer(make_error_response(rid, buf)),
+                          zmq::send_flags::none);
+                continue;
+            }
+            precomputed_backbone.assign(req.precomputed_backbone_features().begin(),
+                                        req.precomputed_backbone_features().end());
+            const int bad = find_non_finite(precomputed_backbone.data(),
+                                            static_cast<int>(precomputed_backbone.size()));
+            if (bad >= 0) {
+                char buf[128]; std::snprintf(buf, sizeof(buf),
+                    "precomputed_backbone_features[%d] = %g is not finite (NaN/Inf)",
+                    bad, precomputed_backbone[bad]);
+                sock.send(zmq::buffer(make_error_response(rid, buf)), zmq::send_flags::none);
+                continue;
+            }
+            backbone_attention_mask.assign(req.backbone_attention_mask().begin(),
+                                           req.backbone_attention_mask().end());
+            backbone_image_mask.assign(req.backbone_image_mask().begin(),
+                                       req.backbone_image_mask().end());
+        }
+
         embodied::adapter::Observation observation;
+        observation.instruction = req.language_text();
         observation.language_tokens.assign(req.lang_tokens().begin(), req.lang_tokens().end());
         observation.proprioception.assign(req.state().begin(), req.state().end());
         observation.images = std::move(img_views);
@@ -422,6 +473,17 @@ int main(int argc, char ** argv) {
         }
         model_input.inputs.attention_mask   = attn_mask_vec.empty() ? nullptr : attn_mask_vec.data();
         model_input.inputs.attention_mask_n = static_cast<int>(attn_mask_vec.size());
+        model_input.inputs.precomputed_backbone_features =
+            precomputed_backbone.empty() ? nullptr : precomputed_backbone.data();
+        model_input.inputs.backbone_seq_len =
+            use_precomputed_backbone ? static_cast<int>(req.precomputed_backbone_seq_len()) : 0;
+        model_input.inputs.backbone_attention_mask =
+            backbone_attention_mask.empty() ? nullptr : backbone_attention_mask.data();
+        model_input.inputs.backbone_attention_mask_n =
+            static_cast<int>(backbone_attention_mask.size());
+        model_input.inputs.backbone_image_mask =
+            backbone_image_mask.empty() ? nullptr : backbone_image_mask.data();
+        model_input.inputs.backbone_image_mask_n = static_cast<int>(backbone_image_mask.size());
         model_input.inputs.timing_detail    = timing_detail;
 
         std::vector<float> action_chunk = vla::predict(model, model_input.inputs);

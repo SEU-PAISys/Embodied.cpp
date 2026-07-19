@@ -305,7 +305,7 @@ cmake -S . -B build \
 cmake --build build --target vla-hy-vla-server -j"$(nproc)"
 
 eval/sim/robotwin/robotwin_uv/.venv/bin/python \
-  eval/client/run_robotwin_native_hy_vla.py \
+  eval/client/run_robotwin_eval.py \
   --model /home/xuling/robotic_dataset/models/hy_vla_full_q4_K_vlmvisionstable.gguf \
   --tokenizer /home/xuling/robotic_dataset/HY-VLA \
   --episodes 1 \
@@ -362,7 +362,7 @@ SEEDS=100000,100001,100002,100004,100005,100007,100008,100009,100010,100011,1000
 
 GGML_CUDA_DISABLE_GRAPHS=1 \
 eval/sim/robotwin/robotwin_uv/.venv/bin/python \
-  eval/client/run_robotwin_native_hy_vla.py \
+  eval/client/run_robotwin_eval.py \
   --model /home/xuling/robotic_dataset/models/hy_vla_full_q4_K_vlmvisionstable.gguf \
   --tokenizer /home/xuling/robotic_dataset/HY-VLA \
   --task-name place_empty_cup \

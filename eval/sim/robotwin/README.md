@@ -52,7 +52,7 @@ bash eval/sim/robotwin/setup_robotwin.sh --torch-backend cpu --no-curobo
 For HY-VLA, prefer the native runner:
 
 ```text
-eval/client/run_robotwin_native_hy_vla.py
+eval/client/run_robotwin_eval.py
 ```
 
 It follows the original HY-VLA RoboTwin deployment protocol more closely than
@@ -83,7 +83,7 @@ Run one `place_empty_cup/demo_clean` episode:
 ```bash
 GGML_CUDA_DISABLE_GRAPHS=1 \
 eval/sim/robotwin/robotwin_uv/.venv/bin/python \
-  eval/client/run_robotwin_native_hy_vla.py \
+  eval/client/run_robotwin_eval.py \
   --model /path/to/hy_vla_full_q4_K_vlmvisionstable.gguf \
   --tokenizer /path/to/HY-VLA \
   --task-name place_empty_cup \
@@ -111,7 +111,7 @@ SEEDS=100000,100001,100002,100004,100005,100007,100008,100009,100010,100011,1000
 
 GGML_CUDA_DISABLE_GRAPHS=1 \
 eval/sim/robotwin/robotwin_uv/.venv/bin/python \
-  eval/client/run_robotwin_native_hy_vla.py \
+  eval/client/run_robotwin_eval.py \
   --model /path/to/hy_vla_full_q4_K_vlmvisionstable.gguf \
   --tokenizer /path/to/HY-VLA \
   --task-name place_empty_cup \
@@ -174,7 +174,7 @@ The repository also keeps a generic adapter path:
 
 ```text
 eval/run_robotwin_hy_vla_client.sh
-eval/client/run_robotwin_eval.py
+eval/client/run_robotwin_eval_simple.py
 adapter/sim/robotwin.py
 ```
 

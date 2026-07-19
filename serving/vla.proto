@@ -46,6 +46,12 @@ message PredictRequest {
   uint32         precomputed_img_emb_n_views = 7;
 
   repeated uint32 attention_mask = 8;
+
+  repeated float  precomputed_backbone_features = 9;
+  uint32          precomputed_backbone_seq_len  = 10;
+  repeated uint32 backbone_attention_mask       = 11;
+  repeated uint32 backbone_image_mask           = 12;
+  string          language_text                 = 13;
 }
 
 message PredictResponse {
