@@ -124,6 +124,15 @@ struct Inputs {
     int              n_img_views         = 0; ///< Number of views in
                                               ///  @ref precomputed_img_emb.
 
+    /// Optional full VLM sequence output for action-head validation or split
+    /// deployment. Layout is [backbone_seq_len, cfg.hidden] in row-major order.
+    const float*     precomputed_backbone_features = nullptr;
+    int              backbone_seq_len              = 0;
+    const int32_t*   backbone_attention_mask       = nullptr;
+    int              backbone_attention_mask_n     = 0;
+    const int32_t*   backbone_image_mask           = nullptr;
+    int              backbone_image_mask_n         = 0;
+
     /// Optional LingBot-VA world/video latent tensor in B,C,F,H,W layout.
     const float*     lingbot_latent      = nullptr;
     int64_t          lingbot_latent_b    = 0;
@@ -142,6 +151,8 @@ struct Inputs {
 
     const int32_t*   lang_tokens;     ///< Tokenised language instruction.
     int              n_lang;          ///< Length of @ref lang_tokens.
+    const char*      language_text = nullptr; ///< Optional raw instruction for
+                                              ///< integrated tokenizers.
 
     const float*     state;           ///< Proprioception, length @c real_state_dim.
     const float*     noise;           ///< Initial noise for the action expert.

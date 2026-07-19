@@ -124,3 +124,12 @@ models/lingbot_va_original.cpp
 /HY_VLA_PROGRESS.md
 /LINGBOT_VA_PORT_PLAN.md
 /LINGBOT_VA_PROGRESS.md
+
+# validate
+/scripts/validate_*.py
+
+# test
+eval/client/libero_profile.py
+eval/conf/libero_groot_n1_profile_eval.yaml
+
+LOCAL_README.md

@@ -28,11 +28,12 @@ import gymnasium as gym
 
 import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
 from adapter.sim.libero import LIBEROSimAdapter
+from client.libero_profile import LiberoSuiteProfiler
 from client.lingbot_world_client import LingBotWorldClient
 from client.vla_cpp_client import ARCH_PRESETS as VLA_ARCH_PRESETS
 from client.vla_cpp_client import VlaCppClient
 
-ARCH_CHOICES = ["pi05", "lingbot_va"]
+ARCH_CHOICES = ["pi05", "groot_n1", "lingbot_va"]
 LIBERO_SUITE_TASK_COUNTS = {
     "libero_spatial": 10,
     "libero_object": 10,
@@ -118,8 +119,8 @@ def resolve_task_ids(args) -> list[int]:
 
 
 def build_client(args):
-    if args.arch == "pi05":
-        preset = VLA_ARCH_PRESETS["pi05"]
+    if args.arch in VLA_ARCH_PRESETS:
+        preset = VLA_ARCH_PRESETS[args.arch]
         args.max_length = (
             args.max_length if args.max_length is not None else preset.get("max_length", 48)
         )
@@ -138,7 +139,7 @@ def build_client(args):
         if list(args.image_keys) == default_lerobot_image_keys
         else args.image_keys
     )
-    if args.arch == "pi05":
+    if args.arch in VLA_ARCH_PRESETS:
         return LIBEROSimAdapter(
             client=VlaCppClient(
                 vla_addr=args.vla_addr,
@@ -166,7 +167,13 @@ def build_client(args):
     )
 
 
-def run_one_task(args, client, task: str, task_id: int) -> None:
+def run_one_task(
+    args,
+    client,
+    task: str,
+    task_id: int,
+    profiler: LiberoSuiteProfiler | None = None,
+) -> dict[str, Any]:
     output_dir = Path(args.output_dir) / args.arch / task / f"task_{task_id}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -193,9 +200,10 @@ def run_one_task(args, client, task: str, task_id: int) -> None:
 
         while True:
             if args.arch == "lingbot_va":
-                t0 = time.time()
+                step_before_chunk = step_id
+                t0 = time.perf_counter()
                 chunk = client.predict_chunk(obs)
-                predict_dt = time.time() - t0
+                predict_dt = time.perf_counter() - t0
                 chunk = chunk[:, :7]
                 if chunk.ndim != 2 or chunk.shape[0] % 4 != 0:
                     raise RuntimeError(f"LingBot action chunk must be [4*K,7], got {chunk.shape}")
@@ -226,14 +234,24 @@ def run_one_task(args, client, task: str, task_id: int) -> None:
                         break
                 cache_dt = 0.0
                 if not (done or truncated or episode_aborted) and key_frames and not args.lingbot_disable_cache_update:
-                    t1 = time.time()
+                    t1 = time.perf_counter()
                     client.update_cache(key_frames, chunk, imagine=False)
-                    cache_dt = time.time() - t1
+                    cache_dt = time.perf_counter() - t1
                 run_times.append(predict_dt + cache_dt)
+                replayed_steps = step_id - step_before_chunk
+                if profiler is not None and replayed_steps > 0:
+                    amortized_ms = 1000.0 * (predict_dt + cache_dt) / replayed_steps
+                    for _ in range(replayed_steps):
+                        profiler.record_step(amortized_ms)
+                    profiler.capture_inference(client)
             else:
-                t0 = time.time()
+                t0 = time.perf_counter()
                 action = client.get_action(obs)
-                run_times.append(time.time() - t0)
+                action_dt = time.perf_counter() - t0
+                run_times.append(action_dt)
+                if profiler is not None:
+                    profiler.record_step(1000.0 * action_dt)
+                    profiler.capture_inference(client)
 
                 try:
                     obs, reward, done, truncated, info = env.step(action)
@@ -256,6 +274,15 @@ def run_one_task(args, client, task: str, task_id: int) -> None:
                 print(f"- Final reward: {reward:.2f}")
                 print(f"- Episode Information:\n{info}")
                 print(f"- Average inference time per step: {round(1000 * avg_t, 2)} ms")
+                if profiler is not None:
+                    profiler.record_episode(
+                        task=task,
+                        task_id=task_id,
+                        episode=episode,
+                        success=bool(info.get("is_success", 0.0)),
+                        skipped=episode_aborted,
+                        environment_steps=step_id,
+                    )
                 break
 
         if episode_aborted:
@@ -277,6 +304,14 @@ def run_one_task(args, client, task: str, task_id: int) -> None:
     print(f"- Success rate: {success_count / counted:.2%}  ({int(success_count)}/{counted})")
     print(f"- Skipped (terminated mid-step): {skipped}/{args.n_episodes}")
     print(f"- Saved videos to: {output_dir.resolve()}")
+    return {
+        "task": task,
+        "task_id": task_id,
+        "episodes": args.n_episodes,
+        "successes": int(success_count),
+        "skipped": skipped,
+        "average_step_ms": avg_inf_ms,
+    }
 
 if __name__ == "__main__":
     pre_parser = argparse.ArgumentParser(add_help=False)
@@ -354,8 +389,21 @@ if __name__ == "__main__":
         "--n-action-steps", type=int, default=None,
         help="How many actions to replay from each predicted chunk before "
              "re-querying the model. Defaults to the selected arch preset "
-             "(pi05=5 to match openpi LIBERO replan_steps, lingbot_va=1).",
+             "(pi05=5, groot_n1=8, lingbot_va=1).",
     )
+    parser.add_argument("--profile-output", type=str, default=None,
+        help="Write full-suite table metrics to this JSON path; CSV and Markdown "
+             "rows are written beside it after a complete run.")
+    parser.add_argument("--profile-model-label", type=str, default=None,
+        help="Model label used in the generated table row.")
+    parser.add_argument("--profile-backbone-label", type=str, default=None,
+        help="Backbone label used in the generated table row.")
+    parser.add_argument("--profile-server-pid", type=int, default=None,
+        help="PID sampled for VRAM. By default it is derived from --vla-addr.")
+    parser.add_argument("--profile-vram-interval-s", type=float, default=0.25,
+        help="nvidia-smi VRAM sampling interval in seconds.")
+    parser.add_argument("--profile-warmup-requests", type=int, default=5,
+        help="Unique server requests excluded from the mean inf latency.")
 
     if conf_defaults:
         valid_dests = {action.dest for action in parser._actions}
@@ -379,5 +427,39 @@ if __name__ == "__main__":
     task_ids = resolve_task_ids(args)
 
     client = build_client(args)
-    for task_id in task_ids:
-        run_one_task(args, client, args.task, task_id)
+    profiler = None
+    if args.profile_output:
+        default_labels = {
+            "groot_n1": ("GR00T N1.7", "Qwen3-VL-16L"),
+            "pi05": ("pi0.5", "PaliGemma"),
+            "lingbot_va": ("LingBot-VA", "LingBot-VLM"),
+        }
+        model_default, backbone_default = default_labels[args.arch]
+        profiler = LiberoSuiteProfiler(
+            output_path=Path(args.profile_output),
+            model_label=args.profile_model_label or model_default,
+            backbone_label=args.profile_backbone_label or backbone_default,
+            arch=args.arch,
+            suite=args.task,
+            replay_chunk_size=args.n_action_steps,
+            expected_episodes=len(task_ids) * args.n_episodes,
+            server_address=args.vla_addr,
+            server_pid=args.profile_server_pid,
+            vram_interval_s=args.profile_vram_interval_s,
+            warmup_requests=args.profile_warmup_requests,
+        )
+        profiler.start()
+
+    complete = False
+    try:
+        for task_id in task_ids:
+            run_one_task(args, client, args.task, task_id, profiler)
+        complete = True
+    finally:
+        if profiler is not None:
+            profiler.stop()
+            result = profiler.write(complete=complete)
+            print(f"- Profile JSON: {profiler.output_path.resolve()}")
+            if complete:
+                print(f"- Profile table: {profiler.output_path.with_suffix('.md').resolve()}")
+                print(f"- Table ready: {result['table_ready']}")

@@ -9,6 +9,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(MODEL_BUILD_VLA_PI05 "Build pi0.5 runtime support" OFF)
 option(MODEL_BUILD_VLA_HY_VLA "Build HY-VLA runtime support" OFF)
+option(MODEL_BUILD_VLA_GROOT_N1 "Build NVIDIA GR00T N1 runtime support" OFF)
 option(MODEL_BUILD_WAM_LINGBOT_VA "Build LingBot-VA runtime support" OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -31,6 +32,9 @@ endif()
 if(MODEL_BUILD_VLA_HY_VLA)
     target_sources(vla_core PRIVATE models/hy_vla.cpp)
 endif()
+if(MODEL_BUILD_VLA_GROOT_N1)
+    target_sources(vla_core PRIVATE models/groot_n1.cpp)
+endif()
 if(MODEL_BUILD_WAM_LINGBOT_VA)
     target_sources(vla_core PRIVATE models/lingbot_va.cpp)
 endif()
@@ -44,6 +48,7 @@ target_include_directories(vla_core
 target_compile_definitions(vla_core PUBLIC
     MODEL_BUILD_VLA_PI05=$<BOOL:${MODEL_BUILD_VLA_PI05}>
     MODEL_BUILD_VLA_HY_VLA=$<BOOL:${MODEL_BUILD_VLA_HY_VLA}>
+    MODEL_BUILD_VLA_GROOT_N1=$<BOOL:${MODEL_BUILD_VLA_GROOT_N1}>
     MODEL_BUILD_WAM_LINGBOT_VA=$<BOOL:${MODEL_BUILD_WAM_LINGBOT_VA}>
 )
 target_link_libraries(vla_core PUBLIC llama ggml mtmd)
@@ -54,6 +59,9 @@ if(MODEL_BUILD_VLA_PI05)
 endif()
 if(MODEL_BUILD_VLA_HY_VLA)
     list(APPEND EMBODIED_ENABLED_MODELS "VLA/HY-VLA")
+endif()
+if(MODEL_BUILD_VLA_GROOT_N1)
+    list(APPEND EMBODIED_ENABLED_MODELS "VLA/GR00T-N1")
 endif()
 if(MODEL_BUILD_WAM_LINGBOT_VA)
     list(APPEND EMBODIED_ENABLED_MODELS "WAM/LingBot-VA")
@@ -151,6 +159,10 @@ endif()
 
 if(MODEL_BUILD_VLA_HY_VLA)
     add_vla_server_target(vla-hy-vla-server)
+endif()
+
+if(MODEL_BUILD_VLA_GROOT_N1)
+    add_vla_server_target(vla-groot-n1-server)
 endif()
 
 if(MODEL_BUILD_WAM_LINGBOT_VA)

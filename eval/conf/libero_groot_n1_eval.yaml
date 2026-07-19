@@ -1,0 +1,25 @@
+# NVIDIA GR00T N1.7 C++ server on LIBERO-object.
+
+arch: groot_n1
+libero_suite: object
+task_ids:
+  - 0
+n_episodes: 1
+max_steps: 0
+seed: 42
+
+vla_addr: tcp://127.0.0.1:5555
+
+output_dir: outputs/groot_n1_libero_object
+view_mode: multi-view
+fps: 30
+
+image_size: 256
+max_state_dim: 132
+real_action_dim: 7
+image_keys:
+  - observation.images.image
+  - observation.images.image2
+max_length: 1024
+n_action_steps: 8
+recv_timeout_ms: 900000

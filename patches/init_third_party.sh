@@ -20,7 +20,20 @@ THIRD_PARTY="${ROOT}/third_party"
 
 LLAMA_REPO="${LLAMA_REPO:-https://github.com/ggml-org/llama.cpp.git}"
 LLAMA_REF="${LLAMA_REF:-b9016}"
-LLAMA_PATCH="${LLAMA_PATCH:-${ROOT}/patches/llama.cpp-vla.patch}"
+DEFAULT_LLAMA_PATCHES=(
+    "${ROOT}/patches/llama.cpp-pi05.patch"
+    "${ROOT}/patches/llama.cpp-groot-n1.patch"
+    "${ROOT}/patches/llama.cpp-cuda-parity.patch"
+)
+
+if [[ -n "${LLAMA_PATCHES:-}" ]]; then
+    IFS=':' read -r -a LLAMA_PATCH_FILES <<< "${LLAMA_PATCHES}"
+elif [[ -n "${LLAMA_PATCH:-}" ]]; then
+    # Backward-compatible single-patch override.
+    LLAMA_PATCH_FILES=("${LLAMA_PATCH}")
+else
+    LLAMA_PATCH_FILES=("${DEFAULT_LLAMA_PATCHES[@]}")
+fi
 
 mkdir -p "${THIRD_PARTY}"
 
@@ -74,18 +87,21 @@ clone_or_update() {
 
 clone_or_update "llama.cpp" "${LLAMA_REPO}" "${LLAMA_REF}"
 
-if [[ -f "${LLAMA_PATCH}" ]]; then
-    if git -C "${THIRD_PARTY}/llama.cpp" apply --reverse --check "${LLAMA_PATCH}" 2>/dev/null; then
-        echo "[third_party] llama.cpp patch already applied"
-    elif git -C "${THIRD_PARTY}/llama.cpp" apply --check "${LLAMA_PATCH}" 2>/dev/null; then
-        git -C "${THIRD_PARTY}/llama.cpp" apply "${LLAMA_PATCH}"
-        echo "[third_party] applied llama.cpp patch"
-    else
-        echo "[third_party] ERROR: ${LLAMA_PATCH} does not apply to llama.cpp ${LLAMA_REF}" >&2
+for patch in "${LLAMA_PATCH_FILES[@]}"; do
+    patch_name="$(basename "${patch}")"
+    if [[ ! -f "${patch}" ]]; then
+        echo "[third_party] ERROR: llama.cpp patch not found: ${patch}" >&2
         exit 1
     fi
-else
-    echo "[third_party] warning: llama.cpp patch not found at ${LLAMA_PATCH}; skipping"
-fi
+    if git -C "${THIRD_PARTY}/llama.cpp" apply --reverse --check "${patch}" 2>/dev/null; then
+        echo "[third_party] ${patch_name} already applied"
+    elif git -C "${THIRD_PARTY}/llama.cpp" apply --check "${patch}" 2>/dev/null; then
+        git -C "${THIRD_PARTY}/llama.cpp" apply "${patch}"
+        echo "[third_party] applied ${patch_name}"
+    else
+        echo "[third_party] ERROR: ${patch_name} does not apply to llama.cpp ${LLAMA_REF}" >&2
+        exit 1
+    fi
+done
 
 echo "[third_party] ready"

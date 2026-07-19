@@ -1,0 +1,157 @@
+# Copyright 2026 SEU-PAISys
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# GR00T N1.7 Qwen3-VL compatibility changes for llama.cpp.
+
+diff --git a/convert_hf_to_gguf.py b/convert_hf_to_gguf.py
+index 6be1882..6dbf9fc 100755
+--- a/convert_hf_to_gguf.py
++++ b/convert_hf_to_gguf.py
+@@ -5148,6 +5148,8 @@ class Qwen3VLTextModel(Qwen3Model):
+             vision_config = self.hparams.get("vision_config", {})
+         deepstack_layer_num = len(vision_config.get("deepstack_visual_indexes", []))
+         self.gguf_writer.add_num_deepstack_layers(deepstack_layer_num)
++        if self.hparams.get("embedding_output_pre_norm", False):
++            self.gguf_writer.add_bool("qwen3vl.embedding_output_pre_norm", True)
+ 
+     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+         # Skip vision tensors - they go in the mmproj file
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 633a66f..419d4f5 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -193,6 +193,7 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
+     { LLM_KV_MOE_LATENT_SIZE,                   "%s.moe_latent_size"                   },
+     { LLM_KV_NEXTN_PREDICT_LAYERS,              "%s.nextn_predict_layers"              },
+     { LLM_KV_NUM_DEEPSTACK_LAYERS,              "%s.n_deepstack_layers"                },
++    { LLM_KV_EMBEDDING_OUTPUT_PRE_NORM,         "%s.embedding_output_pre_norm"         },
+     { LLM_KV_POOLING_TYPE,                      "%s.pooling_type"                      },
+     { LLM_KV_LOGIT_SCALE,                       "%s.logit_scale"                       },
+     { LLM_KV_DECODER_START_TOKEN_ID,            "%s.decoder_start_token_id"            },
+diff --git a/src/llama-arch.h b/src/llama-arch.h
+index 8f335f5..ccde238 100644
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -197,6 +197,7 @@ enum llm_kv {
+     LLM_KV_MOE_LATENT_SIZE,
+     LLM_KV_NEXTN_PREDICT_LAYERS,
+     LLM_KV_NUM_DEEPSTACK_LAYERS,
++    LLM_KV_EMBEDDING_OUTPUT_PRE_NORM,
+     LLM_KV_POOLING_TYPE,
+     LLM_KV_LOGIT_SCALE,
+     LLM_KV_DECODER_START_TOKEN_ID,
+diff --git a/src/llama-hparams.h b/src/llama-hparams.h
+index ac7f9ee..508155e 100644
+--- a/src/llama-hparams.h
++++ b/src/llama-hparams.h
+@@ -209,6 +209,7 @@ struct llama_hparams {
+ 
+     // qwen3vl deepstack
+     uint32_t n_deepstack_layers = 0;
++    bool embedding_output_pre_norm = false;
+ 
+     // gemma4 per-layer embedding
+     uint32_t n_embd_per_layer = 0;
+diff --git a/src/llama-model-saver.cpp b/src/llama-model-saver.cpp
+index 26864c1..7d1e9c8 100644
+--- a/src/llama-model-saver.cpp
++++ b/src/llama-model-saver.cpp
+@@ -229,6 +229,7 @@ void llama_model_saver::add_kv_from_model() {
+     add_kv(LLM_KV_MOE_EVERY_N_LAYERS,                hparams.moe_every_n_layers);
+     add_kv(LLM_KV_NEXTN_PREDICT_LAYERS,              hparams.nextn_predict_layers);
+     add_kv(LLM_KV_NUM_DEEPSTACK_LAYERS,              hparams.n_deepstack_layers);
++    add_kv(LLM_KV_EMBEDDING_OUTPUT_PRE_NORM,         hparams.embedding_output_pre_norm);
+     add_kv(LLM_KV_POOLING_TYPE,                      uint32_t(hparams.pooling_type));
+     add_kv(LLM_KV_LOGIT_SCALE,                       hparams.f_logit_scale);
+     add_kv(LLM_KV_DECODER_START_TOKEN_ID,            hparams.dec_start_token_id);
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index 54caff9..13cc387 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1367,6 +1367,8 @@ void llama_model::load_hparams(llama_model_loader & ml) {
+         case LLM_ARCH_QWEN3VL:
+             {
+                 ml.get_key(LLM_KV_NUM_DEEPSTACK_LAYERS, hparams.n_deepstack_layers, false);
++                ml.get_key(LLM_KV_EMBEDDING_OUTPUT_PRE_NORM,
++                           hparams.embedding_output_pre_norm, false);
+                 ml.get_key_or_arr(LLM_KV_ROPE_DIMENSION_SECTIONS, hparams.rope_sections, 4, true);
+                 ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+                 switch (hparams.n_layer) {
+diff --git a/src/models/qwen3vl.cpp b/src/models/qwen3vl.cpp
+index faa5f2e..702d6d5 100644
+--- a/src/models/qwen3vl.cpp
++++ b/src/models/qwen3vl.cpp
+@@ -103,6 +103,7 @@ llm_build_qwen3vl::llm_build_qwen3vl(const llama_model & model, const llm_graph_
+         inpL = cur;
+     }
+ 
++    ggml_tensor * pre_norm = inpL;
+     cur = inpL;
+ 
+     cur = build_norm(cur,
+@@ -110,7 +111,7 @@ llm_build_qwen3vl::llm_build_qwen3vl(const llama_model & model, const llm_graph_
+             LLM_NORM_RMS, -1);
+ 
+     cb(cur, "result_norm", -1);
+-    res->t_embd = cur;
++    res->t_embd = hparams.embedding_output_pre_norm ? pre_norm : cur;
+ 
+     // lm_head
+     cur = build_lora_mm(model.output, cur);
+diff --git a/tools/mtmd/models/qwen3vl.cpp b/tools/mtmd/models/qwen3vl.cpp
+index fa1100d..5e6f71f 100644
+--- a/tools/mtmd/models/qwen3vl.cpp
++++ b/tools/mtmd/models/qwen3vl.cpp
+@@ -44,7 +44,8 @@ ggml_cgraph * clip_graph_qwen3vl::build() {
+     }
+ 
+     // calculate absolute position embedding and apply
+-    ggml_tensor * learned_pos_embd = resize_position_embeddings();
++    ggml_tensor * learned_pos_embd = resize_position_embeddings(
++        GGML_SCALE_MODE_BILINEAR | GGML_SCALE_FLAG_ALIGN_CORNERS);
+     learned_pos_embd = ggml_cont_4d(
+         ctx0, learned_pos_embd,
+         n_embd * 2, n_patches_x / 2, n_patches_y, batch_size);
+diff --git a/tools/mtmd/mtmd.cpp b/tools/mtmd/mtmd.cpp
+index 5990778..5235a82 100644
+--- a/tools/mtmd/mtmd.cpp
++++ b/tools/mtmd/mtmd.cpp
+@@ -21,6 +21,8 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <filesystem>
++#include <fstream>
+ #include <vector>
+ 
+ // represents raw image data, layout is RGBRGBRGB...
+@@ -1042,6 +1044,24 @@ int32_t mtmd_encode(mtmd_context * ctx, const mtmd_image_tokens * image_tokens)
+     auto proj_type = clip_get_projector_type(ctx_clip);
+     int n_mmproj_embd = clip_n_mmproj_embd(ctx_clip);
+     ctx->image_embd_v.resize(image_tokens->n_tokens() * n_mmproj_embd);
++    if (const char * dump_dir = std::getenv("MTMD_DUMP_PREPROCESSED_DIR")) {
++        static size_t dump_index = 0;
++        std::error_code error;
++        std::filesystem::create_directories(dump_dir, error);
++        if (!error) {
++            for (const auto & entry : image_tokens->batch_f32.entries) {
++                char name[64];
++                std::snprintf(name, sizeof(name), "image_%02zu", dump_index++);
++                const std::filesystem::path base = std::filesystem::path(dump_dir) / name;
++                std::ofstream data(base.string() + ".f32", std::ios::binary);
++                data.write(
++                    reinterpret_cast<const char *>(entry->buf.data()),
++                    static_cast<std::streamsize>(entry->buf.size() * sizeof(float)));
++                std::ofstream shape(base.string() + ".shape.txt");
++                shape << entry->ny << ' ' << entry->nx << " 3\n";
++            }
++        }
++    }
+     bool ok = false;
+ 
+     if (clip_is_llava(ctx_clip)
