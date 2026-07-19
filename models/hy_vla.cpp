@@ -300,6 +300,8 @@ struct HyVLAModelArch final : ModelArchBase {
     mutable ggml_gallocr_t routed_galloc = nullptr;
     ggml_type matmul_type = GGML_TYPE_BF16;
     bool is_cuda = false;
+    bool vlm_only = false;
+    int32_t eos_token_id = 120020;
     int n_threads = 4;
     int text_layers_loaded = 0;
     bool prefix_vision_loaded = false;
@@ -314,6 +316,7 @@ struct HyVLAModelArch final : ModelArchBase {
     bool vision_cpu_sideload = false;
     ggml_tensor * Wnorm = nullptr;
     ggml_tensor * Wtext_norm = nullptr;
+    ggml_tensor * W_vocab = nullptr;
     ggml_tensor * W_sp = nullptr;
     ggml_tensor * b_sp = nullptr;
     ggml_tensor * W_ain = nullptr;
@@ -1081,41 +1084,50 @@ ggml_tensor * build_hy_expert_layer_with_prefix(
     return ggml_add(ctx, h1, mm_w(ctx, w.Wdown, inter));
 }
 
-bool load_config(const gguf_reader & g, Config & cfg) {
-    for (const char * k : {"hy_vla.architecture", "hy_vla.expert_hidden", "hy_vla.expert_intermediate",
+bool load_config(const gguf_reader & g, Config & cfg, bool vlm_only) {
+    for (const char * k : {"hy_vla.architecture",
                            "hy_vla.n_q_heads", "hy_vla.n_kv_heads", "hy_vla.head_dim",
-                           "hy_vla.n_layers", "hy_vla.n_action_steps", "hy_vla.num_steps",
-                           "hy_vla.max_state_dim", "hy_vla.max_action_dim",
-                           "hy_vla.flow_min_period", "hy_vla.flow_max_period",
+                           "hy_vla.n_layers",
                            "hy_vla.rms_norm_eps", "hy_vla.rope_theta"}) {
         if (!g.has_key(k)) {
             std::fprintf(stderr, "vla(hy_vla): GGUF missing key %s\n", k);
             return false;
         }
     }
+    if (!vlm_only) {
+        for (const char * k : {"hy_vla.expert_hidden", "hy_vla.expert_intermediate",
+                               "hy_vla.n_action_steps", "hy_vla.num_steps",
+                               "hy_vla.max_state_dim", "hy_vla.max_action_dim",
+                               "hy_vla.flow_min_period", "hy_vla.flow_max_period"}) {
+            if (!g.has_key(k)) {
+                std::fprintf(stderr, "vla(hy_vla): GGUF missing key %s\n", k);
+                return false;
+            }
+        }
+    }
     cfg = Config{};
     cfg.hidden = g.u32("hy_vla.vlm_hidden");
     cfg.intermediate = g.u32("hy_vla.vlm_intermediate");
-    cfg.expert_h = g.u32("hy_vla.expert_hidden");
-    cfg.expert_inter = g.u32("hy_vla.expert_intermediate");
+    cfg.expert_h = vlm_only ? 0 : g.u32("hy_vla.expert_hidden");
+    cfg.expert_inter = vlm_only ? 0 : g.u32("hy_vla.expert_intermediate");
     cfg.n_q_heads = g.u32("hy_vla.n_q_heads");
     cfg.n_kv_heads = g.u32("hy_vla.n_kv_heads");
     cfg.head_dim = g.u32("hy_vla.head_dim");
     cfg.q_full_dim = cfg.n_q_heads * cfg.head_dim;
     cfg.kv_full_dim = cfg.n_kv_heads * cfg.head_dim;
     cfg.n_layers = g.u32("hy_vla.n_layers");
-    cfg.n_lang = g.u32("hy_vla.tokenizer_max_length");
+    cfg.n_lang = vlm_only ? 0 : g.u32("hy_vla.tokenizer_max_length");
     cfg.n_img = 0;
-    cfg.n_suffix = g.u32("hy_vla.n_action_steps");
-    cfg.num_steps = (int) g.u32("hy_vla.num_steps");
-    cfg.max_state_dim = g.u32("hy_vla.max_state_dim");
-    cfg.max_action_dim = g.u32("hy_vla.max_action_dim");
+    cfg.n_suffix = vlm_only ? 0 : g.u32("hy_vla.n_action_steps");
+    cfg.num_steps = vlm_only ? 1 : (int) g.u32("hy_vla.num_steps");
+    cfg.max_state_dim = vlm_only ? 0 : g.u32("hy_vla.max_state_dim");
+    cfg.max_action_dim = vlm_only ? 0 : g.u32("hy_vla.max_action_dim");
     cfg.real_state_dim = 20;
     cfg.real_action_dim = 20;
     cfg.n_state = 1;
     cfg.n_full = cfg.n_suffix + 1;
-    cfg.min_period = g.f32("hy_vla.flow_min_period");
-    cfg.max_period = g.f32("hy_vla.flow_max_period");
+    cfg.min_period = vlm_only ? 1.0 : g.f32("hy_vla.flow_min_period");
+    cfg.max_period = vlm_only ? 1.0 : g.f32("hy_vla.flow_max_period");
     cfg.rms_eps = g.f32("hy_vla.rms_norm_eps");
     cfg.norm_eps = 1e-8f;
     cfg.rope_mode = GGML_ROPE_TYPE_NEOX;
@@ -1293,13 +1305,19 @@ std::vector<ggml_fp16_t> make_prefix_mask(int64_t n, const std::vector<std::vect
     return mask;
 }
 
+// The vocab matrix doubles as the input embedding: the VLA GGUF materializes
+// it as lm_head, a VLM-only GGUF keeps the tied embed_tokens tensor instead.
+const char * hy_vla_embedding_name(const gguf_reader & g) {
+    return g.first_existing("dual_tower.vlm.model.language_model.lm_head.weight",
+                            "language_model.model.embed_tokens.weight");
+}
+
 bool append_token_embeddings(gguf_reader & g, const std::vector<int32_t> & ids,
                              int64_t hidden, std::vector<float> & out) {
     if (ids.empty()) return true;
     const size_t old = out.size();
     out.resize(old + (size_t) ids.size() * (size_t) hidden);
-    return g.fetch_rows_f32("dual_tower.vlm.model.language_model.lm_head.weight",
-                            ids, out.data() + old, hidden);
+    return g.fetch_rows_f32(hy_vla_embedding_name(g), ids, out.data() + old, hidden);
 }
 
 bool write_binary_file(const char * path, const void * data, size_t bytes) {
@@ -1463,7 +1481,13 @@ std::unique_ptr<ModelArchBase> hy_vla_create(const std::string & mmproj_path,
     auto m = std::make_unique<HyVLAModelArch>();
     m->ckpt_path = ckpt_path;
     m->matmul_type = hy_vla_matmul_type_from_env();
-    if (!load_config(g, m->cfg)) return nullptr;
+    // A VLM-only GGUF (tied-embedding language/vision towers, no action
+    // expert) carries none of the expert/action keys or tensors.
+    m->vlm_only = !g.has_key("hy_vla.expert_hidden");
+    if (!load_config(g, m->cfg, m->vlm_only)) return nullptr;
+    if (g.has_key("hy_vla.eos_token_id")) {
+        m->eos_token_id = (int32_t) g.u32("hy_vla.eos_token_id");
+    }
 
 #ifdef GGML_USE_CUDA
     m->backend = ggml_backend_cuda_init(0);
@@ -1519,44 +1543,46 @@ std::unique_ptr<ModelArchBase> hy_vla_create(const std::string & mmproj_path,
         return t;
     };
 
-    m->layers.resize((size_t) m->cfg.n_layers);
-    for (int64_t i = 0; i < m->cfg.n_layers; ++i) {
-        char b[256];
-        auto nm = [&](const char * s) {
-            std::snprintf(b, sizeof(b), "expert.blk.%lld.%s", (long long) i, s);
-            return b;
-        };
-        HyLayerW & w = m->layers[(size_t) i];
-        w.ln_in = mk_f32(nm("attn_norm_v.weight"));
-        w.Wq = mk_mm(nm("attn_q_v.weight"));
-        w.Wk = mk_mm(nm("attn_k_v.weight"));
-        w.Wv = mk_mm(nm("attn_v_v.weight"));
-        w.Wo = mk_mm(nm("attn_o_v.weight"));
-        {
-            char qn[256];
-            char kn[256];
-            char qn_old[256];
-            char kn_old[256];
-            std::snprintf(qn, sizeof(qn), "vlm.blk.%lld.attn_q_norm.weight", (long long) i);
-            std::snprintf(kn, sizeof(kn), "vlm.blk.%lld.attn_k_norm.weight", (long long) i);
-            std::snprintf(qn_old, sizeof(qn_old), "dt.vlm.model.lm.model.layers.%lld.attn.query_layernorm.weight", (long long) i);
-            std::snprintf(kn_old, sizeof(kn_old), "dt.vlm.model.lm.model.layers.%lld.attn.key_layernorm.weight", (long long) i);
-            const char * q_name = g.first_existing(qn, qn_old);
-            const char * k_name = g.first_existing(kn, kn_old);
-            w.q_norm = mk_f32(q_name);
-            w.k_norm = mk_f32(k_name);
+    if (!m->vlm_only) {
+        m->layers.resize((size_t) m->cfg.n_layers);
+        for (int64_t i = 0; i < m->cfg.n_layers; ++i) {
+            char b[256];
+            auto nm = [&](const char * s) {
+                std::snprintf(b, sizeof(b), "expert.blk.%lld.%s", (long long) i, s);
+                return b;
+            };
+            HyLayerW & w = m->layers[(size_t) i];
+            w.ln_in = mk_f32(nm("attn_norm_v.weight"));
+            w.Wq = mk_mm(nm("attn_q_v.weight"));
+            w.Wk = mk_mm(nm("attn_k_v.weight"));
+            w.Wv = mk_mm(nm("attn_v_v.weight"));
+            w.Wo = mk_mm(nm("attn_o_v.weight"));
+            {
+                char qn[256];
+                char kn[256];
+                char qn_old[256];
+                char kn_old[256];
+                std::snprintf(qn, sizeof(qn), "vlm.blk.%lld.attn_q_norm.weight", (long long) i);
+                std::snprintf(kn, sizeof(kn), "vlm.blk.%lld.attn_k_norm.weight", (long long) i);
+                std::snprintf(qn_old, sizeof(qn_old), "dt.vlm.model.lm.model.layers.%lld.attn.query_layernorm.weight", (long long) i);
+                std::snprintf(kn_old, sizeof(kn_old), "dt.vlm.model.lm.model.layers.%lld.attn.key_layernorm.weight", (long long) i);
+                const char * q_name = g.first_existing(qn, qn_old);
+                const char * k_name = g.first_existing(kn, kn_old);
+                w.q_norm = mk_f32(q_name);
+                w.k_norm = mk_f32(k_name);
+            }
+            w.ln_post = mk_f32(nm("ffn_norm_v.weight"));
+            w.Wgate = mk_mm(nm("ffn_gate_v.weight"));
+            w.Wup = mk_mm(nm("ffn_up_v.weight"));
+            w.Wdown = mk_mm(nm("ffn_down_v.weight"));
         }
-        w.ln_post = mk_f32(nm("ffn_norm_v.weight"));
-        w.Wgate = mk_mm(nm("ffn_gate_v.weight"));
-        w.Wup = mk_mm(nm("ffn_up_v.weight"));
-        w.Wdown = mk_mm(nm("ffn_down_v.weight"));
+        m->Wnorm = mk_f32("expert.output_norm.weight");
+        m->W_sp = mk_f32("state_proj.weight");              m->b_sp = mk_f32("state_proj.bias");
+        m->W_ain = mk_mm("action_in_proj.weight");          m->b_ain = mk_f32("action_in_proj.bias");
+        m->W_at1 = mk_mm("action_time_mlp_in.weight");      m->b_at1 = mk_f32("action_time_mlp_in.bias");
+        m->W_at2 = mk_mm("action_time_mlp_out.weight");     m->b_at2 = mk_f32("action_time_mlp_out.bias");
+        m->W_aout = mk_f32("action_out_proj.weight");       m->b_aout = mk_f32("action_out_proj.bias");
     }
-    m->Wnorm = mk_f32("expert.output_norm.weight");
-    m->W_sp = mk_f32("state_proj.weight");              m->b_sp = mk_f32("state_proj.bias");
-    m->W_ain = mk_mm("action_in_proj.weight");          m->b_ain = mk_f32("action_in_proj.bias");
-    m->W_at1 = mk_mm("action_time_mlp_in.weight");      m->b_at1 = mk_f32("action_time_mlp_in.bias");
-    m->W_at2 = mk_mm("action_time_mlp_out.weight");     m->b_at2 = mk_f32("action_time_mlp_out.bias");
-    m->W_aout = mk_f32("action_out_proj.weight");       m->b_aout = mk_f32("action_out_proj.bias");
 
     if (const char * e = std::getenv("VLA_HY_VLA_TEXT_LAYERS")) {
         m->text_layers_loaded = std::max(0, std::min<int>((int) m->cfg.n_layers, std::atoi(e)));
@@ -1608,6 +1634,14 @@ std::unique_ptr<ModelArchBase> hy_vla_create(const std::string & mmproj_path,
         }
         m->Wtext_norm = mk_f32(g.first_existing("vlm.output_norm.weight",
                                                 "dual_tower.vlm.model.language_model.model.norm.weight"));
+    }
+    // Text generation multiplies hidden states by the tied vocab matrix.
+    // Only make it resident when the generate mode is requested so action
+    // inference does not pay for it.
+    if (const char * e = std::getenv("VLA_HY_VLA_DEBUG_OUTPUT")) {
+        if (std::strcmp(e, "generate") == 0) {
+            m->W_vocab = mk_mm(hy_vla_embedding_name(g));
+        }
     }
 
     if (const char * e = std::getenv("VLA_HY_VLA_VISION_LAYERS")) {
@@ -1833,6 +1867,11 @@ std::vector<float> HyVLAModelArch::predict(const Inputs & in) {
     const std::string debug_output = debug_output_env ? std::string(debug_output_env) : std::string();
     const float dt = -1.0f / (float) cfg.num_steps;
 
+    if (vlm_only && debug_output != "generate") {
+        std::fprintf(stderr, "vla(hy_vla): VLM-only GGUF has no action expert; only VLA_HY_VLA_DEBUG_OUTPUT=generate is supported\n");
+        return {};
+    }
+
     if (debug_output == "lang") {
         if (!in.lang_tokens || in.n_lang < 1) {
             std::fprintf(stderr, "vla(hy_vla): lang debug requires lang_tokens\n");
@@ -1982,6 +2021,137 @@ std::vector<float> HyVLAModelArch::predict(const Inputs & in) {
         ggml_gallocr_free(galloc);
         ggml_free(P);
         return out;
+    }
+
+    // Greedy text generation over the causal prefill graph. Inputs stay
+    // ids-in/ids-out: lang_tokens carries the prompt ids (plus optionally
+    // images through the standard vision frontend + prefix builder), the
+    // return vector carries the generated ids. Each step re-runs the
+    // prefill over the grown prefix; fine for short demo generations.
+    if (debug_output == "generate") {
+        if (!W_vocab) {
+            std::fprintf(stderr, "vla(hy_vla): generate requires VLA_HY_VLA_DEBUG_OUTPUT=generate at load time\n");
+            return {};
+        }
+        if (text_layers_loaded < 1) {
+            std::fprintf(stderr, "vla(hy_vla): generate requires VLA_HY_VLA_TEXT_LAYERS >= 1\n");
+            return {};
+        }
+        if (!in.lang_tokens || in.n_lang < 1) {
+            std::fprintf(stderr, "vla(hy_vla): generate requires lang_tokens\n");
+            return {};
+        }
+        int n_predict = 64;
+        if (const char * e = std::getenv("VLA_HY_VLA_N_PREDICT")) {
+            n_predict = std::max(1, std::atoi(e));
+        }
+
+        gguf_reader g;
+        if (!g.open(ckpt_path)) return {};
+
+        std::vector<float> prefix;
+        std::vector<int32_t> modality_mask;
+        const bool with_images = in.images && in.n_images > 0;
+        if (with_images) {
+            if (!prefix_vision_loaded) {
+                std::fprintf(stderr, "vla(hy_vla): generate with images requires stable GGUF VLM text/vision branches\n");
+                return {};
+            }
+            std::vector<float> visual_tokens;
+            int visual_views = 0;
+            if (!run_hy_vision_frontend_224(*this, in, visual_tokens, visual_views)) {
+                return {};
+            }
+            Inputs prefix_inputs = in;
+            prefix_inputs.precomputed_img_emb = visual_tokens.data();
+            prefix_inputs.n_img_views = visual_views * 49;
+            prefix_inputs.images = nullptr;
+            prefix_inputs.n_images = 0;
+            if (!build_hy_vla_prefix_from_visual_tokens(*this, prefix_inputs, 49,
+                                                        prefix, modality_mask)) {
+                return {};
+            }
+        } else {
+            const std::vector<int32_t> ids(in.lang_tokens, in.lang_tokens + in.n_lang);
+            if (!append_token_embeddings(g, ids, cfg.hidden, prefix)) return {};
+            modality_mask.assign(ids.size(), 0);
+        }
+        // Generated tokens are all text, so the vision segments are fixed
+        // for the whole loop. The override recomputes segment rows with
+        // bidirectional attention confined to the segment, matching the
+        // reference; without it patch rows leak causal attention to the
+        // pre-vision tokens and split tokens stay causal.
+        const std::vector<HyPrefixRange> visual_segments =
+            make_visual_override_segments(modality_mask.data(), (int) modality_mask.size());
+        const int gen_layers = std::max<int>(1, std::min<int>(text_layers_loaded, (int) run_layers));
+
+        std::vector<float> gen_ids;
+        gen_ids.reserve((size_t) n_predict);
+        for (int step = 0; step < n_predict; ++step) {
+            const int64_t n_tok = (int64_t) modality_mask.size();
+            ggml_init_params gp{(size_t) 512 * 1024 * 1024, nullptr, true};
+            ggml_context * G = ggml_init(gp);
+            if (!G) return {};
+            ggml_tensor * t_pref = ggml_new_tensor_2d(G, GGML_TYPE_F32, cfg.hidden, n_tok); ggml_set_input(t_pref);
+            ggml_tensor * t_pos = ggml_new_tensor_1d(G, GGML_TYPE_I32, n_tok); ggml_set_input(t_pos);
+            ggml_tensor * t_mask = ggml_new_tensor_2d(G, GGML_TYPE_F16, n_tok, n_tok); ggml_set_input(t_mask);
+            ggml_tensor * h = t_pref;
+            if (with_images) {
+                const std::vector<HyPrefixRun> runs =
+                    make_prefix_runs(modality_mask.data(), (int) modality_mask.size());
+                for (int i = 0; i < gen_layers; ++i) {
+                    h = build_hy_prefix_routed_layer(G, text_layers[(size_t) i], vision_layers[(size_t) i],
+                                                     h, t_pos, t_mask, cfg, runs, visual_segments, true);
+                }
+            } else {
+                for (int i = 0; i < gen_layers; ++i) {
+                    h = build_hy_text_layer(G, text_layers[(size_t) i], h, t_pos, t_mask, cfg, n_tok);
+                }
+            }
+            if (Wtext_norm) {
+                h = ggml_mul(G, ggml_rms_norm(G, h, cfg.rms_eps), Wtext_norm);
+            }
+            const size_t rb = (size_t) cfg.hidden * sizeof(float);
+            ggml_tensor * h_last = ggml_view_2d(G, h, cfg.hidden, 1, rb, rb * (size_t) (n_tok - 1));
+            ggml_tensor * logits = mm_w(G, W_vocab, h_last);
+            ggml_set_output(logits);
+            ggml_cgraph * gf = ggml_new_graph_custom(G, hy_vla_graph_size(1048576), false);
+            ggml_build_forward_expand(gf, logits);
+            ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+            if (!galloc || !ggml_gallocr_alloc_graph(galloc, gf)) {
+                std::fprintf(stderr, "vla(hy_vla): generate graph allocation failed\n");
+                if (galloc) ggml_gallocr_free(galloc);
+                ggml_free(G);
+                return {};
+            }
+            ggml_backend_tensor_set(t_pref, prefix.data(), 0, ggml_nbytes(t_pref));
+            std::vector<int32_t> pos((size_t) n_tok);
+            for (int64_t i = 0; i < n_tok; ++i) pos[(size_t) i] = (int32_t) i;
+            ggml_backend_tensor_set(t_pos, pos.data(), 0, ggml_nbytes(t_pos));
+            const std::vector<ggml_fp16_t> mask = make_prefix_mask(n_tok, nullptr);
+            ggml_backend_tensor_set(t_mask, mask.data(), 0, ggml_nbytes(t_mask));
+            if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) {
+                std::fprintf(stderr, "vla(hy_vla): generate graph compute failed\n");
+                ggml_gallocr_free(galloc);
+                ggml_free(G);
+                return {};
+            }
+            std::vector<float> logits_row((size_t) ggml_nelements(logits));
+            ggml_backend_tensor_get(logits, logits_row.data(), 0, logits_row.size() * sizeof(float));
+            ggml_gallocr_free(galloc);
+            ggml_free(G);
+
+            int32_t next = 0;
+            for (size_t i = 1; i < logits_row.size(); ++i) {
+                if (logits_row[i] > logits_row[(size_t) next]) next = (int32_t) i;
+            }
+            gen_ids.push_back((float) next);
+            if (next == eos_token_id) break;
+            if (!append_token_embeddings(g, {next}, cfg.hidden, prefix)) return {};
+            modality_mask.push_back(0);
+        }
+        stats.ms_total = std::chrono::duration<float, std::milli>(clk::now() - t0).count();
+        return gen_ids;
     }
 
     if (debug_output == "mixed_prefix") {
