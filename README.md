@@ -93,6 +93,26 @@ git clone <repo-url> && cd embodied.cpp
 The setup script applies the ordered llama.cpp patch series documented in
 [`patches/PATCH.md`](patches/PATCH.md).
 
+By default it prepares a combined source tree. For an isolated model build,
+select the llama.cpp patch profile before configuring CMake:
+
+```bash
+# HY-VLA / LingBot-VA only
+LLAMA_PATCH_PROFILE=none ./patches/init_third_party.sh
+
+# pi0.5 (and other non-GR00T models in the same build)
+LLAMA_PATCH_PROFILE=pi05 ./patches/init_third_party.sh
+
+# GR00T only
+LLAMA_PATCH_PROFILE=groot ./patches/init_third_party.sh
+
+# All supported models (also the default when LLAMA_PATCH_PROFILE is omitted)
+LLAMA_PATCH_PROFILE=all ./patches/init_third_party.sh
+```
+
+Use a clean `third_party/llama.cpp` when switching profiles; patch state is tied
+to that source tree rather than to an individual CMake build directory.
+
 ### 2.2 Get GGUF Weights
 
 Pre-converted GGUF releases for `Embodied.cpp` are available on Hugging Face:
@@ -245,15 +265,30 @@ CUDA_ARCH=120
 If you want a single build with all currently supported runtimes enabled:
 
 ```bash
-cmake -S . -B build \
+rm -rf third_party/llama.cpp
+LLAMA_PATCH_PROFILE=all ./patches/init_third_party.sh
+
+CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
+CUDA_ARCH=${CUDA_ARCH:-native}
+
+cmake -S . -B build-all \
   -DCMAKE_BUILD_TYPE=Release \
   -DMODEL_BUILD_VLA_PI05=ON \
   -DMODEL_BUILD_VLA_HY_VLA=ON \
   -DMODEL_BUILD_VLA_GROOT_N1=ON \
-  -DMODEL_BUILD_WAM_LINGBOT_VA=ON
-cmake --build build --target vla-pi05-server vla-hy-vla-server \
+  -DMODEL_BUILD_WAM_LINGBOT_VA=ON \
+  -DGGML_CUDA=ON \
+  -DGGML_CUDA_FAST_MATH=OFF \
+  -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
+  -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
+cmake --build build-all --target vla-pi05-server vla-hy-vla-server \
   vla-groot-n1-server wam-lingbot-server -j$(nproc)
 ```
+
+This combined build uses GR00T's strict CUDA settings for the shared GGML CUDA
+backend. Use separate build directories and the narrower patch profiles above
+when you want each model's default performance-oriented backend settings.
 
 ### 2.5 Start a Server
 

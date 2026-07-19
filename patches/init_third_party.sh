@@ -25,14 +25,39 @@ DEFAULT_LLAMA_PATCHES=(
     "${ROOT}/patches/llama.cpp-groot-n1.patch"
     "${ROOT}/patches/llama.cpp-cuda-parity.patch"
 )
+LLAMA_PATCH_PROFILE="${LLAMA_PATCH_PROFILE:-all}"
+LLAMA_PATCH_SELECTION="profile"
 
 if [[ -n "${LLAMA_PATCHES:-}" ]]; then
     IFS=':' read -r -a LLAMA_PATCH_FILES <<< "${LLAMA_PATCHES}"
+    LLAMA_PATCH_SELECTION="custom"
 elif [[ -n "${LLAMA_PATCH:-}" ]]; then
     # Backward-compatible single-patch override.
     LLAMA_PATCH_FILES=("${LLAMA_PATCH}")
+    LLAMA_PATCH_SELECTION="custom"
 else
-    LLAMA_PATCH_FILES=("${DEFAULT_LLAMA_PATCHES[@]}")
+    case "${LLAMA_PATCH_PROFILE}" in
+        none)
+            LLAMA_PATCH_FILES=()
+            ;;
+        pi05)
+            LLAMA_PATCH_FILES=("${ROOT}/patches/llama.cpp-pi05.patch")
+            ;;
+        groot)
+            LLAMA_PATCH_FILES=(
+                "${ROOT}/patches/llama.cpp-groot-n1.patch"
+                "${ROOT}/patches/llama.cpp-cuda-parity.patch"
+            )
+            ;;
+        all)
+            LLAMA_PATCH_FILES=("${DEFAULT_LLAMA_PATCHES[@]}")
+            ;;
+        *)
+            echo "[third_party] ERROR: unknown LLAMA_PATCH_PROFILE=${LLAMA_PATCH_PROFILE}" >&2
+            echo "[third_party] expected one of: none, pi05, groot, all" >&2
+            exit 1
+            ;;
+    esac
 fi
 
 mkdir -p "${THIRD_PARTY}"
@@ -86,6 +111,24 @@ clone_or_update() {
 }
 
 clone_or_update "llama.cpp" "${LLAMA_REPO}" "${LLAMA_REF}"
+
+if [[ "${LLAMA_PATCH_SELECTION}" == "profile" ]]; then
+    declare -A selected_patches=()
+    for patch in "${LLAMA_PATCH_FILES[@]}"; do
+        selected_patches["$(basename "${patch}")"]=1
+    done
+    for patch in "${DEFAULT_LLAMA_PATCHES[@]}"; do
+        patch_name="$(basename "${patch}")"
+        if [[ -z "${selected_patches[${patch_name}]:-}" ]] &&
+           git -C "${THIRD_PARTY}/llama.cpp" apply --reverse --check "${patch}" 2>/dev/null; then
+            echo "[third_party] ERROR: ${patch_name} is already applied but excluded by" >&2
+            echo "[third_party] LLAMA_PATCH_PROFILE=${LLAMA_PATCH_PROFILE}." >&2
+            echo "[third_party] Remove third_party/llama.cpp and initialize the requested profile again." >&2
+            exit 1
+        fi
+    done
+    echo "[third_party] llama.cpp patch profile: ${LLAMA_PATCH_PROFILE}"
+fi
 
 for patch in "${LLAMA_PATCH_FILES[@]}"; do
     patch_name="$(basename "${patch}")"

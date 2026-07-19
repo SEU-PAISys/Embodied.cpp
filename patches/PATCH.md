@@ -35,6 +35,30 @@ The first patch is the established pre-GR00T project patch. The latter two are
 kept separate so Qwen3-VL compatibility and optional CUDA numerical controls can
 be reviewed or upstreamed independently.
 
+## Patch Profiles
+
+Select a source profile before configuring CMake:
+
+| Profile | Patches | Intended models |
+|---|---|---|
+| `none` | none | HY-VLA or LingBot-VA without pi0.5/GR00T |
+| `pi05` | `llama.cpp-pi05.patch` | pi0.5, or a non-GR00T build containing pi0.5 |
+| `groot` | `llama.cpp-groot-n1.patch`, `llama.cpp-cuda-parity.patch` | GR00T-only |
+| `all` | all three | combined pi0.5 + GR00T source tree (default) |
+
+```bash
+LLAMA_PATCH_PROFILE=pi05 ./patches/init_third_party.sh
+LLAMA_PATCH_PROFILE=groot ./patches/init_third_party.sh
+LLAMA_PATCH_PROFILE=none  ./patches/init_third_party.sh
+LLAMA_PATCH_PROFILE=all   ./patches/init_third_party.sh
+```
+
+Patch state belongs to the llama.cpp source tree, not a CMake build directory.
+Switching profiles therefore requires a clean `third_party/llama.cpp`; the setup
+script fails if it detects an already-applied patch excluded by the requested
+profile. This prevents a `pi05` or `none` build from silently retaining GR00T or
+strict-CUDA changes.
+
 ## Overrides
 
 The default series can be replaced without editing the setup script:
