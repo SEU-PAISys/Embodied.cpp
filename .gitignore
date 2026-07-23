@@ -98,6 +98,20 @@ venv/
 outputs/
 wandb/
 runs/
+eval/conf/*.local.yaml
+
+# Local development notes
+docs/
+
+# Local Cosmos3 parity / capture helpers
+eval/run_robolab_cosmos3_pytorch.sh
+models/cosmos3_legacy.cpp
+scripts/bench_cosmos3_w8_native_vs_marlin.py
+scripts/cosmos3_*_reference.json
+scripts/analyze_*
+scripts/capture_*
+scripts/check_*
+scripts/inspect_*
 
 # Third-party code populated by setup scripts
 third_party/*

@@ -42,6 +42,7 @@ enum class Arch {
     PI05,       ///< Physical Intelligence pi0.5 policy.
     LINGBOT_VA, ///< Robbyant LingBot-VA video-action world model.
     HY_VLA,     ///< Tencent Hy-Embodied-0.5-VLA dual-tower flow policy.
+    COSMOS3,    ///< NVIDIA Cosmos3 video-action world model.
     GROOT_N1,   ///< NVIDIA GR00T N1 vision-language-action policy.
 };
 
@@ -73,6 +74,13 @@ public:
      *         @c cfg.num_steps * cfg.real_action_dim.
      */
     virtual std::vector<float> predict(const Inputs& in) = 0;
+
+    virtual bool supports_wam() const { return false; }
+    virtual WamOutput predict_wam(const WamInputs&) {
+        WamOutput out;
+        out.error = "architecture does not implement the typed WAM interface";
+        return out;
+    }
 };
 
 /**
@@ -109,9 +117,13 @@ std::unique_ptr<ModelArchBase> hy_vla_create(const std::string& mmproj_path,
                                              const std::string& ckpt_path,
                                              const std::string& config_path);
 
+std::unique_ptr<ModelArchBase> cosmos3_create(const std::string& mmproj_path,
+                                              const std::string& ckpt_path,
+                                             const std::string& config_path);
+
 std::unique_ptr<ModelArchBase> groot_n1_create(const std::string& mmproj_path,
                                                const std::string& ckpt_path,
-                                               const std::string& config_path);
+                                                const std::string& config_path);
 
 /**
  * @brief Inspect a GGUF and identify the architecture tag.

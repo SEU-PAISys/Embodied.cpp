@@ -1,0 +1,69 @@
+# Cosmos3 C++ WAM server on RoboLab.
+# Defaults mirror the official Cosmos3 Policy-DROID RoboLab rollout settings.
+# They are forwarded to the C++ WAM model as cosmos3.* step params, so native
+# diffusion bring-up uses the same values without calling the PyTorch policy
+# runner.
+
+arch: cosmos3
+
+paths:
+  embodied_root: .
+  robolab_dir: eval/sim/robolab/RoboLab
+  robolab_python: eval/sim/robolab/RoboLab/.venv/bin/python
+  cosmos3_vllm_python: ../cosmos-framework/examples/quantized_robot_policy/.venv/bin/python
+  model: models/cosmos3_robolab_full_w8_with_vae_encoder.gguf
+  output_root: outputs/cosmos3/robolab
+
+server:
+  wam_binary: build-cosmos3-cuda/wam-server
+  wam_addr: tcp://127.0.0.1:5557
+  ready_timeout_s: 240
+  policy_gpu: 0
+
+robolab:
+  tasks:
+    - BananaOnPlateTask
+    - BowlInBinTask
+    - PlasticBottlesInSquarePailTask
+    - BananaInBowlTask
+  num_envs: 1
+  num_runs: 1
+  sim_gpu: 0
+  device: cuda:0
+  headless: true
+  video_mode: none
+  rendering_type: performance
+  output_name: cosmos3_cpp_robolab
+
+policy:
+  guidance: 3.0
+  num_steps: 4
+  shift: 5.0
+  sampler: unipc
+  resolution: 480
+  conditioning_fps: 15.0
+  action_chunk_size: 32
+  action_dim: 8
+  max_action_dim: 64
+  image_height: 540
+  image_width: 640
+  action_space: joint_pos
+  action_domain_name: droid_lerobot
+  action_domain_id: 8
+  use_state: true
+  history_length: 1
+  seed: 0
+  deterministic_seed: 0
+  enable_mot_condition_cache: true
+  invert_gripper: true
+  qwen_tokenizer_root: assets/qwen3_vl_tokenizer
+
+client:
+  # Predict 32 actions per policy forward, execute this many before replanning.
+  # TODO: Reconfirm the official DROID/RoboLab full_w8 rollout horizon against
+  # the actual RoboLab policies/cosmos3 client. The 8-step served horizon is
+  # explicit in RoboCasa365 quant, while DROID/RoboLab docs also mention 32-step
+  # open-loop chunks.
+  action_horizon: 8
+  action_dim: 8
+  request_timeout_ms: 900000

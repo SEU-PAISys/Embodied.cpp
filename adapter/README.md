@@ -40,6 +40,8 @@ Current pieces:
   migration.
 - `sim/robotwin.py` contains the RobotWin observation/action adapter.
 - `sim/libero.py` contains the LIBERO parser registry and simulator adapter.
+- `sim/robolab.py` contains the RoboLab/Cosmos3 observation adapter used by
+  the native WAM evaluation path.
 
 This maps to the third design principle in the report:
 `Typed embodied I/O and deployment adapters`.

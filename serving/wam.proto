@@ -1,0 +1,56 @@
+// Copyright 2026 SEU-PAISys
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package wam;
+
+enum TensorDType {
+  F32  = 0;
+  BF16 = 1;
+  F16  = 2;
+  U8   = 3;
+  I32  = 4;
+}
+
+message Tensor {
+  string name = 1;
+  TensorDType dtype = 2;
+  repeated uint64 shape = 3;
+  bytes data = 4;
+}
+
+message PingRequest { string text = 1; }
+message ResetRequest { uint64 session_id = 1; }
+
+message StepRequest {
+  uint64 session_id = 1;
+  string instruction = 2;
+  repeated float state = 3;
+  repeated Tensor tensors = 4;
+  // Generic per-step policy/runtime parameters.  WAM servers should treat these
+  // as model-owned keys and validate them in the model implementation, not in
+  // the transport layer.
+  map<string, string> params = 5;
+}
+
+message WamRequest {
+  uint64 request_id = 1;
+  oneof kind {
+    PingRequest ping = 2;
+    ResetRequest reset = 3;
+    StepRequest step = 4;
+  }
+}
+
+message WamResponse {
+  uint64 request_id = 1;
+  string error = 2;
+  string status = 3;
+  repeated float action_chunk = 4;
+  uint32 chunk_size = 5;
+  uint32 action_dim = 6;
+  repeated Tensor tensors = 7;
+  float latency_ms_total = 8;
+  float latency_ms_inference = 9;
+}

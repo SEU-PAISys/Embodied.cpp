@@ -59,11 +59,13 @@ bool detect_arch_gguf(const std::string& path, Arch* out) {
         try_str("pi05.architecture",     arch_str) ||
         try_str("lingbot_va.architecture", arch_str) ||
         try_str("hy_vla.architecture",     arch_str) ||
-        try_str("groot_n1.architecture",   arch_str)) {
+        try_str("groot_n1.architecture",   arch_str) ||
+        try_str("cosmos3.architecture",    arch_str)) {
         if      (arch_str == "pi05")       { *out = Arch::PI05;       ok = true; }
         else if (arch_str == "lingbot_va") { *out = Arch::LINGBOT_VA; ok = true; }
         else if (arch_str == "hy_vla")     { *out = Arch::HY_VLA;     ok = true; }
         else if (arch_str == "groot_n1")   { *out = Arch::GROOT_N1;   ok = true; }
+        else if (arch_str == "cosmos3")    { *out = Arch::COSMOS3;    ok = true; }
     }
 
     gguf_free(gctx);
@@ -142,16 +144,26 @@ Model* model_load(const std::string& mmproj_path, const std::string& ckpt_path,
                          "(reconfigure with -DMODEL_BUILD_VLA_HY_VLA=ON)\n");
 #endif
             break;
-    case Arch::GROOT_N1:
-        std::printf("vla: arch = groot_n1\n");
+        case Arch::GROOT_N1:
+            std::printf("vla: arch = groot_n1\n");
 #if MODEL_BUILD_VLA_GROOT_N1
-        impl = groot_n1_create(mmproj_path, ckpt_path, config_path);
+            impl = groot_n1_create(mmproj_path, ckpt_path, config_path);
 #else
-        std::fprintf(stderr,
-             "vla: GR00T N1 support was not built into this binary "
-             "(reconfigure with -DMODEL_BUILD_VLA_GROOT_N1=ON)\n");
+            std::fprintf(stderr,
+                         "vla: GR00T N1 support was not built into this binary "
+                         "(reconfigure with -DMODEL_BUILD_VLA_GROOT_N1=ON)\n");
 #endif
-        break;
+            break;
+        case Arch::COSMOS3:
+            std::printf("vla: arch = cosmos3\n");
+#if MODEL_BUILD_WAM_COSMOS3
+            impl = cosmos3_create(mmproj_path, ckpt_path, config_path);
+#else
+            std::fprintf(stderr,
+                         "vla: Cosmos3 support was not built into this binary "
+                         "(reconfigure with -DMODEL_BUILD_WAM_COSMOS3=ON)\n");
+#endif
+            break;
     }
     if (!impl) return nullptr;
 
@@ -174,6 +186,19 @@ const Stats& last_stats(const Model* m) {
 
 std::vector<float> predict(Model* m, const Inputs& in) {
     return m->impl->predict(in);
+}
+
+bool model_supports_wam(const Model * m) {
+    return m && m->impl && m->impl->supports_wam();
+}
+
+WamOutput wam_predict(Model * m, const WamInputs & in) {
+    if (!m || !m->impl) {
+        WamOutput out;
+        out.error = "model is null";
+        return out;
+    }
+    return m->impl->predict_wam(in);
 }
 
 }

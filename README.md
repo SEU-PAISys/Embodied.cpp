@@ -18,10 +18,15 @@
 `Embodied.cpp` is an inference runtime for **embodied AI models**: Vision-Language-Action (VLA) models and World-Action Models (WAMs) for robotic perception and control. It runs these models efficiently on heterogeneous hardware (CPU / CUDA GPU / NPU) using GGUF weights, and ships with ready-to-use servers and evaluation clients.
 
 ---
+## NEWS
+
+
+---
 
 ## Table of Contents
 
 - [Embodied.cpp 🤖](#embodiedcpp-)
+  - [NEWS](#news)
   - [Table of Contents](#table-of-contents)
   - [1. 🧭 Current Support and Roadmap](#1--current-support-and-roadmap)
     - [1.1 Model Support Roadmap](#11-model-support-roadmap)
@@ -71,7 +76,7 @@ $\dagger$ We plan to support this model once it is open sourcece :)
 | VLA | Asynchronous VLA | [GR00T N1.7](https://developer.nvidia.com/isaac/gr00t) | [Fast-in-Slow](https://github.com/CHEN-H01/Fast-in-Slow) |
 | WAM | Predict-then-Act WAM | - | [UniPi](https://github.com/flow-diffusion/AVDC_experiments/) |
 | WAM | Unified AR-Modeling WAM | [LingBot-VA](https://github.com/robbyant/lingbot-va) | [WorldVLA](https://github.com/alibaba-damo-academy/RynnVLA-002) |
-| WAM | Shared-Backbone WAM | - | [DreamZero](https://github.com/dreamzero0/dreamzero), [FastWAM](https://github.com/yuantianyuan01/FastWAM), [Cosmos Policy](https://github.com/nvlabs/cosmos-policy), [UWM](https://github.com/ShuangLI59/unified_video_action) |
+| WAM | Shared-Backbone WAM | [Cosmos3-Nano(full_w8 version)](https://github.com/nvidia/cosmos) | [DreamZero](https://github.com/dreamzero0/dreamzero), [FastWAM](https://github.com/yuantianyuan01/FastWAM), [UWM](https://github.com/ShuangLI59/unified_video_action) |
 | WAM | Latent-space WAM | - | [Being-H0.7](https://github.com/BeingBeyond/Being-H) |
 
 ### 1.2 Runtime Roadmap

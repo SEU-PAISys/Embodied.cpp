@@ -26,7 +26,9 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -105,6 +107,48 @@ struct ImageView {
     int          w;                          ///< Image width in pixels.
     int          h;                          ///< Image height in pixels.
     PixelFormat  format = PixelFormat::U8;   ///< Pixel format of @ref data.
+};
+
+// Typed WAM boundary. Unlike VLA Inputs, WAM inputs may contain video/action
+// latents and model-specific conditioning tensors.  The generic WAM server
+// owns the backing storage; these views are borrowed only during predict_wam.
+enum class WamDType {
+    F32,
+    BF16,
+    F16,
+    U8,
+    I32,
+};
+
+struct WamTensorView {
+    std::string name;
+    WamDType dtype = WamDType::F32;
+    const void * data = nullptr;
+    size_t bytes = 0;
+    std::vector<int64_t> shape;
+};
+
+struct WamInputs {
+    uint64_t session_id = 0;
+    std::string instruction;
+    std::vector<float> state;
+    std::vector<WamTensorView> tensors;
+    std::map<std::string, std::string> params;
+};
+
+struct WamTensor {
+    std::string name;
+    WamDType dtype = WamDType::F32;
+    std::vector<int64_t> shape;
+    std::vector<uint8_t> data;
+};
+
+struct WamOutput {
+    std::vector<float> action;
+    int64_t action_steps = 0;
+    int64_t action_dim = 0;
+    std::vector<WamTensor> tensors;
+    std::string error;
 };
 
 /**
@@ -246,5 +290,11 @@ struct Stats {
  * @return Reference valid until the next @ref predict call.
  */
 const Stats& last_stats(const Model* m);
+
+/// True when the architecture implements the typed WAM interface.
+bool model_supports_wam(const Model * m);
+
+/// Run a typed WAM request. Returns an error-bearing WamOutput when unsupported.
+WamOutput wam_predict(Model * m, const WamInputs & in);
 
 }
