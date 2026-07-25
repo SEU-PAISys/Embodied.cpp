@@ -1,16 +1,26 @@
-# NVIDIA GR00T N1.7 C++ server on LIBERO-object.
+# GR00T N1.7 full LIBERO-object fidelity/profile run.
+# 10 tasks x 20 episodes = 200 episodes, matching the table protocol.
 
 arch: groot_n1
 libero_suite: object
 task_ids:
   - 0
-n_episodes: 1
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+n_episodes: 20
 max_steps: 0
 seed: 42
 
 vla_addr: tcp://127.0.0.1:5555
 
-output_dir: outputs/groot_n1_libero_object
+output_dir: outputs/groot_n1_q8_0_libero_object
 view_mode: multi-view
 fps: 30
 
@@ -23,3 +33,9 @@ image_keys:
 max_length: 1024
 n_action_steps: 8
 recv_timeout_ms: 900000
+
+profile_output: outputs/groot_n1_q8_0_libero_object/profile.json
+profile_model_label: GR00T N1.7
+profile_backbone_label: Cosmos-Reason2-2B
+profile_vram_interval_s: 0.25
+profile_warmup_requests: 5

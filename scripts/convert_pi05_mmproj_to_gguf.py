@@ -11,28 +11,34 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
+import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 from safetensors import safe_open
 
-import gguf
+REPO_ROOT = Path(__file__).resolve().parents[1]
+GGUF_PY = REPO_ROOT / "third_party" / "llama.cpp" / "gguf-py"
+if GGUF_PY.exists():
+    sys.path.insert(0, str(GGUF_PY))
+
+try:
+    import gguf
+except Exception as exc:
+    raise SystemExit(f"failed to import gguf from {GGUF_PY}: {exc}")
+
+from gguf_quantize import TensorQuantizer, add_outtype_args
 
 PFX_CANDIDATES = [
     "model.paligemma_with_expert.paligemma.model",
     "paligemma_with_expert.paligemma.model",
 ]
 
-
-def _bf16_to_u16_bytes(t: torch.Tensor) -> np.ndarray:
-    if t.dtype != torch.bfloat16:
-        t = t.to(torch.bfloat16)
-    return t.view(torch.uint16).contiguous().cpu().numpy()
-
-
-def _f32_np(t: torch.Tensor) -> np.ndarray:
-    return t.to(torch.float32).contiguous().cpu().numpy()
+MMPROJ_MATMUL_RE = re.compile(
+    r"^(?:mm\.input_projection|v\.blk\.\d+\."
+    r"(?:ffn_(?:up|down)|attn_[qkv]|attn_out))\.weight$"
+)
 
 
 def _pick_prefix(keys: set[str], candidates: list[str], probe_suffix: str) -> str:
@@ -42,22 +48,14 @@ def _pick_prefix(keys: set[str], candidates: list[str], probe_suffix: str) -> st
     raise SystemExit(f"cannot resolve checkpoint prefix for {probe_suffix!r}")
 
 
-def _add_tensor(writer: gguf.GGUFWriter, name: str, t: torch.Tensor, *,
-                raw_shape: list[int] | None = None) -> None:
-    if t.dtype == torch.bfloat16:
-        writer.add_tensor(
-            name,
-            _bf16_to_u16_bytes(t),
-            raw_shape=raw_shape or list(t.shape),
-            raw_dtype=gguf.GGMLQuantizationType.BF16,
-        )
-    else:
-        writer.add_tensor(
-            name,
-            _f32_np(t),
-            raw_shape=raw_shape,
-            raw_dtype=gguf.GGMLQuantizationType.F32,
-        )
+def _add_tensor(writer: gguf.GGUFWriter, quantizer: TensorQuantizer,
+                name: str, tensor: torch.Tensor) -> None:
+    quantizer.add_tensor(
+        writer,
+        name,
+        tensor,
+        quantize=MMPROJ_MATMUL_RE.fullmatch(name) is not None,
+    )
 
 
 def main() -> int:
@@ -66,17 +64,21 @@ def main() -> int:
     )
     ap.add_argument("--ckpt", type=Path, required=True,
                     help="pi0.5 LeRobot checkpoint directory containing model.safetensors")
-    ap.add_argument("--out", type=Path, required=True,
-                    help="Output mmproj GGUF path")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="Output mmproj GGUF path (default: <ckpt>/pi05-mmproj[-TYPE].gguf)")
+    add_outtype_args(ap)
     args = ap.parse_args()
 
     ckpt = args.ckpt.resolve()
+    default_name = "pi05-mmproj.gguf" if args.outtype == "bf16" else f"pi05-mmproj-{args.outtype}.gguf"
+    out = (args.out or ckpt / default_name).resolve()
+    quantizer = TensorQuantizer(args.outtype, args.ggml_lib)
     sf_path = ckpt / "model.safetensors"
     if not sf_path.is_file():
         raise SystemExit(f"missing {sf_path}")
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    writer = gguf.GGUFWriter(str(args.out), arch="clip")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    writer = gguf.GGUFWriter(str(out), arch="clip")
     writer.add_string("general.name", "_Workdir_Pi05_Libero_Finetuned_V044")
     writer.add_string("general.type", "mmproj")
     writer.add_string("general.finetune", "_workdir_pi05_libero_finetuned_v044")
@@ -95,7 +97,8 @@ def main() -> int:
     writer.add_uint32("clip.vision.projection_dim", 2048)
     writer.add_array("clip.vision.image_mean", [0.5, 0.5, 0.5])
     writer.add_array("clip.vision.image_std", [0.5, 0.5, 0.5])
-    writer.add_file_type(gguf.LlamaFileType.MOSTLY_BF16)
+    writer.add_file_type(quantizer.file_type)
+    writer.add_string("pi05.mmproj.quantization", args.outtype.upper())
 
     with safe_open(str(sf_path), framework="pt") as sf:
         keys = set(sf.keys())
@@ -107,46 +110,50 @@ def main() -> int:
         def get(name: str) -> torch.Tensor:
             return sf.get_tensor(name)
 
+        def add(name: str, tensor: torch.Tensor) -> None:
+            _add_tensor(writer, quantizer, name, tensor)
+
         # The local PaliGemma mtmd projector path applies a legacy
         # 1/sqrt(hidden_size) scale after the linear projection. Transformers'
         # PaliGemma projector is just Linear(weight, bias), so fold the inverse
         # scale into the exported tensors without changing third_party code.
         proj_scale = math.sqrt(2048.0)
-        _add_tensor(writer, "mm.input_projection.bias",   get(f"{mm}.bias").to(torch.float32) * proj_scale)
-        _add_tensor(writer, "mm.input_projection.weight", get(f"{mm}.weight") * proj_scale)
+        add("mm.input_projection.bias",   get(f"{mm}.bias").to(torch.float32) * proj_scale)
+        add("mm.input_projection.weight", get(f"{mm}.weight") * proj_scale)
 
-        _add_tensor(writer, "v.patch_embd.bias",      get(f"{ve}.embeddings.patch_embedding.bias"))
-        _add_tensor(writer, "v.patch_embd.weight",    get(f"{ve}.embeddings.patch_embedding.weight"))
-        _add_tensor(writer, "v.position_embd.weight", get(f"{ve}.embeddings.position_embedding.weight"))
+        add("v.patch_embd.bias",      get(f"{ve}.embeddings.patch_embedding.bias"))
+        add("v.patch_embd.weight",    get(f"{ve}.embeddings.patch_embedding.weight"))
+        add("v.position_embd.weight", get(f"{ve}.embeddings.position_embedding.weight"))
 
         for i in range(27):
             src = f"{ve}.encoder.layers.{i}"
             dst = f"v.blk.{i}"
-            _add_tensor(writer, f"{dst}.ln1.bias",         get(f"{src}.layer_norm1.bias").to(torch.float32))
-            _add_tensor(writer, f"{dst}.ln1.weight",       get(f"{src}.layer_norm1.weight").to(torch.float32))
-            _add_tensor(writer, f"{dst}.ln2.bias",         get(f"{src}.layer_norm2.bias").to(torch.float32))
-            _add_tensor(writer, f"{dst}.ln2.weight",       get(f"{src}.layer_norm2.weight").to(torch.float32))
-            _add_tensor(writer, f"{dst}.ffn_up.bias",      get(f"{src}.mlp.fc1.bias").to(torch.float32))
-            _add_tensor(writer, f"{dst}.ffn_up.weight",    get(f"{src}.mlp.fc1.weight"))
-            _add_tensor(writer, f"{dst}.ffn_down.bias",    get(f"{src}.mlp.fc2.bias").to(torch.float32))
-            _add_tensor(writer, f"{dst}.ffn_down.weight",  get(f"{src}.mlp.fc2.weight"))
-            _add_tensor(writer, f"{dst}.attn_k.bias",      get(f"{src}.self_attn.k_proj.bias").to(torch.float32))
-            _add_tensor(writer, f"{dst}.attn_k.weight",    get(f"{src}.self_attn.k_proj.weight"))
-            _add_tensor(writer, f"{dst}.attn_out.bias",    get(f"{src}.self_attn.out_proj.bias").to(torch.float32))
-            _add_tensor(writer, f"{dst}.attn_out.weight",  get(f"{src}.self_attn.out_proj.weight"))
-            _add_tensor(writer, f"{dst}.attn_q.bias",      get(f"{src}.self_attn.q_proj.bias").to(torch.float32))
-            _add_tensor(writer, f"{dst}.attn_q.weight",    get(f"{src}.self_attn.q_proj.weight"))
-            _add_tensor(writer, f"{dst}.attn_v.bias",      get(f"{src}.self_attn.v_proj.bias").to(torch.float32))
-            _add_tensor(writer, f"{dst}.attn_v.weight",    get(f"{src}.self_attn.v_proj.weight"))
+            add(f"{dst}.ln1.bias",         get(f"{src}.layer_norm1.bias").to(torch.float32))
+            add(f"{dst}.ln1.weight",       get(f"{src}.layer_norm1.weight").to(torch.float32))
+            add(f"{dst}.ln2.bias",         get(f"{src}.layer_norm2.bias").to(torch.float32))
+            add(f"{dst}.ln2.weight",       get(f"{src}.layer_norm2.weight").to(torch.float32))
+            add(f"{dst}.ffn_up.bias",      get(f"{src}.mlp.fc1.bias").to(torch.float32))
+            add(f"{dst}.ffn_up.weight",    get(f"{src}.mlp.fc1.weight"))
+            add(f"{dst}.ffn_down.bias",    get(f"{src}.mlp.fc2.bias").to(torch.float32))
+            add(f"{dst}.ffn_down.weight",  get(f"{src}.mlp.fc2.weight"))
+            add(f"{dst}.attn_k.bias",      get(f"{src}.self_attn.k_proj.bias").to(torch.float32))
+            add(f"{dst}.attn_k.weight",    get(f"{src}.self_attn.k_proj.weight"))
+            add(f"{dst}.attn_out.bias",    get(f"{src}.self_attn.out_proj.bias").to(torch.float32))
+            add(f"{dst}.attn_out.weight",  get(f"{src}.self_attn.out_proj.weight"))
+            add(f"{dst}.attn_q.bias",      get(f"{src}.self_attn.q_proj.bias").to(torch.float32))
+            add(f"{dst}.attn_q.weight",    get(f"{src}.self_attn.q_proj.weight"))
+            add(f"{dst}.attn_v.bias",      get(f"{src}.self_attn.v_proj.bias").to(torch.float32))
+            add(f"{dst}.attn_v.weight",    get(f"{src}.self_attn.v_proj.weight"))
 
-        _add_tensor(writer, "v.post_ln.bias",   get(f"{ve}.post_layernorm.bias").to(torch.float32))
-        _add_tensor(writer, "v.post_ln.weight", get(f"{ve}.post_layernorm.weight").to(torch.float32))
+        add("v.post_ln.bias",   get(f"{ve}.post_layernorm.bias").to(torch.float32))
+        add("v.post_ln.weight", get(f"{ve}.post_layernorm.weight").to(torch.float32))
 
+    quantizer.finish()
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()
     writer.close()
-    print(f"wrote {args.out} ({args.out.stat().st_size / (1024 * 1024):.1f} MiB)")
+    print(f"wrote {out} ({out.stat().st_size / (1024 * 1024):.1f} MiB)")
     return 0
 
 

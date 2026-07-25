@@ -40,7 +40,7 @@ ARCH_PRESETS = {
         "tokenizer": None,
         "max_state_dim": 32,
         "max_length": 200,
-        "n_action_steps": 5,
+        "n_action_steps": 10,
         "use_fast_tokenizer": True,
     },
     "hy_vla": {

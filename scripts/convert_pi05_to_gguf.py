@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -25,7 +27,17 @@ import numpy as np
 import torch
 from safetensors import safe_open
 
-import gguf
+REPO_ROOT = Path(__file__).resolve().parents[1]
+GGUF_PY = REPO_ROOT / "third_party" / "llama.cpp" / "gguf-py"
+if GGUF_PY.exists():
+    sys.path.insert(0, str(GGUF_PY))
+
+try:
+    import gguf
+except Exception as exc:
+    raise SystemExit(f"failed to import gguf from {GGUF_PY}: {exc}")
+
+from gguf_quantize import TensorQuantizer, add_outtype_args
 
 ARCH = "pi05"
 KV = lambda name: f"{ARCH}.{name}"
@@ -53,15 +65,9 @@ GEMMA_300M = dict(expert_h=1024, expert_inter=4096)
 ROPE_THETA   = 10000.0
 RMS_NORM_EPS = 1e-6
 
-def _bf16_to_u16_bytes(t: torch.Tensor) -> np.ndarray:
-    if t.dtype != torch.bfloat16:
-        print(f"  warn: casting non-BF16 tensor (dtype={t.dtype}) to BF16 for storage")
-        t = t.to(torch.bfloat16)
-    return t.view(torch.uint16).contiguous().cpu().numpy()
-
-def _f32_np(t: torch.Tensor) -> np.ndarray:
-    assert t.dtype == torch.float32, t.dtype
-    return t.contiguous().cpu().numpy()
+PI05_MATMUL_RE = re.compile(
+    r"^(?:vlm|aex)\.blk\.\d+\.(?:attn_[qkvo]|ffn_(?:gate|up|down))\.weight$"
+)
 
 def _join_key(prefix: str, suffix: str) -> str:
     return f"{prefix}.{suffix}" if prefix else suffix
@@ -73,19 +79,17 @@ def _pick_prefix(keys: set[str], candidates: list[str], probe_suffix: str) -> st
             return prefix
     raise SystemExit(f"cannot resolve checkpoint prefix for {probe_suffix or candidates[0]!r}")
 
-def _add_one_tensor(writer: gguf.GGUFWriter, dst_name: str, t: torch.Tensor) -> None:
+def _add_one_tensor(writer: gguf.GGUFWriter, quantizer: TensorQuantizer,
+                    dst_name: str, t: torch.Tensor) -> None:
+    quantizer.add_tensor(
+        writer,
+        dst_name,
+        t,
+        quantize=PI05_MATMUL_RE.fullmatch(dst_name) is not None,
+    )
 
-    if t.dtype == torch.float32:
-        writer.add_tensor(dst_name, _f32_np(t),
-                          raw_dtype=gguf.GGMLQuantizationType.F32)
-    elif t.dtype == torch.bfloat16:
-        writer.add_tensor(dst_name, _bf16_to_u16_bytes(t),
-                          raw_shape=list(t.shape),
-                          raw_dtype=gguf.GGMLQuantizationType.BF16)
-    else:
-        raise NotImplementedError(f"unsupported dtype {t.dtype} for {dst_name}")
-
-def _stream_block(writer: gguf.GGUFWriter, sf, src_pfx: str, dst_pfx: str, n_layers: int) -> None:
+def _stream_block(writer: gguf.GGUFWriter, quantizer: TensorQuantizer,
+                  sf, src_pfx: str, dst_pfx: str, n_layers: int) -> None:
 
     suffix_map = [
         ("input_layernorm.weight",          "attn_norm.weight"),
@@ -101,9 +105,10 @@ def _stream_block(writer: gguf.GGUFWriter, sf, src_pfx: str, dst_pfx: str, n_lay
     for i in range(n_layers):
         for src_suf, dst_suf in suffix_map:
             t = sf.get_tensor(f"{src_pfx}.layers.{i}.{src_suf}")
-            _add_one_tensor(writer, f"{dst_pfx}.blk.{i}.{dst_suf}", t)
+            _add_one_tensor(writer, quantizer, f"{dst_pfx}.blk.{i}.{dst_suf}", t)
 
-def _stream_adarms_block(writer: gguf.GGUFWriter, sf, src_pfx: str, dst_pfx: str, n_layers: int) -> None:
+def _stream_adarms_block(writer: gguf.GGUFWriter, quantizer: TensorQuantizer,
+                         sf, src_pfx: str, dst_pfx: str, n_layers: int) -> None:
     # pi0.5 uses adaptive RMSNorm in the action expert; export the dense
     # scale/shift/gate modulators instead of plain Gemma norm weights.
     suffix_map = [
@@ -122,7 +127,7 @@ def _stream_adarms_block(writer: gguf.GGUFWriter, sf, src_pfx: str, dst_pfx: str
     for i in range(n_layers):
         for src_suf, dst_suf in suffix_map:
             t = sf.get_tensor(f"{src_pfx}.layers.{i}.{src_suf}")
-            _add_one_tensor(writer, f"{dst_pfx}.blk.{i}.{dst_suf}", t)
+            _add_one_tensor(writer, quantizer, f"{dst_pfx}.blk.{i}.{dst_suf}", t)
 
 def _read_norm_eps(meta_path: Path) -> Optional[float]:
 
@@ -286,11 +291,14 @@ def main() -> int:
     ap.add_argument("--ckpt", type=Path, required=True,
         help="lerobot pi0.5 checkpoint dir (model.safetensors + config.json + policy_*processor.json)")
     ap.add_argument("--out", type=Path, default=None,
-        help="Output GGUF path (default: <ckpt>/pi05.gguf)")
+        help="Output GGUF path (default: <ckpt>/pi05[-TYPE].gguf)")
+    add_outtype_args(ap)
     args = ap.parse_args()
 
     ckpt = args.ckpt.resolve()
-    out  = (args.out or ckpt / "pi05.gguf").resolve()
+    default_name = "pi05.gguf" if args.outtype == "bf16" else f"pi05-{args.outtype}.gguf"
+    out  = (args.out or ckpt / default_name).resolve()
+    quantizer = TensorQuantizer(args.outtype, args.ggml_lib)
     sf_path  = ckpt / "model.safetensors"
     cfg_path = ckpt / "config.json"
     if not sf_path.exists():
@@ -406,19 +414,22 @@ def main() -> int:
     print(f"writing {out}")
     writer = gguf.GGUFWriter(str(out), arch=ARCH)
     _add_kv(writer, cfg)
+    writer.add_uint32("general.quantization_version", 2)
+    writer.add_file_type(quantizer.file_type)
+    writer.add_string(KV("quantization"), args.outtype.upper())
 
-    _add_one_tensor(writer, "token_embd.weight",      sf.get_tensor(pfx_vlm_head))
-    _add_one_tensor(writer, "vlm.output_norm.weight", sf.get_tensor(f"{pfx_vlm}.norm.weight"))
-    _stream_block(writer, sf, pfx_vlm, "vlm", cfg["n_layers"])
+    _add_one_tensor(writer, quantizer, "token_embd.weight",      sf.get_tensor(pfx_vlm_head))
+    _add_one_tensor(writer, quantizer, "vlm.output_norm.weight", sf.get_tensor(f"{pfx_vlm}.norm.weight"))
+    _stream_block(writer, quantizer, sf, pfx_vlm, "vlm", cfg["n_layers"])
 
-    _add_one_tensor(writer, "aex.output_norm.dense.weight", sf.get_tensor(f"{pfx_aex}.norm.dense.weight"))
-    _add_one_tensor(writer, "aex.output_norm.dense.bias",   sf.get_tensor(f"{pfx_aex}.norm.dense.bias"))
-    _stream_adarms_block(writer, sf, pfx_aex, "aex", cfg["n_layers"])
+    _add_one_tensor(writer, quantizer, "aex.output_norm.dense.weight", sf.get_tensor(f"{pfx_aex}.norm.dense.weight"))
+    _add_one_tensor(writer, quantizer, "aex.output_norm.dense.bias",   sf.get_tensor(f"{pfx_aex}.norm.dense.bias"))
+    _stream_adarms_block(writer, quantizer, sf, pfx_aex, "aex", cfg["n_layers"])
 
     # pi0.5 embeds state in text, so there is no state_proj in the runtime path.
     for suf in ["action_in_proj.weight", "action_in_proj.bias",
                 "action_out_proj.weight", "action_out_proj.bias"]:
-        _add_one_tensor(writer, suf, sf.get_tensor(_join_key(pfx_proj, suf)))
+        _add_one_tensor(writer, quantizer, suf, sf.get_tensor(_join_key(pfx_proj, suf)))
     for src, dst in [
         ("time_mlp_in.weight",  "time_mlp_in.weight"),
         ("time_mlp_in.bias",    "time_mlp_in.bias"),
@@ -430,11 +441,12 @@ def main() -> int:
         src_key = _join_key(pfx_proj, src)
         if src_key not in keys:
             src_key = _join_key(pfx_proj, src.replace('time_mlp_', 'action_time_mlp_'))
-        _add_one_tensor(writer, dst, sf.get_tensor(src_key))
+        _add_one_tensor(writer, quantizer, dst, sf.get_tensor(src_key))
 
     for k, v in stats.items():
         writer.add_tensor(k, v, raw_dtype=gguf.GGMLQuantizationType.F32)
 
+    quantizer.finish()
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()

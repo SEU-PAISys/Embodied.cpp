@@ -95,6 +95,17 @@ struct gguf_reader {
     std::vector<uint8_t> read_convert(const char * name, ggml_type target, bool gemma_norm) {
         const ggml_tensor * t = meta(name);
         if (!t) { std::fprintf(stderr, "vla(pi05): missing tensor %s\n", name); return {}; }
+        if (t->type == target && !gemma_norm) {
+            std::vector<uint8_t> out(ggml_nbytes(t));
+            if (!read_raw(name, out.data())) return {};
+            return out;
+        }
+        if (ggml_is_quantized(t->type)) {
+            std::fprintf(stderr,
+                         "vla(pi05): cannot convert %s from %s to %s\n",
+                         name, ggml_type_name(t->type), ggml_type_name(target));
+            return {};
+        }
         const int64_t n = ggml_nelements(t);
 
         std::vector<float> f32(n);
@@ -104,8 +115,13 @@ struct gguf_reader {
             std::vector<ggml_bf16_t> tmp(n);
             if (!read_raw(name, tmp.data())) return {};
             ggml_bf16_to_fp32_row(tmp.data(), f32.data(), n);
+        } else if (t->type == GGML_TYPE_F16) {
+            std::vector<ggml_fp16_t> tmp(n);
+            if (!read_raw(name, tmp.data())) return {};
+            ggml_fp16_to_fp32_row(tmp.data(), f32.data(), n);
         } else {
-            std::fprintf(stderr, "vla(pi05): tensor %s has unsupported type %d\n", name, (int) t->type);
+            std::fprintf(stderr, "vla(pi05): tensor %s has unsupported type %s\n",
+                         name, ggml_type_name(t->type));
             return {};
         }
         if (gemma_norm) for (int64_t i = 0; i < n; ++i) f32[i] += 1.0f;
@@ -120,7 +136,37 @@ struct gguf_reader {
             ggml_fp32_to_bf16_row(f32.data(), reinterpret_cast<ggml_bf16_t *>(out.data()), n);
             return out;
         }
-        std::fprintf(stderr, "vla(pi05): unsupported resident type %d for %s\n", (int) target, name);
+        if (target == GGML_TYPE_F16) {
+            std::vector<uint8_t> out(n * sizeof(ggml_fp16_t));
+            ggml_fp32_to_fp16_row(f32.data(), reinterpret_cast<ggml_fp16_t *>(out.data()), n);
+            return out;
+        }
+        if (ggml_is_quantized(target)) {
+            const int64_t n_per_row = t->ne[0];
+            const int64_t nrows = n / n_per_row;
+            const int64_t block_size = ggml_blck_size(target);
+            if (n_per_row % block_size != 0) {
+                std::fprintf(stderr,
+                             "vla(pi05): cannot quantize %s to %s: ne0=%lld block=%lld\n",
+                             name, ggml_type_name(target), (long long) n_per_row,
+                             (long long) block_size);
+                return {};
+            }
+            const size_t expected = (size_t) nrows * (size_t) (n_per_row / block_size) *
+                                    ggml_type_size(target);
+            std::vector<uint8_t> out(expected);
+            const size_t written = ggml_quantize_chunk(
+                target, f32.data(), out.data(), 0, nrows, n_per_row, nullptr);
+            if (written != expected) {
+                std::fprintf(stderr,
+                             "vla(pi05): quantized byte mismatch for %s (%zu vs %zu)\n",
+                             name, written, expected);
+                return {};
+            }
+            return out;
+        }
+        std::fprintf(stderr, "vla(pi05): unsupported resident type %s for %s\n",
+                     ggml_type_name(target), name);
         return {};
     }
 
@@ -523,12 +569,12 @@ std::unique_ptr<ModelArchBase> pi05_create(const std::string& mmproj_path,
     const Config & cfg = m->cfg;
     std::printf("vla(pi05): hidden=%lld inter=%lld heads=%lldq/%lldkv x%lld n_layers=%lld "
                 "expert_h=%lld expert_inter=%lld chunk=%lld steps=%d real_state=%lld real_action=%lld "
-                "matmul_weights=%s\n",
+                "matmul_default=%s (quantized GGUF matrices preserve source type)\n",
                 (long long) cfg.hidden, (long long) cfg.intermediate, (long long) cfg.n_q_heads,
                 (long long) cfg.n_kv_heads, (long long) cfg.head_dim, (long long) cfg.n_layers,
                 (long long) cfg.expert_h, (long long) cfg.expert_inter, (long long) cfg.n_suffix,
                 cfg.num_steps, (long long) cfg.real_state_dim, (long long) cfg.real_action_dim,
-                m->matmul_type == GGML_TYPE_F32 ? "F32" : "BF16");
+                ggml_type_name(m->matmul_type));
 
 #ifdef GGML_USE_CUDA
     m->backend = ggml_backend_cuda_init( 0);
@@ -590,7 +636,14 @@ std::unique_ptr<ModelArchBase> pi05_create(const std::string& mmproj_path,
     auto mk_mm = [&](const char * name) -> ggml_tensor * {
         const ggml_tensor * gt = g.meta(name);
         if (!gt) { std::fprintf(stderr, "vla(pi05): missing tensor %s\n", name); return nullptr; }
-        return mk(name, m->matmul_type, GGML_MAX_DIMS, gt->ne);
+        ggml_type type = ggml_is_quantized(gt->type) ? gt->type : m->matmul_type;
+        if (ggml_is_quantized(type) && gt->ne[0] % ggml_blck_size(type) != 0) {
+            std::fprintf(stderr,
+                         "vla(pi05): %s ne0=%lld is incompatible with %s; using BF16\n",
+                         name, (long long) gt->ne[0], ggml_type_name(type));
+            type = GGML_TYPE_BF16;
+        }
+        return mk(name, type, GGML_MAX_DIMS, gt->ne);
     };
     auto mk_f32 = [&](const char * name) -> ggml_tensor * {
         const ggml_tensor * gt = g.meta(name);

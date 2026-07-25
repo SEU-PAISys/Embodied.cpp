@@ -160,7 +160,7 @@ the fastest way to get started.
 Install the required system packages for your platform before building.
 
 **Linux:**
-Make sure `cmake`, `protobuf`, `zeromq`, `cppzmq`, `pkg-config` and `uv` are
+Make sure `cmake`, `protobuf=3.20.3`, `zeromq`, `cppzmq`, `pkg-config` and `uv` are
 available before building. A typical Ubuntu/Debian native-Linux installation is:
 
 ```bash
@@ -191,6 +191,19 @@ cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DMODEL_BUILD_VLA_PI05=ON
 cmake --build build --target vla-pi05-server -j$(nproc)
+```
+
+**pi0.5, CUDA GPU:**
+```bash
+cmake -S . -B build-pi05-cuda \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMODEL_BUILD_VLA_PI05=ON \
+  -DGGML_CUDA=ON \
+  -DGGML_CUDA_NCCL=OFF \
+  -DCMAKE_CUDA_COMPILER=<your-nvcc-path> \
+  -DCMAKE_CUDA_ARCHITECTURES=86
+
+cmake --build build-pi05-cuda --target vla-pi05-server -j$(nproc)
 ```
 
 **pi0.5 on macOS / Apple Silicon, CPU-only:**
@@ -247,7 +260,7 @@ uses cuBLAS and disables CUDA fast-math approximations.
 CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
 CUDA_ARCH=${CUDA_ARCH:-native}
 
-cmake -S . -B build-cuda \
+cmake -S . -B build-groot-cuda \
   -DCMAKE_BUILD_TYPE=Release \
   -DMODEL_BUILD_VLA_GROOT_N1=ON \
   -DGGML_CUDA=ON \
@@ -255,7 +268,7 @@ cmake -S . -B build-cuda \
   -DGGML_CUDA_FORCE_CUBLAS=ON \
   -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
   -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-cmake --build build-cuda --target vla-groot-n1-server -j$(nproc)
+cmake --build build-groot-cuda --target vla-groot-n1-server -j$(nproc)
 ```
 
 Common explicit values include `75` (Turing), `80` or `86` (Ampere), `89`
@@ -300,17 +313,15 @@ when you want each model's default performance-oriented backend settings.
 ```bash
 # VLA server (pi0.5)
 ./build/vla-pi05-server \
-  checkpoints/pi05/pi05-mmproj.gguf \
-  checkpoints/pi05/pi05.gguf
+  checkpoints/pi05_libero_finetuned_v044/pi05-mmproj.gguf \
+  checkpoints/pi05_libero_finetuned_v044/pi05.gguf
 
 # VLA server (HY-VLA)
 ./build/vla-hy-vla-server \
   checkpoints/Hy-Embodied-0.5-VLA-RoboTwin/Hy-Embodied-0.5-VLA-RoboTwin_bf16.gguf
 
-# VLA server (GR00T N1.7, strict BF16 parity mode)
-VLA_GROOT_WEIGHT_DTYPE=bf16 \
-GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F=1 \
-./build-cuda/vla-groot-n1-server \
+# VLA server (GR00T N1.7)
+./build-groot-cuda/vla-groot-n1-server \
   --bind tcp://127.0.0.1:5555 \
   --backbone checkpoints/groot-n1/qwen3vl-backbone-bf16.gguf \
   checkpoints/groot-n1/qwen3vl-mmproj-bf16.gguf \
@@ -334,22 +345,15 @@ to keep intermediate tensors close to the official implementation. Set
 ```bash
 # Start the pi0.5 server in another shell first.
 ./build/vla-pi05-server \
-  checkpoints/pi05/pi05-mmproj.gguf \
-  checkpoints/pi05/pi05.gguf
+  checkpoints/pi05_libero_finetuned_v044/pi05-mmproj.gguf \
+  checkpoints/pi05_libero_finetuned_v044/pi05.gguf
 
 # Install the LIBERO runtime once
 bash eval/sim/libero/setup_libero.sh
 
 # Run one LIBERO smoke-test episode
 eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
-  --arch pi05 \
-  --libero-suite object \
-  --task-id 0 \
-  --n-episodes 1 \
-  --max-steps 80 \
-  --seed 42 \
-  --tokenizer lerobot/pi05_libero \
-  --vla-addr tcp://127.0.0.1:5555
+  --conf eval/conf/libero_pi05_eval.yaml
 ```
 
 **HY-VLA on RoboTwin:**
@@ -370,39 +374,14 @@ eval/sim/robotwin/robotwin_uv/.venv/bin/python \
   --episodes 1
 ```
 
-**GR00T N1.7 on LIBERO:**
+**GR00T N1.7 C++ on LIBERO:**
 
 Start the GR00T server shown above, install LIBERO once, then run the checked-in
 LIBERO-object configuration:
 
-The checked-in [configuration](eval/conf/libero_groot_n1_eval.yaml) is a
-single-task smoke test (`task_ids: [0]`, one episode). To evaluate every task in
-the LIBERO-object suite, change the following fields in that file:
-
-```yaml
-libero_suite: object
-task_ids:
-  - 0
-  - 1
-  - 2
-  - 3
-  - 4
-  - 5
-  - 6
-  - 7
-  - 8
-  - 9
-n_episodes: 20
-max_steps: 0
-output_dir: outputs/groot_n1_libero_full
-```
-
-The explicit `task_ids` list covers every task in the object suite. Setting
-`max_steps: 0` uses the suite-specific episode limit rather than imposing a
-shorter smoke-test limit. With 10 object tasks and 30 episodes per task, this
-runs 300 rollouts.
-Adjust `n_episodes` if your evaluation protocol requires a different number of
-trials.
+The checked-in [configuration](eval/conf/libero_groot_n1_eval.yaml) covers all
+10 object tasks with 20 episodes per task (200 rollouts). Setting `max_steps: 0`
+uses the suite-specific episode limit.
 
 ```bash
 bash eval/sim/libero/setup_libero.sh
@@ -470,14 +449,7 @@ Example pi0.5 smoke test:
 
 ```bash
 eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
-  --arch pi05 \
-  --libero-suite object \
-  --task-id 0 \
-  --n-episodes 1 \
-  --max-steps 80 \
-  --tokenizer lerobot/pi05_libero \
-  --vla-addr tcp://127.0.0.1:5555 \
-  --output-dir outputs/pi05_libero_smoke
+  --conf eval/conf/libero_pi05_eval.yaml
 ```
 
 ### 3.2 RoboTwin
@@ -505,10 +477,29 @@ GGUF conversion scripts are in [`scripts/`](scripts/):
 |---|---|
 | `convert_pi05_to_gguf.py` | pi0.5 model weights |
 | `convert_pi05_mmproj_to_gguf.py` | pi0.5 multimodal projector |
-| `convert_groot_n1_to_gguf.py` | GR00T N1.7 action head and LIBERO statistics |
-| `prepare_groot_n1_backbone.py` | Extracted, layer-truncated Qwen3-VL Hugging Face directory |
+| `convert_groot_n1_to_gguf.py` | Quantized GR00T N1.7 action head and LIBERO statistics |
+| `prepare_groot_n1_backbone.py` | Offline GR00T action head + truncated Qwen3-VL text/mmproj GGUFs |
 | `convert_hy_vla_to_gguf.py` | HY-VLA combined vision+action |
 | `convert_lingbot_va_to_gguf.py` | LingBot-VA transformer + companion GGUFs |
+
+Generate all three GR00T N1.7 files from local models without network access:
+
+```bash
+python scripts/prepare_groot_n1_backbone.py \
+  --checkpoint checkpoints/groot-n1/libero_object_official_local \
+  --output-dir checkpoints/groot-n1/qwen3vl-backbone-hf \
+  --gguf-dir checkpoints/groot-n1 \
+  --reuse-prepared \
+  --outtype q8_0 \
+  --ggml-lib build/bin/libggml-base.so
+```
+
+This writes `qwen3vl-backbone-q4_k.gguf`, `qwen3vl-mmproj-q4_k.gguf`, and
+`groot-n1.7-libero-object-action-head-q4_k.gguf`. Supported output types are
+`bf16`, `q2_k`, `q3_k`, `q4_0`, `q4_k`, `q5_0`, `q5_k`, `q6_k`, and `q8_0`.
+For additional quantization variants, rerun with `--reuse-prepared` so the
+extracted safetensors are not copied again. The script only downloads metadata
+when `--metadata-repo` is explicitly provided.
 
 Quantization helpers:
 

@@ -143,7 +143,13 @@ models/lingbot_va_original.cpp
 /scripts/validate_*.py
 
 # test
-eval/client/libero_profile.py
 eval/conf/libero_groot_n1_profile_eval.yaml
 
-LOCAL_README.md
+# Local Python reference evaluations
+/LOCAL_README.md
+/eval/client/run_pi05_libero_python.py
+/eval/client/run_groot_libero_python.py
+/eval/conf/libero_pi05_python_eval.yaml
+/eval/conf/libero_groot_n1_python_eval.yaml
+/eval/sim/libero/setup_pi05_python_conda.sh
+/eval/sim/libero/setup_groot_python_conda.sh

@@ -22,8 +22,8 @@ eval/sim/libero/libero_uv/.venv/bin/python \
 
 Use explicit paths for machine-local assets such as tokenizers when needed.
 
-GR00T N1.7 uses the tokenizer embedded in its Qwen3-VL GGUF, so its LIBERO
-configuration needs no tokenizer path:
+The C++ GR00T N1.7 path uses the tokenizer embedded in its Qwen3-VL GGUF, so its
+LIBERO configuration needs no tokenizer path:
 
 ```bash
 eval/sim/libero/libero_uv/.venv/bin/python \
