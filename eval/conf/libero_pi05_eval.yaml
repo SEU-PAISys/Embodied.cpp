@@ -21,7 +21,7 @@ seed: 42
 tokenizer: checkpoints/pi05_libero_finetuned_v044/tokenizer.model
 vla_addr: tcp://127.0.0.1:5555
 
-output_dir: outputs/pi05-q8_0_libero_object
+output_dir: outputs/pi05_libero_object
 view_mode: multi-view
 fps: 30
 
@@ -34,8 +34,8 @@ image_keys:
 max_length: 200
 recv_timeout_ms: 900000
 
-profile_output: outputs/profiles/pi05-q8_0_libero_object.json
-profile_model_label: pi0.5-q8_0
+profile_output: outputs/profiles/pi05_libero_object.json
+profile_model_label: pi0.5
 profile_backbone_label: PaliGemma
 profile_vram_interval_s: 0.25
 profile_warmup_requests: 5

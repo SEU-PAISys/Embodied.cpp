@@ -20,7 +20,7 @@ seed: 42
 
 vla_addr: tcp://127.0.0.1:5555
 
-output_dir: outputs/groot_n1_q8_0_libero_object
+output_dir: outputs/groot_n1_libero_object
 view_mode: multi-view
 fps: 30
 
@@ -34,7 +34,7 @@ max_length: 1024
 n_action_steps: 8
 recv_timeout_ms: 900000
 
-profile_output: outputs/groot_n1_q8_0_libero_object/profile.json
+profile_output: outputs/groot_n1_libero_object/profile.json
 profile_model_label: GR00T N1.7
 profile_backbone_label: Cosmos-Reason2-2B
 profile_vram_interval_s: 0.25

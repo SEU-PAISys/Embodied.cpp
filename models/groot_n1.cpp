@@ -190,7 +190,7 @@ bool ends_with(const std::string & value, const char * suffix) {
 
 ggml_type matmul_type_from_env() {
     const char * value = std::getenv("VLA_GROOT_WEIGHT_DTYPE");
-    if (!value || !*value) return GGML_TYPE_Q4_K;
+    if (!value || !*value) return GGML_TYPE_BF16;
     if (std::strcmp(value, "f32") == 0 || std::strcmp(value, "F32") == 0) return GGML_TYPE_F32;
     if (std::strcmp(value, "bf16") == 0 || std::strcmp(value, "BF16") == 0) return GGML_TYPE_BF16;
     if (std::strcmp(value, "f16") == 0 || std::strcmp(value, "F16") == 0) return GGML_TYPE_F16;
@@ -200,8 +200,8 @@ ggml_type matmul_type_from_env() {
     if (std::strcmp(value, "q4_K") == 0 || std::strcmp(value, "q4_k") == 0) return GGML_TYPE_Q4_K;
     if (std::strcmp(value, "q4_0") == 0 || std::strcmp(value, "Q4_0") == 0) return GGML_TYPE_Q4_0;
     std::fprintf(stderr,
-                 "vla(groot_n1): unknown VLA_GROOT_WEIGHT_DTYPE=%s; using q4_K\n", value);
-    return GGML_TYPE_Q4_K;
+                 "vla(groot_n1): unknown VLA_GROOT_WEIGHT_DTYPE=%s; using bf16\n", value);
+    return GGML_TYPE_BF16;
 }
 
 struct LinearWeights {
@@ -254,7 +254,7 @@ struct GrootN1ModelArch final : ModelArchBase {
     ggml_context * weight_context = nullptr;
     bool is_cuda = false;
     int n_threads = 4;
-    ggml_type matmul_type = GGML_TYPE_Q4_K;
+    ggml_type matmul_type = GGML_TYPE_BF16;
 
     llama_model * backbone_model = nullptr;
     llama_context * backbone_context = nullptr;

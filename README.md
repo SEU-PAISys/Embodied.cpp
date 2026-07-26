@@ -486,16 +486,16 @@ Generate all three GR00T N1.7 files from local models without network access:
 
 ```bash
 python scripts/prepare_groot_n1_backbone.py \
-  --checkpoint checkpoints/groot-n1/libero_object_official_local \
+  --checkpoint checkpoints/groot-n1/libero_object \
   --output-dir checkpoints/groot-n1/qwen3vl-backbone-hf \
   --gguf-dir checkpoints/groot-n1 \
   --reuse-prepared \
   --outtype q8_0 \
-  --ggml-lib build/bin/libggml-base.so
+  --ggml-lib build-groot-cuda/bin/libggml-base.so
 ```
 
-This writes `qwen3vl-backbone-q4_k.gguf`, `qwen3vl-mmproj-q4_k.gguf`, and
-`groot-n1.7-libero-object-action-head-q4_k.gguf`. Supported output types are
+This writes `qwen3vl-backbone-q8_0.gguf`, `qwen3vl-mmproj-q8_0.gguf`, and
+`groot-n1.7-libero-object-action-head-q8_0.gguf`. Supported output types are
 `bf16`, `q2_k`, `q3_k`, `q4_0`, `q4_k`, `q5_0`, `q5_k`, `q6_k`, and `q8_0`.
 For additional quantization variants, rerun with `--reuse-prepared` so the
 extracted safetensors are not copied again. The script only downloads metadata
