@@ -257,7 +257,7 @@ example, Blackwell `sm_120` requires CUDA 12.8 or newer. The strict-parity build
 uses cuBLAS and disables CUDA fast-math approximations.
 
 ```bash
-CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
+CUDA_HOME="$(dirname "$(dirname "$(which nvcc)")")"
 CUDA_ARCH=${CUDA_ARCH:-native}
 
 cmake -S . -B build-groot-cuda \
@@ -265,8 +265,8 @@ cmake -S . -B build-groot-cuda \
   -DMODEL_BUILD_VLA_GROOT_N1=ON \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FAST_MATH=OFF \
-  -DGGML_CUDA_FORCE_CUBLAS=ON \
-  -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
+  -DGGML_CUDA_FORCE_CUBLAS=OFF \
+  -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
   -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
 cmake --build build-groot-cuda --target vla-groot-n1-server -j$(nproc)
 ```
@@ -297,7 +297,7 @@ cmake -S . -B build-all \
   -DMODEL_BUILD_WAM_LINGBOT_VA=ON \
   -DGGML_CUDA=ON \
   -DGGML_CUDA_FAST_MATH=OFF \
-  -DGGML_CUDA_FORCE_CUBLAS=ON \
+  -DGGML_CUDA_FORCE_CUBLAS=OFF \
   -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
   -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
 cmake --build build-all --target vla-pi05-server vla-hy-vla-server \

@@ -29,7 +29,6 @@ import gymnasium as gym
 import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
 from adapter.sim.libero import LIBEROSimAdapter
 from client.libero_profile import LiberoSuiteProfiler
-from client.lingbot_world_client import LingBotWorldClient
 from client.vla_cpp_client import ARCH_PRESETS as VLA_ARCH_PRESETS
 from client.vla_cpp_client import VlaCppClient
 
@@ -154,6 +153,8 @@ def build_client(args):
                 n_action_steps=args.n_action_steps,
             )
         )
+    from client.lingbot_world_client import LingBotWorldClient
+
     return LingBotWorldClient(
         vla_addr=args.vla_addr,
         tokenizer_name=args.tokenizer,
@@ -183,6 +184,8 @@ def run_one_task(
         video_fps=args.fps,
         output_video_dir=output_dir,
         video_view_mode=args.view_mode,
+        observation_width=args.observation_width,
+        observation_height=args.observation_height,
     )
 
     success_count, inference_times = 0.0, []
@@ -241,17 +244,17 @@ def run_one_task(
                 replayed_steps = step_id - step_before_chunk
                 if profiler is not None and replayed_steps > 0:
                     amortized_ms = 1000.0 * (predict_dt + cache_dt) / replayed_steps
+                    profiler.capture_inference(client)
                     for _ in range(replayed_steps):
                         profiler.record_step(amortized_ms)
-                    profiler.capture_inference(client)
             else:
                 t0 = time.perf_counter()
                 action = client.get_action(obs)
                 action_dt = time.perf_counter() - t0
                 run_times.append(action_dt)
                 if profiler is not None:
-                    profiler.record_step(1000.0 * action_dt)
                     profiler.capture_inference(client)
+                    profiler.record_step(1000.0 * action_dt)
 
                 try:
                     obs, reward, done, truncated, info = env.step(action)
@@ -349,6 +352,10 @@ if __name__ == "__main__":
         help="Stop each episode after this many env steps for smoke tests. "
              "0 means run until done/truncated.")
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--observation-width", type=int, default=360,
+        help="Raw LIBERO camera width before model preprocessing.")
+    parser.add_argument("--observation-height", type=int, default=360,
+        help="Raw LIBERO camera height before model preprocessing.")
     parser.add_argument("--output-dir", type=str, default="outputs")
     parser.add_argument(
         "--view-mode",
@@ -389,7 +396,7 @@ if __name__ == "__main__":
         "--n-action-steps", type=int, default=None,
         help="How many actions to replay from each predicted chunk before "
              "re-querying the model. Defaults to the selected arch preset "
-             "(pi05=5, groot_n1=8, lingbot_va=1).",
+               "(pi05=10, groot_n1=8, lingbot_va=1).",
     )
     parser.add_argument("--profile-output", type=str, default=None,
         help="Write full-suite table metrics to this JSON path; CSV and Markdown "
@@ -416,6 +423,8 @@ if __name__ == "__main__":
         parser.set_defaults(**conf_defaults)
 
     args = parser.parse_args()
+    if args.observation_width <= 0 or args.observation_height <= 0:
+        parser.error("--observation-width and --observation-height must be positive")
     requested_suite = args.libero_suite or args.task
     args.task = normalize_libero_suite(requested_suite)
     if args.task not in LIBERO_SUITE_TASK_COUNTS:

@@ -170,31 +170,6 @@ struct gguf_reader {
         return {};
     }
 
-    bool fetch_rows_f32(const char * name, const std::vector<int32_t> & row_ids,
-                        float * dst, int64_t cols) {
-        const ggml_tensor * t = meta(name);
-        if (!t) { std::fprintf(stderr, "vla(pi05): missing tensor %s\n", name); return false; }
-        if (t->ne[0] != cols || t->ne[2] != 1 || t->ne[3] != 1) {
-            std::fprintf(stderr, "vla(pi05): %s shape unfit for row-fetch\n", name); return false;
-        }
-        const int64_t rows = t->ne[1];
-        const int64_t id   = gguf_find_tensor(gctx, name);
-        const size_t  base = data_off + gguf_get_tensor_offset(gctx, id);
-        const size_t  elsz = (t->type == GGML_TYPE_F32) ? 4u : 2u;
-        const size_t  rb   = (size_t) cols * elsz;
-        std::vector<uint8_t> row(rb);
-        for (size_t k = 0; k < row_ids.size(); ++k) {
-            const int32_t r = row_ids[k];
-            if (r < 0 || r >= rows) {
-                std::fprintf(stderr, "vla(pi05): row %d out of range for %s\n", r, name); return false;
-            }
-            if (std::fseek(fp, (long) (base + (size_t) r * rb), SEEK_SET) != 0) return false;
-            if (std::fread(row.data(), 1, rb, fp) != rb) return false;
-            if (elsz == 4) std::memcpy(dst + k * cols, row.data(), rb);
-            else ggml_bf16_to_fp32_row(reinterpret_cast<ggml_bf16_t *>(row.data()), dst + k * cols, cols);
-        }
-        return true;
-    }
 };
 
 struct GemmaLayerW {
@@ -238,6 +213,31 @@ std::vector<float> sinusoidal_time_emb(double t, int64_t dim, double min_p, doub
     return out;
 }
 
+struct Pi05ComputeGraph {
+    ~Pi05ComputeGraph() {
+        if (allocator) ggml_gallocr_free(allocator);
+        if (context) ggml_free(context);
+    }
+
+    bool matches(int64_t image_tokens, int64_t language_tokens) const {
+        return n_img_tokens == image_tokens && n_lang == language_tokens;
+    }
+
+    int64_t n_img_tokens = 0;
+    int64_t n_lang = 0;
+    ggml_context * context = nullptr;
+    ggml_cgraph * graph = nullptr;
+    ggml_gallocr_t allocator = nullptr;
+    ggml_tensor * image_emb = nullptr;
+    ggml_tensor * lang_ids = nullptr;
+    ggml_tensor * prefix_pos = nullptr;
+    ggml_tensor * noise = nullptr;
+    ggml_tensor * suffix_pos = nullptr;
+    ggml_tensor * full_mask = nullptr;
+    std::vector<ggml_tensor *> time;
+    ggml_tensor * output = nullptr;
+};
+
 bool ends_with(const std::string & s, const char * sfx) {
     const size_t n = std::strlen(sfx);
     return s.size() >= n && s.compare(s.size() - n, n, sfx) == 0;
@@ -256,8 +256,9 @@ struct Pi05ModelArch : public ModelArchBase {
     bool                  is_cuda     = false;
     ggml_backend_buffer_t weight_buf  = nullptr;
     ggml_context *        ctx_weights = nullptr;
-    std::string           ckpt_path_;
     ggml_type             matmul_type = GGML_TYPE_BF16;
+    ggml_tensor *         token_embd  = nullptr;
+    std::unique_ptr<Pi05ComputeGraph> compute_graph;
 
     std::vector<GemmaLayerW> pl_layers;
 
@@ -535,6 +536,7 @@ bool load_stats(gguf_reader & g, Pi05ModelArch & m) {
 }
 
 Pi05ModelArch::~Pi05ModelArch() {
+    compute_graph.reset();
     if (weight_buf)  ggml_backend_buffer_free(weight_buf);
     if (ctx_weights) ggml_free(ctx_weights);
     if (backend)     ggml_backend_free(backend);
@@ -555,7 +557,6 @@ std::unique_ptr<ModelArchBase> pi05_create(const std::string& mmproj_path,
     }
 
     auto m = std::make_unique<Pi05ModelArch>();
-    m->ckpt_path_ = ckpt_path;
     m->matmul_type = std::getenv("VLA_PI05_F32_WEIGHTS") ? GGML_TYPE_F32 : GGML_TYPE_BF16;
 
     gguf_reader g;
@@ -651,6 +652,12 @@ std::unique_ptr<ModelArchBase> pi05_create(const std::string& mmproj_path,
         return mk(name, GGML_TYPE_F32, GGML_MAX_DIMS, gt->ne);
     };
 
+    {
+        const ggml_tensor * gt = g.meta("token_embd.weight");
+        if (!gt) { std::fprintf(stderr, "vla(pi05): missing tensor token_embd.weight\n"); return nullptr; }
+        m->token_embd = mk("token_embd.weight", gt->type, GGML_MAX_DIMS, gt->ne);
+    }
+
     auto load_layer = [&](const char * tower, int i, GemmaLayerW & lw) -> bool {
         char b[256];
         auto suf = [&](const char * s) { std::snprintf(b, sizeof(b), "%s.blk.%d.%s", tower, i, s); return b; };
@@ -698,7 +705,7 @@ std::unique_ptr<ModelArchBase> pi05_create(const std::string& mmproj_path,
     m->W_tm2  = mk_f32("time_mlp_out.weight");        m->b_tm2  = mk_f32("time_mlp_out.bias");
     m->W_aout = mk_f32("action_out_proj.weight");     m->b_aout = mk_f32("action_out_proj.bias");
     for (ggml_tensor * t : weights) if (!t) { std::fprintf(stderr, "vla(pi05): weight tensor creation failed\n"); return nullptr; }
-    if (!m->ex_final_norm_W || !m->ex_final_norm_b || !m->W_ain || !m->b_ain ||
+    if (!m->token_embd || !m->ex_final_norm_W || !m->ex_final_norm_b || !m->W_ain || !m->b_ain ||
         !m->W_tm1 || !m->b_tm1 || !m->W_tm2 || !m->b_tm2 || !m->W_aout || !m->b_aout) {
         std::fprintf(stderr, "vla(pi05): failed to wire projection / norm tensors\n"); return nullptr;
     }
@@ -769,7 +776,6 @@ std::vector<float> Pi05ModelArch::predict(const Inputs& in) {
                 const float * src = static_cast<const float *>(view.data);
                 for (size_t i = 0; i < per_pix; ++i) hwc[i] = src[i] * 2.0f - 1.0f;
             }
-
             if (!clip_encode_float_image(cctx, n_threads, hwc.data(), img_sz, img_sz,
                                          img_emb_host.data() + (size_t) v * per_out)) {
                 std::fprintf(stderr, "vla(pi05): clip_encode_float_image failed (view %d)\n", v);
@@ -788,117 +794,127 @@ std::vector<float> Pi05ModelArch::predict(const Inputs& in) {
     const int64_t n_prefix = n_img_tokens + n_lang;
     const int64_t n_total  = n_prefix + n_suf;
 
-    std::vector<int32_t> lang_ids(in.lang_tokens, in.lang_tokens + n_lang);
-    std::vector<float> lang_rows((size_t) n_lang * hidden_pl);
-    {
-        gguf_reader g;
-        if (!g.open(ckpt_path_)) return {};
-        if (!g.fetch_rows_f32("token_embd.weight", lang_ids, lang_rows.data(), hidden_pl)) return {};
-    }
+    if (!compute_graph || !compute_graph->matches(n_img_tokens, n_lang)) {
+        auto runtime = std::make_unique<Pi05ComputeGraph>();
+        runtime->n_img_tokens = n_img_tokens;
+        runtime->n_lang = n_lang;
 
-    ggml_init_params cp = {  (size_t) 64 * 1024 * 1024,  nullptr,  true };
-    ggml_context * C = ggml_init(cp);
-    if (!C) { std::fprintf(stderr, "vla(pi05): ggml_init(ctx_compute) failed\n"); return {}; }
-
-    ggml_tensor * t_image_emb = ggml_new_tensor_2d(C, GGML_TYPE_F32, hidden_pl, n_img_tokens); ggml_set_input(t_image_emb);
-    ggml_tensor * t_lang_emb  = ggml_new_tensor_2d(C, GGML_TYPE_F32, hidden_pl, n_lang);       ggml_set_input(t_lang_emb);
-    ggml_tensor * t_prefix_pos= ggml_new_tensor_1d(C, GGML_TYPE_I32, n_prefix);                ggml_set_input(t_prefix_pos);
-    ggml_tensor * t_x0        = ggml_new_tensor_2d(C, GGML_TYPE_F32, max_ad, chunk);           ggml_set_input(t_x0);
-    ggml_tensor * t_suffix_pos= ggml_new_tensor_1d(C, GGML_TYPE_I32, n_suf);                   ggml_set_input(t_suffix_pos);
-    ggml_tensor * t_full_mask = ggml_new_tensor_2d(C, GGML_TYPE_F32, n_total, n_suf);          ggml_set_input(t_full_mask);
-    std::vector<ggml_tensor *> t_time(num_steps);
-    for (int s = 0; s < num_steps; ++s) {
-        t_time[s] = ggml_new_tensor_2d(C, GGML_TYPE_F32, hidden_ex, 1);
-        ggml_set_input(t_time[s]);
-    }
-
-    const float lang_scale = (float) std::sqrt((double) hidden_pl);
-    ggml_tensor * prefix_embs = ggml_concat(C, t_image_emb, ggml_scale(C, t_lang_emb, lang_scale),  1);
-
-    std::vector<ggml_tensor *> cK(n_layers), cV(n_layers);
-    {
-        ggml_tensor * h = prefix_embs;
-        for (int64_t i = 0; i < n_layers; ++i) {
-            h = build_gemma_layer(C, pl_layers[i], h, t_prefix_pos, cfg, n_prefix, rope_base,
-                                   nullptr,  nullptr,  nullptr,
-                                  &cK[i], &cV[i]);
+        ggml_init_params cp = { (size_t) 64 * 1024 * 1024, nullptr, true };
+        runtime->context = ggml_init(cp);
+        if (!runtime->context) {
+            std::fprintf(stderr, "vla(pi05): ggml_init(ctx_compute) failed\n");
+            return {};
         }
-        (void) h;
-    }
+        ggml_context * C = runtime->context;
 
-    ggml_tensor * x_t = t_x0;
-    std::vector<ggml_tensor *> v_steps(num_steps);
-    for (int step = 0; step < num_steps; ++step) {
-        ggml_tensor * adarms_cond = nullptr;
-        ggml_tensor * h = build_embed_suffix(C, *this, x_t, t_time[step], &adarms_cond);
-        for (int64_t i = 0; i < n_layers; ++i) {
-            h = build_adarms_gemma_layer(C, ex_layers[i], h, t_suffix_pos, adarms_cond,
-                                          cfg, n_suf, rope_base, cK[i], cV[i], t_full_mask);
+        runtime->image_emb = ggml_new_tensor_2d(C, GGML_TYPE_F32, hidden_pl, n_img_tokens);
+        runtime->lang_ids = ggml_new_tensor_1d(C, GGML_TYPE_I32, n_lang);
+        runtime->prefix_pos = ggml_new_tensor_1d(C, GGML_TYPE_I32, n_prefix);
+        runtime->noise = ggml_new_tensor_2d(C, GGML_TYPE_F32, max_ad, chunk);
+        runtime->suffix_pos = ggml_new_tensor_1d(C, GGML_TYPE_I32, n_suf);
+        runtime->full_mask = ggml_new_tensor_2d(C, GGML_TYPE_F32, n_total, n_suf);
+        for (ggml_tensor * input : {
+                 runtime->image_emb, runtime->lang_ids, runtime->prefix_pos,
+                 runtime->noise, runtime->suffix_pos, runtime->full_mask}) {
+            ggml_set_input(input);
         }
-        // The final expert norm is also AdaRMS; its gate output is ignored by OpenPI.
-        ggml_tensor * h_final = adarms_norm(C, h, ex_final_norm_W, ex_final_norm_b,
-                                            adarms_cond, cfg, nullptr);
-        ggml_tensor * v_t = ggml_add(C, ggml_mul_mat(C, W_aout, h_final), b_aout);
-        v_steps[step] = v_t;
-        x_t = ggml_add(C, x_t, ggml_scale(C, v_t, dt));
-    }
-    ggml_tensor * x_final = x_t;
-    ggml_set_output(x_final);
+        runtime->time.resize(num_steps);
+        for (int step = 0; step < num_steps; ++step) {
+            runtime->time[step] = ggml_new_tensor_2d(C, GGML_TYPE_F32, hidden_ex, 1);
+            ggml_set_input(runtime->time[step]);
+        }
 
-    // AdaRMS adds scale/shift/gate nodes on every expert norm, so pi0.5
-    // needs a larger graph arena than the plain pi0 action expert.
-    ggml_cgraph * gf = ggml_new_graph_custom(C,  32768,  false);
-    ggml_build_forward_expand(gf, x_final);
+        const float lang_scale = (float) std::sqrt((double) hidden_pl);
+        ggml_tensor * lang_emb = ggml_get_rows(C, token_embd, runtime->lang_ids);
+        ggml_tensor * prefix_embs = ggml_concat(
+            C, runtime->image_emb, ggml_scale(C, lang_emb, lang_scale), 1);
 
-    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-    if (!galloc || !ggml_gallocr_alloc_graph(galloc, gf)) {
-        std::fprintf(stderr, "vla(pi05): ggml_gallocr_alloc_graph failed (out of memory?)\n");
-        if (galloc) ggml_gallocr_free(galloc);
-        ggml_free(C);
-        return {};
+        std::vector<ggml_tensor *> cached_k(n_layers), cached_v(n_layers);
+        ggml_tensor * prefix = prefix_embs;
+        for (int64_t layer = 0; layer < n_layers; ++layer) {
+            prefix = build_gemma_layer(
+                C, pl_layers[layer], prefix, runtime->prefix_pos, cfg, n_prefix,
+                rope_base, nullptr, nullptr, nullptr,
+                &cached_k[layer], &cached_v[layer]);
+        }
+
+        ggml_tensor * x_t = runtime->noise;
+        for (int step = 0; step < num_steps; ++step) {
+            ggml_tensor * adarms_cond = nullptr;
+            ggml_tensor * hidden = build_embed_suffix(
+                C, *this, x_t, runtime->time[step], &adarms_cond);
+            for (int64_t layer = 0; layer < n_layers; ++layer) {
+                hidden = build_adarms_gemma_layer(
+                    C, ex_layers[layer], hidden, runtime->suffix_pos, adarms_cond,
+                    cfg, n_suf, rope_base, cached_k[layer], cached_v[layer],
+                    runtime->full_mask);
+            }
+            ggml_tensor * final_hidden = adarms_norm(
+                C, hidden, ex_final_norm_W, ex_final_norm_b, adarms_cond, cfg, nullptr);
+            ggml_tensor * velocity = ggml_add(
+                C, ggml_mul_mat(C, W_aout, final_hidden), b_aout);
+            x_t = ggml_add(C, x_t, ggml_scale(C, velocity, dt));
+        }
+        runtime->output = x_t;
+        ggml_set_output(runtime->output);
+
+        runtime->graph = ggml_new_graph_custom(C, 32768, false);
+        ggml_build_forward_expand(runtime->graph, runtime->output);
+        runtime->allocator = ggml_gallocr_new(
+            ggml_backend_get_default_buffer_type(backend));
+        if (!runtime->allocator ||
+            !ggml_gallocr_alloc_graph(runtime->allocator, runtime->graph)) {
+            std::fprintf(stderr,
+                         "vla(pi05): persistent graph allocation failed (out of memory?)\n");
+            return {};
+        }
+
+        std::vector<int32_t> prefix_positions(n_prefix);
+        for (int64_t i = 0; i < n_prefix; ++i) prefix_positions[i] = (int32_t) i;
+        ggml_backend_tensor_set(runtime->prefix_pos, prefix_positions.data(), 0,
+                                ggml_nbytes(runtime->prefix_pos));
+        std::vector<int32_t> suffix_positions(n_suf);
+        for (int64_t i = 0; i < n_suf; ++i) suffix_positions[i] = (int32_t) (n_prefix + i);
+        ggml_backend_tensor_set(runtime->suffix_pos, suffix_positions.data(), 0,
+                                ggml_nbytes(runtime->suffix_pos));
+        std::vector<float> mask((size_t) n_total * n_suf, 0.f);
+        ggml_backend_tensor_set(runtime->full_mask, mask.data(), 0,
+                                ggml_nbytes(runtime->full_mask));
+        for (int step = 0; step < num_steps; ++step) {
+            const float timestep = 1.0f + (float) step * dt;
+            const std::vector<float> values = sinusoidal_time_emb(
+                timestep, hidden_ex, cfg.min_period, cfg.max_period);
+            ggml_backend_tensor_set(runtime->time[step], values.data(), 0,
+                                    ggml_nbytes(runtime->time[step]));
+        }
+
+        compute_graph = std::move(runtime);
+        std::printf("vla(pi05): persistent compute graph ready (image_tokens=%lld, lang=%lld)\n",
+                    (long long) n_img_tokens, (long long) n_lang);
     }
 
-    ggml_backend_tensor_set(t_image_emb, img_emb_host.data(), 0, ggml_nbytes(t_image_emb));
-    ggml_backend_tensor_set(t_lang_emb,  lang_rows.data(),    0, ggml_nbytes(t_lang_emb));
-    {
-        std::vector<int32_t> pp(n_prefix); for (int64_t i = 0; i < n_prefix; ++i) pp[i] = (int32_t) i;
-        ggml_backend_tensor_set(t_prefix_pos, pp.data(), 0, ggml_nbytes(t_prefix_pos));
-        std::vector<int32_t> sp(n_suf);     for (int64_t i = 0; i < n_suf; ++i)    sp[i] = (int32_t) (n_prefix + i);
-        ggml_backend_tensor_set(t_suffix_pos, sp.data(), 0, ggml_nbytes(t_suffix_pos));
-    }
+    Pi05ComputeGraph & runtime = *compute_graph;
+    ggml_backend_tensor_set(runtime.image_emb, img_emb_host.data(), 0,
+                            ggml_nbytes(runtime.image_emb));
+    ggml_backend_tensor_set(runtime.lang_ids, in.lang_tokens, 0,
+                            ggml_nbytes(runtime.lang_ids));
     {
         std::vector<float> x0h((size_t) max_ad * chunk);
         if (in.noise) std::memcpy(x0h.data(), in.noise, x0h.size() * sizeof(float));
         else { std::normal_distribution<float> nd(0.f, 1.f); for (auto & v : x0h) v = nd(rng); }
-        ggml_backend_tensor_set(t_x0, x0h.data(), 0, ggml_nbytes(t_x0));
-    }
-    {
-
-        // pi0.5 suffix mask has att_ar=[1,0,...], so all action tokens share
-        // one attention block and can attend to the full cached prefix.
-        std::vector<float> mk((size_t) n_total * n_suf, 0.f);
-        ggml_backend_tensor_set(t_full_mask, mk.data(), 0, ggml_nbytes(t_full_mask));
-    }
-    for (int s = 0; s < num_steps; ++s) {
-        const float timestep = 1.0f + (float) s * dt;
-        const std::vector<float> tv = sinusoidal_time_emb(timestep, hidden_ex, cfg.min_period, cfg.max_period);
-        ggml_backend_tensor_set(t_time[s], tv.data(), 0, ggml_nbytes(t_time[s]));
+        ggml_backend_tensor_set(runtime.noise, x0h.data(), 0, ggml_nbytes(runtime.noise));
     }
 
     const auto ti0 = clk::now();
-    const ggml_status st = ggml_backend_graph_compute(backend, gf);
+    const ggml_status st = ggml_backend_graph_compute(backend, runtime.graph);
     stats.ms_inference = std::chrono::duration<float, std::milli>(clk::now() - ti0).count();
     if (st != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "vla(pi05): ggml_backend_graph_compute failed (%d)\n", (int) st);
-        ggml_gallocr_free(galloc);
-        ggml_free(C);
         return {};
     }
 
     std::vector<float> out((size_t) chunk * max_ad);
-    ggml_backend_tensor_get(x_final, out.data(), 0, out.size() * sizeof(float));
-    ggml_gallocr_free(galloc);
-    ggml_free(C);
+    ggml_backend_tensor_get(runtime.output, out.data(), 0, out.size() * sizeof(float));
     for (int64_t t = 0; t < chunk; ++t) {
         float * row = out.data() + (size_t) t * max_ad;
         for (int64_t j = 0; j < cfg.real_action_dim && j < max_ad; ++j) {

@@ -189,6 +189,7 @@ class LiberoSuiteProfiler:
         self.vram_target_label = vram_target_label
 
         self.step_wall_ms: list[float] = []
+        self.step_request_indices: list[int] = []
         self.server_requests: list[dict[str, float | int | None]] = []
         self.episodes: list[dict[str, Any]] = []
         self._last_inference_sequence: int | None = None
@@ -217,6 +218,7 @@ class LiberoSuiteProfiler:
 
     def record_step(self, wall_ms: float) -> None:
         self.step_wall_ms.append(float(wall_ms))
+        self.step_request_indices.append(len(self.server_requests) - 1)
 
     def record_inference(
         self,
@@ -289,6 +291,15 @@ class LiberoSuiteProfiler:
         request_profiles = self.server_requests
         warmup_used = min(self.warmup_requests, max(0, len(request_profiles) - 1))
         measured_requests = request_profiles[warmup_used:]
+        measured_step_wall_ms = [
+            wall_ms
+            for wall_ms, request_index in zip(
+                self.step_wall_ms,
+                self.step_request_indices,
+                strict=True,
+            )
+            if request_index >= warmup_used
+        ]
         def request_values(key: str) -> list[float]:
             return [float(item[key]) for item in measured_requests if item.get(key) is not None]
 
@@ -297,6 +308,12 @@ class LiberoSuiteProfiler:
         server_inference_ms = request_values("server_inference_ms")
         server_prefill_ms = request_values("server_prefill_ms")
         server_denoise_ms = request_values("server_denoise_ms")
+        server_total_mean_ms = _mean(server_total_ms)
+        model_step_mean_ms = (
+            server_total_mean_ms / self.replay_chunk_size
+            if server_total_mean_ms is not None and self.replay_chunk_size > 0
+            else None
+        )
         model_chunk_sizes = sorted(
             {
                 int(item["model_chunk_size"])
@@ -327,7 +344,7 @@ class LiberoSuiteProfiler:
             and recorded == self.expected_episodes
             and skipped == 0
             and trials == self.expected_episodes
-            and bool(self.step_wall_ms)
+            and bool(measured_step_wall_ms)
             and bool(server_total_ms)
             and bool(vram_samples)
         )
@@ -358,19 +375,30 @@ class LiberoSuiteProfiler:
             "model_chunk_sizes": model_chunk_sizes,
             "step_ms": {
                 "definition": self.step_definition,
-                "n": len(self.step_wall_ms),
-                "mean": _rounded(_mean(self.step_wall_ms)),
-                "total": _rounded(sum(self.step_wall_ms)),
+                "n": len(measured_step_wall_ms),
+                "warmup_requests_excluded": warmup_used,
+                "warmup_steps_excluded": len(self.step_wall_ms) - len(measured_step_wall_ms),
+                "mean": _rounded(_mean(measured_step_wall_ms)),
+                "total": _rounded(sum(measured_step_wall_ms)),
             },
             "inf_ms": {
                 "definition": self.inference_definition,
                 "n": len(server_total_ms),
                 "warmup_requests_excluded": warmup_used,
-                "mean": _rounded(_mean(server_total_ms)),
+                "mean": _rounded(server_total_mean_ms),
                 "vision_mean": _rounded(_mean(server_vision_ms)),
                 "action_inference_mean": _rounded(_mean(server_inference_ms)),
                 "prefill_mean": _rounded(_mean(server_prefill_ms)),
                 "denoise_mean": _rounded(_mean(server_denoise_ms)),
+            },
+            "model_step_ms": {
+                "definition": (
+                    "server-side model forward amortized over configured replayed "
+                    "environment actions (inf_ms.mean / n_a)"
+                ),
+                "n": len(server_total_ms),
+                "replay_steps_per_forward": self.replay_chunk_size,
+                "mean": _rounded(model_step_mean_ms),
             },
             "vram_mib": {
                 "server_pid": self.server_pid,
@@ -408,6 +436,7 @@ class LiberoSuiteProfiler:
             "SR (%)": sr_text,
             "step (ms)": _table_number(result["step_ms"]["mean"]),
             "inf (ms)": _table_number(result["inf_ms"]["mean"]),
+            "inf/n_a (ms)": _table_number(result["model_step_ms"]["mean"]),
             "VRAM (MiB)": _table_number(result["vram_mib"]["peak"], digits=0),
         }
 
@@ -431,6 +460,7 @@ class LiberoSuiteProfiler:
             f"`step`: {result['step_ms']['definition']}; `inf`: "
             f"{result['inf_ms']['definition']} after warmup. "
             "SR brackets are 95% Wilson intervals.",
+            f"`inf/n_a`: {result['model_step_ms']['definition']}.",
             f"VRAM source: `{result['vram_mib']['source']}`. "
             f"{result['vram_mib']['definition']}.",
         ]
