@@ -102,6 +102,8 @@ class GrootN1LIBEROParser:
 
 LIBERO_PARSER_REGISTRY = {
     "pi05": Pi05LIBEROParser,
+    # SmolVLA shares pi0.5's 8-D LIBERO state and two-camera layout.
+    "smolvla": Pi05LIBEROParser,
     "groot_n1": GrootN1LIBEROParser,
     "lingbot_va": LingBotLIBEROParser,
 }
@@ -118,8 +120,8 @@ class LIBEROSimAdapter:
         self._adapter_pipeline = AdapterPipeline(self._parser)
         self.arch = arch
 
-    def reset(self):
-        return self._client.reset()
+    def reset(self, **kwargs):
+        return self._client.reset(**kwargs)
 
     def get_last_inference_profile(self) -> dict[str, float | int] | None:
         getter = getattr(self._client, "get_last_inference_profile", None)
