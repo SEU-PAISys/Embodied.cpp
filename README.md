@@ -283,6 +283,8 @@ horizon (`max_steps: 0`).
 
 See [eval/SMOLVLA_VALIDATION.md](eval/SMOLVLA_VALIDATION.md) for the full
 acceptance matrix, PR smoke protocol, build matrix, and parity methodology.
+A detailed Chinese implementation and validation report is available at
+[eval/SMOLVLA_TECHNICAL_REPORT_ZH.md](eval/SMOLVLA_TECHNICAL_REPORT_ZH.md).
 
 **HY-VLA on RoboTwin:**
 

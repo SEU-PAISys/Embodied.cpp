@@ -1,5 +1,8 @@
 # SmolVLA validation
 
+For a detailed Chinese implementation and validation report, see
+[SMOLVLA_TECHNICAL_REPORT_ZH.md](SMOLVLA_TECHNICAL_REPORT_ZH.md).
+
 This document records the validation protocol for the Embodied.cpp SmolVLA
 runtime. Generated videos, per-episode JSON, logs, and model files remain local
 under `outputs/` and `checkpoints/`; they are intentionally not committed.
