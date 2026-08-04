@@ -12,6 +12,7 @@ option(MODEL_BUILD_VLA_HY_VLA "Build HY-VLA runtime support" OFF)
 option(MODEL_BUILD_VLA_GROOT_N1 "Build NVIDIA GR00T N1 runtime support" OFF)
 option(MODEL_BUILD_WAM_LINGBOT_VA "Build LingBot-VA runtime support" OFF)
 option(MODEL_BUILD_WAM_COSMOS3 "Build Cosmos3 WAM runtime support" OFF)
+option(MODEL_BUILD_VLA_SMOLVLA "Build SmolVLA runtime support" OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
@@ -40,9 +41,11 @@ endif()
 if(MODEL_BUILD_WAM_LINGBOT_VA)
     target_sources(vla_core PRIVATE models/lingbot_va.cpp)
 endif()
-
 if(MODEL_BUILD_WAM_COSMOS3)
     target_sources(vla_core PRIVATE models/cosmos3.cpp)
+endif()
+if(MODEL_BUILD_VLA_SMOLVLA)
+    target_sources(vla_core PRIVATE models/smolvla.cpp)
 endif()
 target_include_directories(vla_core
     PUBLIC
@@ -57,6 +60,7 @@ target_compile_definitions(vla_core PUBLIC
     MODEL_BUILD_VLA_GROOT_N1=$<BOOL:${MODEL_BUILD_VLA_GROOT_N1}>
     MODEL_BUILD_WAM_LINGBOT_VA=$<BOOL:${MODEL_BUILD_WAM_LINGBOT_VA}>
     MODEL_BUILD_WAM_COSMOS3=$<BOOL:${MODEL_BUILD_WAM_COSMOS3}>
+    MODEL_BUILD_VLA_SMOLVLA=$<BOOL:${MODEL_BUILD_VLA_SMOLVLA}>
 )
 target_link_libraries(vla_core PUBLIC llama ggml mtmd)
 
@@ -75,6 +79,9 @@ if(MODEL_BUILD_WAM_LINGBOT_VA)
 endif()
 if(MODEL_BUILD_WAM_COSMOS3)
     list(APPEND EMBODIED_ENABLED_MODELS "WAM/Cosmos3")
+endif()
+if(MODEL_BUILD_VLA_SMOLVLA)
+    list(APPEND EMBODIED_ENABLED_MODELS "VLA/SmolVLA")
 endif()
 if(EMBODIED_ENABLED_MODELS)
     string(REPLACE ";" ", " EMBODIED_ENABLED_MODELS_STR "${EMBODIED_ENABLED_MODELS}")
@@ -269,7 +276,7 @@ function(add_vla_server_target target_name)
     )
 endfunction()
 
-if(MODEL_BUILD_VLA_PI05 OR MODEL_BUILD_VLA_HY_VLA OR MODEL_BUILD_VLA_GROOT_N1)
+if(MODEL_BUILD_VLA_PI05 OR MODEL_BUILD_VLA_HY_VLA OR MODEL_BUILD_VLA_GROOT_N1 OR MODEL_BUILD_VLA_SMOLVLA)
     add_vla_server_target(vla-server)
 endif()
 
