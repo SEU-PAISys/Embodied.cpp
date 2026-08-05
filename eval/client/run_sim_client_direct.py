@@ -38,6 +38,7 @@ try:
 except ModuleNotFoundError:
     LiberoSuiteProfiler: Any = None
 from client.lingbot_world_client import LingBotWorldClient
+from client.inference_timeline import timeline_path_for_video, write_inference_timeline
 from client.vla_cpp_client import ARCH_PRESETS as VLA_ARCH_PRESETS
 from client.vla_cpp_client import VlaCppClient
 
@@ -241,6 +242,8 @@ def run_one_task(
         client.reset()
         obs, info = env.reset()
         run_times, step_id = [], 0
+        inference_requests: list[dict[str, float | int]] = []
+        last_inference_sequence: int | None = None
         episode_aborted = False
         done = False
         truncated = False
@@ -362,10 +365,23 @@ def run_one_task(
                     for _ in range(replayed_steps):
                         profiler.record_step(amortized_ms)
             else:
+                inference_step = step_id
                 t0 = time.perf_counter()
                 action = client.get_action(obs)
                 action_dt = time.perf_counter() - t0
                 run_times.append(action_dt)
+                inference_profile = client.get_last_inference_profile()
+                if inference_profile is not None:
+                    sequence = int(inference_profile["sequence"])
+                    if sequence != last_inference_sequence:
+                        inference_requests.append(
+                            {
+                                "step_index": inference_step,
+                                "inf_ms": float(inference_profile["server_total_ms"]),
+                                "n_action_steps": args.n_action_steps,
+                            }
+                        )
+                        last_inference_sequence = sequence
                 if profiler is not None:
                     profiler.capture_inference(client)
                     profiler.record_step(1000.0 * action_dt)
@@ -411,6 +427,18 @@ def run_one_task(
                         skipped=episode_aborted,
                         environment_steps=step_id,
                     )
+                video_path = output_dir / f"episode_{episode:06d}.mp4"
+                write_inference_timeline(
+                    timeline_path_for_video(video_path),
+                    implementation="cpp",
+                    task=task,
+                    task_id=task_id,
+                    episode=episode,
+                    n_action_steps=args.n_action_steps,
+                    environment_steps=step_id,
+                    video_has_initial_frame=True,
+                    requests=inference_requests,
+                )
                 break
 
         if episode_aborted:

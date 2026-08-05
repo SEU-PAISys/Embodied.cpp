@@ -158,7 +158,10 @@ eval/conf/libero_groot_n1_profile_eval.yaml
 /LOCAL_README.md
 /eval/client/run_pi05_libero_python.py
 /eval/client/run_groot_libero_python.py
+/eval/client/inference_timeline.py
 /eval/conf/libero_pi05_python_eval.yaml
 /eval/conf/libero_groot_n1_python_eval.yaml
 /eval/sim/libero/setup_pi05_python_conda.sh
 /eval/sim/libero/setup_groot_python_conda.sh
+/scripts/create_groot_comparison_halves.py
+/scripts/create_pi05_comparison_halves.py
