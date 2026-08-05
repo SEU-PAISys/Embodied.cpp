@@ -96,7 +96,7 @@ official PyTorch policy and the C++ server. The comparison reports maximum and
 mean absolute action error and rejects NaN or infinity. This isolates model
 math from simulator and random-number-generator differences.
 
-The final fixed-input comparison produced maximum absolute error 0.027861,
+The pre-optimization fixed-input comparison produced maximum absolute error 0.027861,
 mean absolute error 0.001906, and RMSE 0.003258 over the 50x7 real action
 dimensions. Repeating the same C++ request produced zero maximum absolute
 difference. Neither output contained NaN or infinity.
@@ -107,3 +107,31 @@ python scripts/check_smolvla_parity.py \
   --reference /path/to/python_action.npy \
   --output outputs/smolvla_parity.json
 ```
+
+## Connector graph performance
+
+The initial port executed the SmolVLA `12288 -> 960` vision connector as a
+scalar host GEMV. With two views and 64 output tokens per view, this performed
+roughly 1.5 billion scalar multiply-adds on the CPU for every policy request.
+It also reopened the policy GGUF and read `state_proj` weights for every
+request. The optimized path keeps both projection weights resident and places
+the connector and state projection in the same backend graph as the VLM and
+action expert. Only the inexpensive pixel-shuffle memory rearrangement remains
+on the host.
+
+The following deterministic one-episode checks use the same task, episode,
+environment seed, and action-noise seed before and after the change. They are
+performance and regression samples, not suite-level success-rate estimates.
+
+| Sample | Before | After | Speedup | Outcome before / after |
+|---|---:|---:|---:|---|
+| LIBERO-Object task 0 episode 0 | 1050.60 ms/step | 258.04 ms/step | 4.07x | success / success (147 / 147 steps) |
+| LIBERO-Spatial task 0 episode 0 | 998.46 ms/step | 291.65 ms/step | 3.42x | success / success (75 / 76 steps) |
+| LIBERO-Goal task 0 episode 0 | 1040.66 ms/step | 273.01 ms/step | 3.81x | success / success (124 / 124 steps) |
+| **Unweighted mean** | **1029.91 ms/step** | **274.23 ms/step** | **3.76x** | **3/3 / 3/3** |
+
+After moving the projections into the backend graph, fixed-input parity still
+passes: maximum absolute error 0.032254, mean absolute error 0.002023, RMSE
+0.003285, repeat maximum difference zero, and no NaN or infinity. The small
+change from the earlier parity numbers is expected from the CUDA matrix
+multiplication reduction order.

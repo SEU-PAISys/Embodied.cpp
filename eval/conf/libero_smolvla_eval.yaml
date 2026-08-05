@@ -1,8 +1,8 @@
 # SmolVLA C++ server on LIBERO-object.
 # Initial smoke-test config: single task (task_0), one episode, full environment
 # horizon. The Embodied.cpp SmolVLA runtime uses an identity-proxy mmproj for
-# SigLIP + a host-side pixel_shuffle + 12288->960 connector (see
-# models/smolvla.cpp); this config validates end-to-end that the C++ forward
+# SigLIP + a host-side pixel shuffle; the 12288->960 connector runs in the
+# policy GGML graph (see models/smolvla.cpp). This config validates that the C++ forward
 # produces a non-trivial action chunk that can drive the LIBERO Franka arm.
 #
 # To evaluate the full LIBERO-object suite later, set:

@@ -352,14 +352,11 @@ struct SmolVLAModelArch : public ModelArchBase {
     ggml_tensor * W_tmlp_out = nullptr, * b_tmlp_out = nullptr;
 
     // SmolVLA vision-language connector: pixel_shuffle(scale) + Linear(768*scale^2 -> text_hidden).
-    // Applied on the host side in predict() after the SigLIP encoder passthrough,
-    // because no built-in mtmd projector type matches this layout.
+    // The cheap pixel shuffle remains a host-side memory rearrangement; the large
+    // projection is part of the main backend graph.
     int64_t       pixel_shuffle_scale = 4;
     ggml_tensor * W_connector = nullptr;   // (text_hidden, 768*scale^2)
     ggml_tensor * b_connector = nullptr;   // (text_hidden,) -- always zeros in upstream
-    // host-cached copies of the connector weight for a self-contained host GEMV
-    std::vector<float> connector_w_host;   // row-major (text_hidden, in_dim)
-    std::vector<float> connector_b_host;   // (text_hidden,)
 
     // SmolVLA's expert differs from pi0.5: keep its hyperparams separate from CFG's
     // pi0.5-oriented expert_h/expert_inter slots (which we leave at pi0.5 defaults).
@@ -412,10 +409,11 @@ std::vector<float> SmolVLAModelArch::predict(const Inputs& in) {
     // 1) vision tower (SigLIP via mtmd, identity-proxy mmproj -> raw SigLIP output)
 //    The mmproj ships a 768x768 identity projector so mtmd's PALIGEMMA graph
 //    returns raw SigLIP features (scaled by 1/sqrt(768)). We undo that scale,
-//    run the SmolVLA connector (pixel_shuffle scale=4 + Linear 12288->960)
-//    on the host, then re-apply LeRobot's embed_image sqrt(768) normalization
-//    before feeding tokens to the text backbone.
-    std::vector<float> img_emb_host;  // final image prefix tokens: (hidden_pl, total_tokens)
+//    arrange the scale=4 pixel-shuffle input on the host, then run the large
+//    Linear(12288->960) connector in the same backend graph as the language
+//    backbone and action expert.
+    std::vector<float> img_emb_host;       // used only for precomputed text-space embeddings
+    std::vector<float> shuffled_img_host;  // connector input: (conn_in_dim, total_tokens)
     int64_t n_img_tokens = 0;
     const int64_t vision_hidden = 768;                                  // SigLIP embedding_length
     const int64_t scale         = pixel_shuffle_scale;
@@ -454,12 +452,11 @@ std::vector<float> SmolVLAModelArch::predict(const Inputs& in) {
         }
         const int64_t out_tokens_per_img = n_patches / (scale * scale);  // 64 for 1024 patches
         const float  un_scale_factor = std::sqrt((float) vision_hidden);  // undo PALIGEMMA 1/sqrt(768)
-        const float  img_norm_scale   = std::sqrt((float) hidden_pl); // connector output embedding normalization
 
         std::vector<float> raw_vision(per_out_f32);
         std::vector<float> hwc(per_pix);
         const auto tv0 = clk::now();
-        img_emb_host.resize((size_t) out_tokens_per_img * in.n_images * hidden_pl, 0.f);
+        shuffled_img_host.resize((size_t) conn_in_dim * out_tokens_per_img * in.n_images);
         for (int v = 0; v < in.n_images; ++v) {
             const ImageView & view = in.images[v];
             if (view.w != img_sz || view.h != img_sz) {
@@ -488,13 +485,14 @@ std::vector<float> SmolVLAModelArch::predict(const Inputs& in) {
             // side (patches_per_side / scale), gather an scalexscale block of
             // input patches and concatenate their vision_hidden vectors into a
             // conn_in_dim-wide row.
-            std::vector<float> shuffled((size_t) conn_in_dim * out_tokens_per_img, 0.f);
+            float * shuffled = shuffled_img_host.data() +
+                (size_t) v * conn_in_dim * out_tokens_per_img;
             const int64_t in_side  = patches_per_side;
             const int64_t out_side = patches_per_side / scale;
             for (int64_t oi = 0; oi < out_side; ++oi) {
                 for (int64_t oj = 0; oj < out_side; ++oj) {
                     const int64_t out_tok = oi * out_side + oj;
-                    float * dst = shuffled.data() + (size_t) out_tok * conn_in_dim;
+                    float * dst = shuffled + (size_t) out_tok * conn_in_dim;
                     int64_t slot = 0;
                     for (int64_t bi = 0; bi < scale; ++bi) {
                         for (int64_t bj = 0; bj < scale; ++bj) {
@@ -507,20 +505,6 @@ std::vector<float> SmolVLAModelArch::predict(const Inputs& in) {
                 }
             }
 
-            // connector matmul: out (hidden_pl, out_tokens_per_img) = W_connector @ shuffled + bias
-            //   W_connector is (hidden_pl, conn_in_dim) row-major in connector_w_host.
-            float * out_buf = img_emb_host.data() + (size_t) v * out_tokens_per_img * hidden_pl;
-            for (int64_t t = 0; t < out_tokens_per_img; ++t) {
-                const float * sx = shuffled.data() + (size_t) t * conn_in_dim;
-                for (int64_t r = 0; r < hidden_pl; ++r) {
-                    const float * wrow = connector_w_host.data() + (size_t) r * conn_in_dim;
-                    float acc = connector_b_host[(size_t) r];
-                    for (int64_t k = 0; k < conn_in_dim; ++k) acc += wrow[k] * sx[k];
-                    out_buf[(size_t) t * hidden_pl + r] = acc;
-                }
-            }
-            // Apply LeRobot's image embedding normalization: img_emb *= sqrt(img_emb_dim)
-            for (size_t i = 0; i < (size_t) out_tokens_per_img * hidden_pl; ++i) out_buf[i] *= img_norm_scale;
         }
         stats.ms_vision = std::chrono::duration<float, std::milli>(clk::now() - tv0).count();
         n_img_tokens = out_tokens_per_img * (int64_t) in.n_images;
@@ -559,8 +543,7 @@ std::vector<float> SmolVLAModelArch::predict(const Inputs& in) {
         if (!g.fetch_rows_f32("token_embd.weight", lang_ids, lang_rows.data(), hidden_pl)) return {};
     }
 
-    // 3) state embedding (state -> state_proj -> hidden_pl token). We pre-compute
-    //    the projected embedding on host so the graph only needs to read it.
+    // 3) Normalize state on the host; state_proj itself is part of the backend graph.
     std::vector<float> state_padded((size_t) cfg.max_state_dim, 0.f);
     for (int64_t i = 0; i < cfg.real_state_dim && i < cfg.max_state_dim; ++i) {
         // normalize state before state_proj (LeRobot normalizer_processor MEAN_STD)
@@ -570,58 +553,19 @@ std::vector<float> SmolVLAModelArch::predict(const Inputs& in) {
             state_padded[i] = in.state[i];
         }
     }
-    // state_proj weight is resident in backend buf; compute the projected token
-    // by a host matmul rather than adding another graph node. W is (hidden, max_state_dim),
-    // bias is (hidden,). Result is (hidden_pl,) float32.
-    std::vector<float> state_proj_host((size_t) hidden_pl, 0.f);
-    {
-        // fetch weight+bias as F32 from GGUF and run the small gemv on host.
-        gguf_reader g;
-        if (!g.open(ckpt_path_)) return {};
-        const ggml_tensor * tw = g.meta("state_proj.weight");
-        const ggml_tensor * tb = g.meta("state_proj.bias");
-        if (!tw || !tb) { std::fprintf(stderr, "vla(smolvla): state_proj.weight/bias missing\n"); return {}; }
-        if (tw->ne[0] != cfg.max_state_dim || tw->ne[1] != hidden_pl ||
-            tw->ne[2] != 1 || tw->ne[3] != 1 ||
-            ggml_nelements(tb) != hidden_pl || tb->ne[1] != 1 ||
-            tb->ne[2] != 1 || tb->ne[3] != 1) {
-            std::fprintf(stderr,
-                         "vla(smolvla): state_proj shape mismatch: weight=(%lld,%lld) "
-                         "bias=%lld expected=(%lld,%lld) bias=%lld\n",
-                         (long long) tw->ne[1], (long long) tw->ne[0],
-                         (long long) ggml_nelements(tb), (long long) hidden_pl,
-                         (long long) cfg.max_state_dim, (long long) hidden_pl);
-            return {};
-        }
-        std::vector<float> wf(ggml_nelements(tw));
-        std::vector<float> bf(ggml_nelements(tb));
-        if (tw->type == GGML_TYPE_F32) { if (!g.read_raw("state_proj.weight", wf.data())) return {}; }
-        else {
-            std::vector<uint8_t> bytes = g.read_convert("state_proj.weight", GGML_TYPE_F32);
-            if (bytes.size() != wf.size() * sizeof(float)) return {};
-            std::memcpy(wf.data(), bytes.data(), bytes.size());
-        }
-        if (tb->type == GGML_TYPE_F32) { if (!g.read_raw("state_proj.bias", bf.data())) return {}; }
-        else {
-            std::vector<uint8_t> bytes = g.read_convert("state_proj.bias", GGML_TYPE_F32);
-            if (bytes.size() != bf.size() * sizeof(float)) return {};
-            std::memcpy(bf.data(), bytes.data(), bytes.size());
-        }
-        for (int64_t i = 0; i < hidden_pl; ++i) {
-            float acc = bf[i];
-            const float * wrow = wf.data() + (size_t) i * cfg.max_state_dim;
-            for (int64_t j = 0; j < cfg.max_state_dim; ++j) acc += wrow[j] * state_padded[j];
-            state_proj_host[i] = acc;
-        }
-    }
-
     ggml_init_params cp = { (size_t) 192 * 1024 * 1024, nullptr, true };
     ggml_context * C = ggml_init(cp);
     if (!C) { std::fprintf(stderr, "vla(smolvla): ggml_init(ctx_compute) failed\n"); return {}; }
 
-    ggml_tensor * t_image_emb  = ggml_new_tensor_2d(C, GGML_TYPE_F32, hidden_pl, n_img_tokens); ggml_set_input(t_image_emb);
+    ggml_tensor * t_image_input = nullptr;
+    if (in.precomputed_img_emb) {
+        t_image_input = ggml_new_tensor_2d(C, GGML_TYPE_F32, hidden_pl, n_img_tokens);
+    } else {
+        t_image_input = ggml_new_tensor_2d(C, GGML_TYPE_F32, conn_in_dim, n_img_tokens);
+    }
+    ggml_set_input(t_image_input);
     ggml_tensor * t_lang_emb   = ggml_new_tensor_2d(C, GGML_TYPE_F32, hidden_pl, n_lang);       ggml_set_input(t_lang_emb);
-    ggml_tensor * t_state_emb  = ggml_new_tensor_2d(C, GGML_TYPE_F32, hidden_pl, 1);            ggml_set_input(t_state_emb);
+    ggml_tensor * t_state      = ggml_new_tensor_2d(C, GGML_TYPE_F32, cfg.max_state_dim, 1);    ggml_set_input(t_state);
     ggml_tensor * t_prefix_pos = ggml_new_tensor_1d(C, GGML_TYPE_I32, n_prefix);                ggml_set_input(t_prefix_pos);
     ggml_tensor * t_x0         = ggml_new_tensor_2d(C, GGML_TYPE_F32, max_ad, chunk);           ggml_set_input(t_x0);
     ggml_tensor * t_suffix_pos = ggml_new_tensor_1d(C, GGML_TYPE_I32, n_suf);                   ggml_set_input(t_suffix_pos);
@@ -635,10 +579,17 @@ std::vector<float> SmolVLAModelArch::predict(const Inputs& in) {
         ggml_set_input(t_time[s]);
     }
 
+    ggml_tensor * image_embs = t_image_input;
+    if (!in.precomputed_img_emb) {
+        image_embs = ggml_add(C, ggml_mul_mat(C, W_connector, t_image_input), b_connector);
+        image_embs = ggml_scale(C, image_embs, (float) std::sqrt((double) hidden_pl));
+    }
+    ggml_tensor * state_emb = ggml_add(C, ggml_mul_mat(C, W_state_proj, t_state), b_state_proj);
+
     // language embedding normalized by sqrt(hidden) (matches LeRobot embed_prefix)
     const float lang_scale = (float) std::sqrt((double) hidden_pl);
-    ggml_tensor * img_lang    = ggml_concat(C, t_image_emb, ggml_scale(C, t_lang_emb, lang_scale), 1);
-    ggml_tensor * prefix_embs = ggml_concat(C, img_lang, t_state_emb, 1);
+    ggml_tensor * img_lang    = ggml_concat(C, image_embs, ggml_scale(C, t_lang_emb, lang_scale), 1);
+    ggml_tensor * prefix_embs = ggml_concat(C, img_lang, state_emb, 1);
 
     // VLM prefix pass builds KV cache for the action expert to cross-attend into.
     std::vector<ggml_tensor *> cK(n_vlm), cV(n_vlm);
@@ -703,9 +654,11 @@ std::vector<float> SmolVLAModelArch::predict(const Inputs& in) {
         return {};
     }
 
-    ggml_backend_tensor_set(t_image_emb, img_emb_host.data(), 0, ggml_nbytes(t_image_emb));
+    const std::vector<float> & image_input_host =
+        in.precomputed_img_emb ? img_emb_host : shuffled_img_host;
+    ggml_backend_tensor_set(t_image_input, image_input_host.data(), 0, ggml_nbytes(t_image_input));
     ggml_backend_tensor_set(t_lang_emb,  lang_rows.data(),    0, ggml_nbytes(t_lang_emb));
-    ggml_backend_tensor_set(t_state_emb, state_proj_host.data(), 0, ggml_nbytes(t_state_emb));
+    ggml_backend_tensor_set(t_state, state_padded.data(), 0, ggml_nbytes(t_state));
     {
         std::vector<int32_t> pp(n_prefix);
         int32_t pos = -1;
@@ -986,11 +939,11 @@ std::unique_ptr<ModelArchBase> smolvla_create(const std::string & mmproj_path,
         const int img_sz  = clip_get_image_size(m->cctx);
         const int mm_embd = clip_n_mmproj_embd(m->cctx);
         std::printf("vla(smolvla): mmproj image_size=%d mmproj_embd=%d (model hidden=%lld, "
-                    "identity-proxy passthrough -> connector matmul on host)\n",
+                    "identity-proxy passthrough -> connector matmul in policy graph)\n",
                     img_sz, mm_embd, (long long) c.hidden);
         // SmolVLA uses an identity-proxy mmproj (mmproj_embd == SigLIP vision hidden = 768)
-        // because the real connector (pixel_shuffle + 768*16->960 Linear) is applied on the
-        // host inside predict(). So we only require mmproj_embd to match the SigLIP vision
+        // because the real connector (pixel_shuffle + 768*16->960 Linear) is applied by the
+        // policy path inside predict(). So we only require mmproj_embd to match the SigLIP vision
         // embedding length, not the text-backbone hidden.
         if (img_sz != 512) {
             std::fprintf(stderr, "vla(smolvla): mmproj image size %d != expected 512\n", img_sz);
@@ -1053,12 +1006,13 @@ std::unique_ptr<ModelArchBase> smolvla_create(const std::string & mmproj_path,
     m->W_tmlp_out = mk_f32("action_time_mlp_out.weight"); m->b_tmlp_out = mk_f32("action_time_mlp_out.bias");
     m->W_connector = mk_f32("connector.weight");
     m->b_connector = mk_f32("connector.bias");
-    // state_proj is loaded lazily at predict time for the host GEMV (see predict());
-    // it is not resident in the backend buffer.
+    m->W_state_proj = mk_f32("state_proj.weight");
+    m->b_state_proj = mk_f32("state_proj.bias");
     for (ggml_tensor * t : weights) if (!t) { std::fprintf(stderr, "vla(smolvla): weight tensor creation failed\n"); return nullptr; }
     if (!m->vlm_final_norm || !m->ex_final_norm ||
         !m->W_ain || !m->b_ain || !m->W_aout || !m->b_aout ||
-        !m->W_tmlp_in || !m->b_tmlp_in || !m->W_tmlp_out || !m->b_tmlp_out) {
+        !m->W_tmlp_in || !m->b_tmlp_in || !m->W_tmlp_out || !m->b_tmlp_out ||
+        !m->W_connector || !m->b_connector || !m->W_state_proj || !m->b_state_proj) {
         std::fprintf(stderr, "vla(smolvla): failed to wire projection / norm tensors\n"); return nullptr;
     }
 
@@ -1074,23 +1028,18 @@ std::unique_ptr<ModelArchBase> smolvla_create(const std::string & mmproj_path,
         ggml_backend_tensor_set(t, bytes.data(), 0, bytes.size());
     }
 
-    // cache the SmolVLA connector weight/bias into host floats for the host
-    // pixel_shuffle + linear step inside predict()
+    // Validate connector dimensions used by the backend graph.
     {
-        std::vector<uint8_t> w_bytes = g.read_convert("connector.weight", GGML_TYPE_F32);
-        std::vector<uint8_t> b_bytes = g.read_convert("connector.bias",   GGML_TYPE_F32);
         const ggml_tensor * wt = g.meta("connector.weight");
         const ggml_tensor * bt = g.meta("connector.bias");
-        if (!wt || !bt || w_bytes.empty() || b_bytes.empty()) {
+        if (!wt || !bt) {
             std::fprintf(stderr, "vla(smolvla): connector.weight/bias missing in GGUF\n"); return nullptr;
         }
         const int64_t out_dim = (int64_t) wt->ne[1];   // ggml tensor ne=[cols, rows,...]; PyTorch (out,in) -> ne[0]=in, ne[1]=out
         const int64_t in_dim  = (int64_t) wt->ne[0];
         const int64_t expect_in = 768 * m->pixel_shuffle_scale * m->pixel_shuffle_scale;
         if (out_dim != c.hidden || in_dim != expect_in || wt->ne[2] != 1 || wt->ne[3] != 1 ||
-            ggml_nelements(bt) != out_dim || bt->ne[1] != 1 || bt->ne[2] != 1 || bt->ne[3] != 1 ||
-            w_bytes.size() != (size_t) ggml_nelements(wt) * sizeof(float) ||
-            b_bytes.size() != (size_t) ggml_nelements(bt) * sizeof(float)) {
+            ggml_nelements(bt) != out_dim || bt->ne[1] != 1 || bt->ne[2] != 1 || bt->ne[3] != 1) {
             std::fprintf(stderr,
                          "vla(smolvla): connector shape weight=(%lld,%lld) bias=%lld; "
                          "expected=(%lld,%lld) bias=%lld\n",
@@ -1099,13 +1048,7 @@ std::unique_ptr<ModelArchBase> smolvla_create(const std::string & mmproj_path,
                          (long long) expect_in, (long long) c.hidden);
             return nullptr;
         }
-        m->connector_w_host.resize((size_t) ggml_nelements(wt));
-        m->connector_b_host.resize((size_t) ggml_nelements(bt));
-        std::memcpy(m->connector_w_host.data(), w_bytes.data(), w_bytes.size());
-        std::memcpy(m->connector_b_host.data(), b_bytes.data(), b_bytes.size());
-        // store shape hints used by predict(): host layout is row-major (out_dim, in_dim)
-        // The C++ runtime stores them as flat vectors and uses pixel_shuffle_scale to size in_dim.
-        std::printf("vla(smolvla): connector cached host: out_dim=%lld in_dim=%lld pixel_shuffle_scale=%lld\n",
+        std::printf("vla(smolvla): connector resident backend: out_dim=%lld in_dim=%lld pixel_shuffle_scale=%lld\n",
                     (long long) out_dim, (long long) in_dim, (long long) m->pixel_shuffle_scale);
     }
 

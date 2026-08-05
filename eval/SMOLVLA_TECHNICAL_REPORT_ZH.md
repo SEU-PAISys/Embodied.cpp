@@ -189,9 +189,9 @@ SmolVLA 运行时沿用项目模型适配器的组织形式，但算法路径和
 
 | 指标 | 结果 |
 |---|---:|
-| 最大绝对误差 | 0.0278606415 |
-| 平均绝对误差 | 0.00190579344 |
-| RMSE | 0.00325817475 |
+| 最大绝对误差 | 0.0322541595 |
+| 平均绝对误差 | 0.00202303892 |
+| RMSE | 0.00328528439 |
 | 同一 C++ 请求重复最大差异 | 0 |
 | NaN / Inf | 均无 |
 
@@ -254,7 +254,7 @@ PYTHONPATH=/mnt/c/embodied.cpp/Embodied.cpp/third_party/llama.cpp/gguf-py \
 
 1. **最终 seed 协议没有重新跑满 800 个对照 episodes。** 完整历史结果与最终 smoke 分别承担“覆盖证明”和“最终代码复现证明”，不能混为同一统计实验。
 2. **小样本 smoke 不能估计成功率。** 例如 3/3 不代表真实成功率为 100%，0/3 也不能证明模型在该 suite 完全失败。
-3. **connector 和 state projection 当前含 host 侧计算。** 这样避免修改第三方 llama.cpp，正确性已验证，但会产生 CPU/GPU 同步和性能损失；后续可迁移为 GGML/CUDA graph 节点。
+3. **pixel-shuffle 仍在 host 侧执行。** 该步骤只是连续内存重排；主要的 `12288 -> 960` connector GEMM 和 state projection 已移入 GGML/CUDA graph。后续可继续缓存固定形状的 graph，减少每请求建图与分配开销。
 4. **模型制品未纳入 Git。** 复现者必须使用同一原始 checkpoint，并记录转换参数和 SHA-256。
 
 ## 八、复现实验清单
@@ -273,4 +273,4 @@ PYTHONPATH=/mnt/c/embodied.cpp/Embodied.cpp/third_party/llama.cpp/gguf-py \
 
 ## 九、总结
 
-该分支为 Embodied.cpp 建立了完整的 SmolVLA C++ 推理与 LIBERO 验证能力。权重转换、视觉语言前缀、动作专家、flow-matching、仿真客户端、官方基线、恢复协议、统计报告和构建测试均已连通。固定输入 parity 与完整历史 benchmark 表明实现具备可用的数值和任务级行为；最终确定性 smoke 则覆盖了最新 seed 与恢复逻辑。后续工作的重点是把 host 侧 connector/state projection 移入后端计算图，并在需要正式发布最终成功率时按最新协议重跑完整对照实验。
+该分支为 Embodied.cpp 建立了完整的 SmolVLA C++ 推理与 LIBERO 验证能力。权重转换、视觉语言前缀、动作专家、flow-matching、仿真客户端、官方基线、恢复协议、统计报告和构建测试均已连通。固定输入 parity 与完整历史 benchmark 表明实现具备可用的数值和任务级行为；最终确定性 smoke 则覆盖了最新 seed 与恢复逻辑。connector 和 state projection 移入后端 graph 后，三个确定性任务样例的平均推理耗时由 1029.91 ms/step 降至 274.23 ms/step，均保持成功。后续可缓存固定形状 graph，并在需要正式发布最终成功率时按最新协议重跑完整对照实验。
