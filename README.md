@@ -20,6 +20,9 @@
 ---
 ## NEWS
 
+- **[2026.08]** 🔥🔥 Released Embodied.cpp v0.1.
+- **[2026.07]** Added support for **Cosmos3-Nano** and **GR00T N1.7**, the **RoboLab** benchmark, and Isaac Sim.
+- **[2026.06]** Released the initial version of Embodied.cpp with support for **pi0.5**, **HY-VLA**, and **LingBot-VA**, plus the **LIBERO** and **RoboTwin** benchmarks.
 
 ---
 
@@ -37,11 +40,11 @@
     - [2.3 Install System Dependencies](#23-install-system-dependencies)
     - [2.4 Build by Model and Backend](#24-build-by-model-and-backend)
     - [2.5 Start a Server](#25-start-a-server)
-    - [2.6 Evaluate in Simulation](#26-evaluate-in-simulation)
-  - [3. 🧪 Evaluate in Simulation](#3--evaluate-in-simulation)
+  - [3. 🧪 Evaluation](#3--evaluation)
     - [3.1 LIBERO](#31-libero)
     - [3.2 RoboTwin](#32-robotwin)
-  - [4. 🔧 Convert Your Own Model](#4--convert-your-own-model)
+    - [3.3 RoboLab (Cosmos3-Nano)](#33-robolab-cosmos3-nano)
+  - [4. 🔧 Convert and Quantize Models](#4--convert-and-quantize-models)
   - [5. 🗂️ Project Structure](#5-️-project-structure)
   - [6. 📄 Citation](#6--citation)
   - [7. ⚖️ License](#7-️-license)
@@ -95,28 +98,9 @@ git clone <repo-url> && cd embodied.cpp
 ./patches/init_third_party.sh
 ```
 
-The setup script applies the ordered llama.cpp patch series documented in
-[`patches/PATCH.md`](patches/PATCH.md).
-
-By default it prepares a combined source tree. For an isolated model build,
-select the llama.cpp patch profile before configuring CMake:
-
-```bash
-# HY-VLA / LingBot-VA only
-LLAMA_PATCH_PROFILE=none ./patches/init_third_party.sh
-
-# pi0.5 (and other non-GR00T models in the same build)
-LLAMA_PATCH_PROFILE=pi05 ./patches/init_third_party.sh
-
-# GR00T only
-LLAMA_PATCH_PROFILE=groot ./patches/init_third_party.sh
-
-# All supported models (also the default when LLAMA_PATCH_PROFILE is omitted)
-LLAMA_PATCH_PROFILE=all ./patches/init_third_party.sh
-```
-
-Use a clean `third_party/llama.cpp` when switching profiles; patch state is tied
-to that source tree rather than to an individual CMake build directory.
+By default, the setup script prepares a combined `llama.cpp` source tree for all
+supported runtimes. For smaller model-specific setups or custom patch profiles,
+see [`patches/PATCH.md`](patches/PATCH.md).
 
 ### 2.2 Get GGUF Weights
 
@@ -131,6 +115,7 @@ The repository currently hosts GGUF artifacts prepared for the current
 - `GR00T N1.7`: truncated Qwen3-VL text GGUF, vision projector GGUF, and action-head GGUF
 - `HY-VLA-0.5`: combined VLA GGUF for RoboTwin and related runtime paths
 - `LingBot-VA`: transformer GGUF and companion artifacts used by the LingBot path
+- `Cosmos3-Nano`: RoboLab WAM GGUF with the Wan VAE encoder
 
 Recommended local layout:
 
@@ -149,6 +134,8 @@ checkpoints/
   lingbot_va/
     lingbot_transformer.gguf
     ...
+  cosmos3/
+    cosmos3_robolab_full_w8_with_vae_encoder.gguf
 ```
 
 You can also convert upstream checkpoints yourself with the scripts in
@@ -158,6 +145,12 @@ the fastest way to get started.
 ### 2.3 Install System Dependencies
 
 Install the required system packages for your platform before building.
+
+Minimum build requirements:
+
+- CMake >= 3.22
+- A C++17 compiler, such as GCC 11+ or Clang 14+
+- CUDA 12.x, optional and required only for GPU builds
 
 **Linux:**
 Make sure `cmake`, `protobuf=3.20.3`, `zeromq`, `cppzmq`, `pkg-config` and `uv` are
@@ -175,342 +168,174 @@ CUDA runs additionally require an NVIDIA driver, a compatible CUDA toolkit,
 and `nvidia-smi`. Install `uv` separately if your distribution does not package
 it.
 
-**macOS (Apple Silicon, CPU-only verified for pi0.5):**
-```bash
-brew install cmake protobuf zeromq cppzmq pkg-config uv
-```
 
 ### 2.4 Build by Model and Backend
 
 Model switches default to `OFF`. Enable only the runtimes you need.
 
-**pi0.5, CPU-only:**
+**CUDA GPU template:**
 
 ```bash
-cmake -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DMODEL_BUILD_VLA_PI05=ON
-cmake --build build --target vla-pi05-server -j$(nproc)
-```
-
-**pi0.5, CUDA GPU:**
-```bash
-cmake -S . -B build-pi05-cuda \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DMODEL_BUILD_VLA_PI05=ON \
-  -DGGML_CUDA=ON \
-  -DGGML_CUDA_NCCL=OFF \
-  -DCMAKE_CUDA_COMPILER=<your-nvcc-path> \
-  -DCMAKE_CUDA_ARCHITECTURES=86
-
-cmake --build build-pi05-cuda --target vla-pi05-server -j$(nproc)
-```
-
-**pi0.5 on macOS / Apple Silicon, CPU-only:**
-
-```bash
-cmake -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DMODEL_BUILD_VLA_PI05=ON
-cmake --build build --target vla-pi05-server -j$(sysctl -n hw.logicalcpu)
-```
-
-**HY-VLA, CPU-only:**
-
-```bash
-cmake -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DMODEL_BUILD_VLA_HY_VLA=ON
-cmake --build build --target vla-hy-vla-server -j$(nproc)
-```
-
-**LingBot-VA, CPU-only:**
-
-```bash
-cmake -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DMODEL_BUILD_WAM_LINGBOT_VA=ON
-cmake --build build --target wam-lingbot-server -j$(nproc)
-```
-
-**HY-VLA + LingBot-VA, CUDA GPU:**
-
-```bash
-cmake -S . -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DMODEL_BUILD_VLA_HY_VLA=ON \
-  -DMODEL_BUILD_WAM_LINGBOT_VA=ON \
-  -DGGML_CUDA=ON \
-  -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
-  -DCMAKE_CUDA_ARCHITECTURES=<your-arch> \
-  -DProtobuf_PROTOC_EXECUTABLE=/usr/bin/protoc
-cmake --build build --target vla-hy-vla-server wam-lingbot-server -j$(nproc)
-```
-
-**GR00T N1.7, CUDA GPU:**
-
-Set `CUDA_HOME` to the CUDA toolkit you want to use. `CUDA_ARCH` defaults to
-`native`, so CMake detects the GPU installed on the build machine. Override it
-with an explicit architecture when cross-compiling or when using CMake older
-than 3.24. The selected CUDA toolkit must support that architecture; for
-example, Blackwell `sm_120` requires CUDA 12.8 or newer. The strict-parity build
-uses cuBLAS and disables CUDA fast-math approximations.
-
-```bash
-CUDA_HOME="$(dirname "$(dirname "$(which nvcc)")")"
+CUDA_HOME="${CUDA_HOME:-$(dirname "$(dirname "$(command -v nvcc)")")}"
 CUDA_ARCH=${CUDA_ARCH:-native}
 
-cmake -S . -B build-groot-cuda \
+cmake -S . -B <BUILD_DIR> \
   -DCMAKE_BUILD_TYPE=Release \
-  -DMODEL_BUILD_VLA_GROOT_N1=ON \
+  -D<MODEL_BUILD_FLAG>=ON \
   -DGGML_CUDA=ON \
-  -DGGML_CUDA_FAST_MATH=OFF \
-  -DGGML_CUDA_FORCE_CUBLAS=OFF \
-  -DCMAKE_CUDA_COMPILER="$(which nvcc)" \
-  -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-cmake --build build-groot-cuda --target vla-groot-n1-server -j$(nproc)
-```
-
-Common explicit values include `75` (Turing), `80` or `86` (Ampere), `89`
-(Ada), `90` (Hopper), and `120` (Blackwell). For example, set these values
-before running the commands above:
-
-```bash
-CUDA_HOME=/usr/local/cuda-12.8
-CUDA_ARCH=120
-```
-
-If you want a single build with all currently supported runtimes enabled:
-
-```bash
-rm -rf third_party/llama.cpp
-LLAMA_PATCH_PROFILE=all ./patches/init_third_party.sh
-
-CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
-CUDA_ARCH=${CUDA_ARCH:-native}
-
-cmake -S . -B build-all \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DMODEL_BUILD_VLA_PI05=ON \
-  -DMODEL_BUILD_VLA_HY_VLA=ON \
-  -DMODEL_BUILD_VLA_GROOT_N1=ON \
-  -DMODEL_BUILD_WAM_LINGBOT_VA=ON \
-  -DGGML_CUDA=ON \
-  -DGGML_CUDA_FAST_MATH=OFF \
-  -DGGML_CUDA_FORCE_CUBLAS=OFF \
   -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
   -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-cmake --build build-all --target vla-pi05-server vla-hy-vla-server \
-  vla-groot-n1-server wam-lingbot-server -j$(nproc)
+cmake --build <BUILD_DIR> --target <SERVER_TARGET> -j$(nproc)
 ```
 
-This combined build uses GR00T's strict CUDA settings for the shared GGML CUDA
-backend. Use separate build directories and the narrower patch profiles above
-when you want each model's default performance-oriented backend settings.
+Use a separate `<BUILD_DIR>` for each model or CMake configuration, such as
+`build-groot-cuda` or `build-lingbot-cuda`; a build directory stores one CMake
+configuration and its generated artifacts.
+
+Replace the placeholders with the model you want to build:
+
+| Model | `<MODEL_BUILD_FLAG>` | `<SERVER_TARGET>` |
+|---|---|---|
+| pi0.5 | `MODEL_BUILD_VLA_PI05` | `vla-server` |
+| HY-VLA | `MODEL_BUILD_VLA_HY_VLA` | `vla-server` |
+| GR00T N1.7 | `MODEL_BUILD_VLA_GROOT_N1` | `vla-server` |
+| LingBot-VA | `MODEL_BUILD_WAM_LINGBOT_VA` | `wam-lingbot-server` |
+| Cosmos3-Nano | `MODEL_BUILD_WAM_COSMOS3` | `wam-server` |
+
+`CUDA_ARCH` defaults to `native`, so CMake detects the GPU installed on the
+build machine. Override it with an explicit architecture when cross-compiling or
+when using CMake older than 3.24. Common explicit values include `75` (Turing),
+`80` or `86` (Ampere), `89` (Ada), `90` (Hopper), and `120` (Blackwell). The
+selected CUDA toolkit must support that architecture; for example, Blackwell
+`sm_120` requires CUDA 12.8 or newer.
 
 ### 2.5 Start a Server
 
 ```bash
-# VLA server (pi0.5)
-./build/vla-pi05-server \
-  checkpoints/pi05_libero_finetuned_v044/pi05-mmproj.gguf \
-  checkpoints/pi05_libero_finetuned_v044/pi05.gguf
-
-# VLA server (HY-VLA)
-./build/vla-hy-vla-server \
-  checkpoints/Hy-Embodied-0.5-VLA-RoboTwin/Hy-Embodied-0.5-VLA-RoboTwin_bf16.gguf
-
-# VLA server (GR00T N1.7)
-./build-groot-cuda/vla-groot-n1-server \
-  --bind tcp://127.0.0.1:5555 \
-  --backbone checkpoints/groot-n1/qwen3vl-backbone-bf16.gguf \
-  checkpoints/groot-n1/qwen3vl-mmproj-bf16.gguf \
-  checkpoints/groot-n1/groot-n1.7-libero-object-action-head-bf16.gguf
-
-# LingBot world-action server (bind to 5555 to match the client example below)
-./build/wam-lingbot-server \
-  --bind tcp://*:5555 \
-  checkpoints/lingbot_va/lingbot_transformer.gguf
+./<BUILD_DIR>/<SERVER_TARGET> <MODEL_ARGUMENTS>
 ```
 
-Each executable is generated only when its corresponding `MODEL_BUILD_*` switch
-is enabled at configure time. GR00T disables backbone flash attention by default
-to keep intermediate tensors close to the official implementation. Set
-`VLA_GROOT_FLASH_ATTN=1` to opt into the faster fused path.
+Use the `<BUILD_DIR>` and `<SERVER_TARGET>` selected in section 2.4. Replace
+`<MODEL_ARGUMENTS>` with the arguments for the selected model:
 
-### 2.6 Evaluate in Simulation
+| Model | `<SERVER_TARGET>` | `<MODEL_ARGUMENTS>` |
+|---|---|---|
+| pi0.5 | `vla-server` | `<MMPROJ_GGUF> <MODEL_GGUF>` |
+| HY-VLA | `vla-server` | `<MODEL_GGUF>` |
+| GR00T N1.7 | `vla-server` | `--backbone <BACKBONE_GGUF> <MMPROJ_GGUF> <ACTION_HEAD_GGUF>` |
+| LingBot-VA | `wam-lingbot-server` | `<TRANSFORMER_GGUF> <TEXT_ENCODER_GGUF> <VAE_ENCODER_GGUF>` |
+| Cosmos3-Nano | `wam-server` | `<MODEL_GGUF>` |
 
-**pi0.5 on LIBERO:**
+VLA servers bind to `tcp://*:5555` by default. LingBot-VA and Cosmos3-Nano
+bind to `tcp://*:5557` by default. Pass `--bind <ADDR>` to override the
+listening address or port.
 
-```bash
-# Start the pi0.5 server in another shell first.
-./build/vla-pi05-server \
-  checkpoints/pi05_libero_finetuned_v044/pi05-mmproj.gguf \
-  checkpoints/pi05_libero_finetuned_v044/pi05.gguf
+## 3. 🧪 Evaluation
 
-# Install the LIBERO runtime once
-bash eval/sim/libero/setup_libero.sh
+Start the required server as described in section 2.5, then select the
+configuration and runner for the model and benchmark you want to evaluate.
 
-# Run one LIBERO smoke-test episode
-eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
-  --conf eval/conf/libero_pi05_eval.yaml
-```
+| Model | Benchmark | Configuration | Server |
+|---|---|---|---|
+| pi0.5 | LIBERO | [pi0.5](eval/conf/libero_pi05_eval.yaml) | Manual |
+| GR00T N1.7 | LIBERO | [GR00T](eval/conf/libero_groot_n1_eval.yaml) | Manual |
+| LingBot-VA | LIBERO | [LingBot](eval/conf/libero_lingbot_va_eval.yaml) | Manual |
+| HY-VLA | RoboTwin | [HY-VLA](eval/conf/robotwin_hy_vla_eval.yaml) | Managed |
+| Cosmos3-Nano | RoboLab | [Cosmos3](eval/conf/robolab_cosmos3_eval.yaml) | Managed |
 
-**HY-VLA on RoboTwin:**
+LIBERO uses `eval/client/run_sim_client_direct.py`; start its matching server
+separately. RoboTwin and RoboLab runners start their servers from the selected
+configuration and stop them when the evaluation finishes.
 
-```bash
-# Build with MODEL_BUILD_VLA_HY_VLA=ON first, and use a HY-VLA GGUF from the
-# released Embodied.cpp checkpoint set.
-
-# Install the RoboTwin runtime once
-bash eval/sim/robotwin/setup_robotwin.sh
-
-# Run one RoboTwin episode
-GGML_CUDA_DISABLE_GRAPHS=1 \
-eval/sim/robotwin/robotwin_uv/.venv/bin/python \
-  eval/client/run_robotwin_eval.py \
-  --model checkpoints/Hy-Embodied-0.5-VLA-RoboTwin/Hy-Embodied-0.5-VLA-RoboTwin_bf16.gguf \
-  --task-name place_empty_cup \
-  --episodes 1
-```
-
-**GR00T N1.7 C++ on LIBERO:**
-
-Start the GR00T server shown above, install LIBERO once, then run the checked-in
-LIBERO-object configuration:
-
-The checked-in [configuration](eval/conf/libero_groot_n1_eval.yaml) covers all
-10 object tasks with 20 episodes per task (200 rollouts). Setting `max_steps: 0`
-uses the suite-specific episode limit.
-
-```bash
-bash eval/sim/libero/setup_libero.sh
-
-eval/sim/libero/libero_uv/.venv/bin/python \
-  eval/client/run_sim_client_direct.py \
-  --conf eval/conf/libero_groot_n1_eval.yaml
-```
-
-On a native Linux server without a desktop session, select EGL explicitly:
-
-```bash
-MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \
-eval/sim/libero/libero_uv/.venv/bin/python \
-  eval/client/run_sim_client_direct.py \
-  --conf eval/conf/libero_groot_n1_eval.yaml
-```
-
-To cover all LIBERO suites, list every integer task id in the selected suite and
-run the command once for each `libero_suite` value below. Use `0..9` for the
-four 10-task suites and `0..89` for `long`. The GR00T server can remain running
-between suites.
-
-
-**LingBot-VA on LIBERO:**
-
-```bash
-# Install the LIBERO runtime once
-bash eval/sim/libero/setup_libero.sh
-
-# Run a test episode
-eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
-  --arch lingbot_va \
-  --libero-suite object \
-  --task-id 0 \
-  --n-episodes 1 \
-  --tokenizer /path/to/lingbot-va-tokenizer \
-  --vla-addr tcp://localhost:5555
-```
----
-
-## 3. 🧪 Evaluate in Simulation
+Each checked-in YAML is a baseline evaluation configuration. Adjust its task
+selection, episode count, model paths, output location, and other
+benchmark-specific settings for your run; the exact field names are documented
+in the corresponding configuration and simulator README.
 
 ### 3.1 LIBERO
 
-LIBERO tests robotic manipulation skills on four task suites: `spatial`, `object`, `goal`, and `10`. A fifth suite `long` (90 tasks) is also available.
+LIBERO tests robotic manipulation skills on the `spatial`, `object`, `goal`,
+`short`, and `long` suites. Install the simulator once:
 
 ```bash
---libero-suite spatial  → libero_spatial
---libero-suite object   → libero_object
---libero-suite goal     → libero_goal
---libero-suite 10       → libero_10
---libero-suite long     → libero_90
+bash eval/sim/libero/setup_libero.sh
 ```
 
-Use `--task-id 0..9` (or `0..89` for `long`) to select an individual task.
-
-The direct simulation client currently supports:
-
-- `--arch pi05`
-- `--arch groot_n1`
-- `--arch lingbot_va`
-
-Example pi0.5 smoke test:
+After starting the matching server in another terminal, run a checked-in
+configuration:
 
 ```bash
+# pi0.5
 eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
   --conf eval/conf/libero_pi05_eval.yaml
+
+# GR00T N1.7
+eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
+  --conf eval/conf/libero_groot_n1_eval.yaml
+
+# LingBot-VA
+eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
+  --conf eval/conf/libero_lingbot_va_eval.yaml
 ```
+
+See [`eval/sim/libero/README.md`](eval/sim/libero/README.md) for LIBERO suite
+selection, headless EGL execution, and configuration details.
 
 ### 3.2 RoboTwin
 
-RoboTwin is a dual-arm robot benchmark with real-world-style manipulation tasks. Run HY-VLA natively in C++:
+RoboTwin is a dual-arm manipulation benchmark. Install it once:
 
 ```bash
-bash eval/sim/robotwin/setup_robotwin.sh   # one-time setup
+bash eval/sim/robotwin/setup_robotwin.sh
+```
 
-GGML_CUDA_DISABLE_GRAPHS=1 \
+Run HY-VLA with the standard configuration:
+
+```bash
 eval/sim/robotwin/robotwin_uv/.venv/bin/python \
   eval/client/run_robotwin_eval.py \
-  --model <path-to-hy-vla.gguf> \
-  --task-name place_empty_cup \
-  --episodes 1
+  --conf eval/conf/robotwin_hy_vla_eval.yaml
 ```
 
 See [`eval/sim/robotwin/README.md`](eval/sim/robotwin/README.md) for detailed setup modes and troubleshooting.
 
-## 4. 🔧 Convert Your Own Model
+### 3.3 RoboLab (Cosmos3-Nano)
 
-GGUF conversion scripts are in [`scripts/`](scripts/):
-
-| Script | Converts |
-|---|---|
-| `convert_pi05_to_gguf.py` | pi0.5 model weights |
-| `convert_pi05_mmproj_to_gguf.py` | pi0.5 multimodal projector |
-| `convert_groot_n1_to_gguf.py` | Quantized GR00T N1.7 action head and LIBERO statistics |
-| `prepare_groot_n1_backbone.py` | Offline GR00T action head + truncated Qwen3-VL text/mmproj GGUFs |
-| `convert_hy_vla_to_gguf.py` | HY-VLA combined vision+action |
-| `convert_lingbot_va_to_gguf.py` | LingBot-VA transformer + companion GGUFs |
-
-Generate all three GR00T N1.7 files from local models without network access:
+RoboLab evaluates the native C++ Cosmos3 WAM path. Install RoboLab once
+without launching its optional Isaac Sim smoke test:
 
 ```bash
-python scripts/prepare_groot_n1_backbone.py \
-  --checkpoint checkpoints/groot-n1/libero_object \
-  --output-dir checkpoints/groot-n1/qwen3vl-backbone-hf \
-  --gguf-dir checkpoints/groot-n1 \
-  --reuse-prepared \
-  --outtype q8_0 \
-  --ggml-lib build-groot-cuda/bin/libggml-base.so
+RUN_SMOKE_TEST=0 bash eval/sim/robolab/setup_robolab.sh
 ```
 
-This writes `qwen3vl-backbone-q8_0.gguf`, `qwen3vl-mmproj-q8_0.gguf`, and
-`groot-n1.7-libero-object-action-head-q8_0.gguf`. Supported output types are
-`bf16`, `q2_k`, `q3_k`, `q4_0`, `q4_k`, `q5_0`, `q5_k`, `q6_k`, and `q8_0`.
-For additional quantization variants, rerun with `--reuse-prepared` so the
-extracted safetensors are not copied again. The script only downloads metadata
-when `--metadata-repo` is explicitly provided.
+Run Cosmos3-Nano with the standard configuration:
 
-Quantization helpers:
+```bash
+python3 eval/client/run_robolab_eval.py \
+  --conf eval/conf/robolab_cosmos3_eval.yaml
+```
 
-| Script | Quantizes |
+The runner starts the C++ `wam-server` automatically. See
+[`eval/sim/robolab/README.md`](eval/sim/robolab/README.md) for configuration
+details, the transport-only smoke test, and the PyTorch-reference path.
+
+## 4. 🔧 Convert and Quantize Models
+
+Pre-converted GGUF releases are available on
+[Hugging Face](https://huggingface.co/SEU-PAISys/Embodied.cpp). Use the
+conversion tools only when preparing a compatible upstream checkpoint or a
+custom quantization.
+
+| Model | Workflow |
 |---|---|
-| `quantize_hy_vla_gguf.py` | HY-VLA models |
-| `quantize_lingbot_wan_gguf.py` | LingBot-VA models |
+| pi0.5 | [Policy and vision projector](scripts/README.md#pi05) |
+| GR00T N1.7 | [Action head and Qwen3-VL backbone](scripts/README.md#groot-n17) |
+| HY-VLA | [Combined GGUF and quantization](scripts/README.md#hy-vla) |
+| LingBot-VA | [Model artifacts and Wan quantization](scripts/README.md#lingbot-va) |
+| Cosmos3-Nano | [RoboLab full_w8 GGUF](scripts/README.md#cosmos3-nano) |
 
-If you do not need a custom conversion, prefer the prebuilt GGUF releases at:
-
-- https://huggingface.co/SEU-PAISys/Embodied.cpp
+See [`scripts/README.md`](scripts/README.md) for prerequisites, commands,
+expected outputs, and post-conversion checks.
 
 ## 5. 🗂️ Project Structure
 
@@ -518,14 +343,14 @@ What lives where, in plain language:
 
 | Directory | What it contains |
 |---|---|
-| `models/` | C++ model implementations (pi0.5, GR00T N1.7, HY-VLA, LingBot-VA) |
+| `models/` | C++ implementations of supported models |
 | `runtime/` | Model registry, architecture detection, shared utilities |
-| `adapter/` | I/O boundary — translates sensor/simulator data into typed inputs the models understand |
-| `serving/` | Server code (ZeroMQ/Protobuf) for VLA and LingBot APIs |
-| `kernels/` | Custom CUDA kernels (used when building with GPU support) |
-| `scripts/` | GGUF conversion, quantization, and evaluation helpers |
-| `patches/` | Third-party code patches applied during setup |
-| `eval/` | Evaluation clients and simulation setups (LIBERO, RoboTwin) |
+| `adapter/` | Typed I/O boundary between observations and model inputs |
+| `serving/` | ZeroMQ/Protobuf inference servers and API definitions |
+| `kernels/` | Custom CUDA kernels for GPU builds |
+| `scripts/` | GGUF conversion and quantization tools |
+| `patches/` | Third-party setup patches |
+| `eval/` | Evaluation clients, configurations, and simulator integrations |
 
 ## 6. 📄 Citation
 
@@ -553,9 +378,11 @@ This project is released under the [Apache License 2.0](LICENSE.md). Third-party
 - [NVIDIA Isaac GR00T](https://github.com/NVIDIA/Isaac-GR00T)
 - [HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA)
 - [LingBot-VA](https://github.com/robbyant/lingbot-vla)
+- [NVIDIA Cosmos / Cosmos3-Nano](https://github.com/nvidia/cosmos)
 
 **Foundational projects this build depends on:**
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) (LLM inference engine)
 - [vla.cpp](https://github.com/VinRobotics/vla.cpp) (unified VLA runtime)
 - [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO) (manipulation benchmark)
 - [RoboTwin](https://github.com/RoboTwin-Platform/RoboTwin) (dual-arm robot benchmark)
+- [RoboLab](https://github.com/NVlabs/RoboLab) (Isaac Sim DROID evaluation benchmark)

@@ -19,6 +19,11 @@ import zmq
 from PIL import Image
 from transformers import AutoTokenizer
 
+try:
+    from diffusers.pipelines.wan.pipeline_wan import prompt_clean as _wan_prompt_clean
+except Exception:
+    _wan_prompt_clean = None
+
 
 def _load_lingbot_pb():
     if "lingbot_pb2" in sys.modules:
@@ -47,11 +52,11 @@ def _load_lingbot_pb():
     return lingbot_pb2
 
 
-def _resize_hwc_u8(img: np.ndarray, size: int) -> np.ndarray:
-    if img.shape[0] == size and img.shape[1] == size:
+def _resize_hwc_u8(img: np.ndarray, height: int, width: int) -> np.ndarray:
+    if img.shape[0] == height and img.shape[1] == width:
         return np.ascontiguousarray(img, dtype=np.uint8)
     pil = Image.fromarray(np.asarray(img, dtype=np.uint8), mode="RGB")
-    pil = pil.resize((size, size), resample=Image.BILINEAR)
+    pil = pil.resize((width, height), resample=Image.BILINEAR)
     return np.ascontiguousarray(np.asarray(pil, dtype=np.uint8))
 
 
@@ -69,7 +74,10 @@ class LingBotWorldClient:
         recv_timeout_ms: int = DEFAULT_RECV_TIMEOUT_MS,
         n_action_steps: int = 1,
         session_id: int = 1,
-        max_cache_frames: int = 4,
+        max_cache_frames: int = 0,
+        action_per_frame: int = 4,
+        image_sizes: Sequence[tuple[int, int]] | None = None,
+        env_type: str = "none",
     ):
         if tokenizer_name is None:
             default_tok = Path("/home/xuling/robotic_dataset/models/linbot-va-posttrain-libero-long/tokenizer")
@@ -91,18 +99,30 @@ class LingBotWorldClient:
 
         self.image_size = image_size
         self.image_keys = list(image_keys)
+        if image_sizes is not None and len(image_sizes) != len(self.image_keys):
+            raise ValueError("image_sizes length must match image_keys length")
+        self.image_sizes = list(image_sizes) if image_sizes is not None else [
+            (int(image_size), int(image_size)) for _ in self.image_keys
+        ]
         self.max_length = max_length
         self.n_action_steps = n_action_steps
         self.session_id = int(session_id)
         self.max_cache_frames = int(max_cache_frames)
+        self.action_per_frame = int(action_per_frame)
+        if self.action_per_frame < 1:
+            raise ValueError(f"action_per_frame must be >= 1, got {self.action_per_frame}")
+        self.env_type = str(env_type or "none")
+        self._frame_start_id = 0
         self._request_id = 0
         self._action_queue: deque[np.ndarray] = deque(maxlen=n_action_steps)
         self._last_action_chunk: np.ndarray | None = None
         self._last_response = None
+        self._dumped_first_step = False
 
     def reset(self) -> None:
         self._action_queue.clear()
         self._last_action_chunk = None
+        self._frame_start_id = 0
         req = self.pb.LingBotRequest()
         req.request_id = self._request_id
         self._request_id += 1
@@ -122,8 +142,13 @@ class LingBotWorldClient:
                 self._action_queue.append(np.ascontiguousarray(row[:7], dtype=np.float32))
         return self._action_queue.popleft()
 
-    def predict_chunk(self, obs: dict[str, Any], action_noise: np.ndarray | None = None) -> np.ndarray:
-        chunk = self._predict_chunk(obs, action_noise=action_noise)
+    def predict_chunk(
+        self,
+        obs: dict[str, Any],
+        action_noise: np.ndarray | None = None,
+        latent_noise: np.ndarray | None = None,
+    ) -> np.ndarray:
+        chunk = self._predict_chunk(obs, action_noise=action_noise, latent_noise=latent_noise)
         self._last_action_chunk = np.ascontiguousarray(chunk[:, :7], dtype=np.float32)
         return chunk
 
@@ -140,21 +165,30 @@ class LingBotWorldClient:
         req.step.session_id = self.session_id
         req.step.compute_kv_cache = True
         req.step.imagine = bool(imagine)
+        req.step.frame_start_id = int(self._frame_start_id)
+        req.step.action_per_frame = int(self.action_per_frame)
+        req.step.env_type = self.env_type
         obs_seq = self._as_obs_sequence(obs_or_sequence)
         if self.max_cache_frames > 0 and len(obs_seq) > self.max_cache_frames:
             obs_seq = obs_seq[-self.max_cache_frames :]
         self._add_images(req.step, obs_seq)
         if action_chunk is None:
             action_chunk = self._last_action_chunk
+        frame_delta = 0
         if action_chunk is not None:
             self._add_action_condition(req.step, action_chunk)
+            frame_delta = self._action_condition_frame_count(action_chunk)
+            req.step.frame_delta = int(frame_delta)
         self._add_language(req.step, obs_seq[0])
+        self._dump_step_npz(req.step, "cache_update", req.request_id)
 
         self.sock.send(req.SerializeToString())
         resp = self.pb.LingBotResponse()
         resp.ParseFromString(self.sock.recv())
         if resp.error:
             raise RuntimeError(f"wam-lingbot-server cache update error: {resp.error}")
+        if frame_delta > 0:
+            self._frame_start_id += int(frame_delta)
         self._last_response = resp
         return resp.status
 
@@ -169,13 +203,23 @@ class LingBotWorldClient:
         grip = qpos[:1] if qpos.size else np.zeros(1, dtype=np.float32)
         return np.concatenate([pos, rpy, grip]).astype(np.float32)
 
-    def _predict_chunk(self, obs: dict[str, Any], action_noise: np.ndarray | None = None) -> np.ndarray:
+    def _predict_chunk(
+        self,
+        obs: dict[str, Any],
+        action_noise: np.ndarray | None = None,
+        latent_noise: np.ndarray | None = None,
+    ) -> np.ndarray:
         req = self.pb.LingBotRequest()
         req.request_id = self._request_id
         self._request_id += 1
         req.step.session_id = self.session_id
+        req.step.frame_start_id = int(self._frame_start_id)
+        req.step.action_per_frame = int(self.action_per_frame)
+        req.step.env_type = self.env_type
 
         self._add_images(req.step, obs)
+        if latent_noise is not None:
+            self._add_latent_noise(req.step, latent_noise)
         if action_noise is not None:
             self._add_action_noise(req.step, action_noise)
         state = self._extract_state(obs)
@@ -183,6 +227,7 @@ class LingBotWorldClient:
         if self._last_action_chunk is not None and os.environ.get("VLA_LINGBOT_SEND_LAST_ACTION_COND"):
             self._add_action_condition(req.step, self._last_action_chunk)
         self._add_language(req.step, obs)
+        self._dump_step_npz(req.step, "predict", req.request_id)
 
         self.sock.send(req.SerializeToString())
         resp = self.pb.LingBotResponse()
@@ -194,10 +239,62 @@ class LingBotWorldClient:
             raise RuntimeError(f"invalid LingBot response shape: chunk={resp.chunk_size} action_dim={resp.action_dim}")
         return np.asarray(resp.action_chunk, dtype=np.float32).reshape(resp.chunk_size, resp.action_dim)
 
+    def _dump_step_npz(self, step, kind: str, request_id: int) -> None:
+        dump_dir = os.environ.get("VLA_LINGBOT_DUMP_STEP_NPZ_DIR")
+        if not dump_dir:
+            return
+        if os.environ.get("VLA_LINGBOT_DUMP_FIRST_STEP_ONLY", "1") not in ("0", "false", "FALSE"):
+            if self._dumped_first_step:
+                return
+            self._dumped_first_step = True
+
+        out_dir = Path(dump_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        arrays: dict[str, Any] = {
+            "kind": np.asarray(kind),
+            "request_id": np.asarray(request_id, dtype=np.uint64),
+            "session_id": np.asarray(step.session_id, dtype=np.uint64),
+            "return_world_latents": np.asarray(bool(step.return_world_latents)),
+            "action_horizon": np.asarray(step.action_horizon, dtype=np.uint32),
+            "lang_tokens": np.asarray(step.lang_tokens, dtype=np.int32),
+            "state": np.asarray(step.state, dtype=np.float32),
+            "compute_kv_cache": np.asarray(bool(step.compute_kv_cache)),
+            "imagine": np.asarray(bool(step.imagine)),
+            "frame_start_id": np.asarray(step.frame_start_id, dtype=np.uint64),
+            "frame_delta": np.asarray(step.frame_delta, dtype=np.uint64),
+            "action_per_frame": np.asarray(step.action_per_frame, dtype=np.uint32),
+            "env_type": np.asarray(step.env_type),
+            "input_image_count": np.asarray(len(step.input_images), dtype=np.int32),
+            "input_latent_count": np.asarray(len(step.input_latents), dtype=np.int32),
+        }
+        for i, t in enumerate(step.input_images):
+            arrays[f"input_image_{i}_name"] = np.asarray(t.name)
+            arrays[f"input_image_{i}_dtype"] = np.asarray(int(t.dtype), dtype=np.int32)
+            arrays[f"input_image_{i}_shape"] = np.asarray(t.shape, dtype=np.uint64)
+            arrays[f"input_image_{i}_data"] = np.frombuffer(t.data, dtype=np.uint8).copy()
+        for i, t in enumerate(step.input_latents):
+            arrays[f"input_latent_{i}_name"] = np.asarray(t.name)
+            arrays[f"input_latent_{i}_dtype"] = np.asarray(int(t.dtype), dtype=np.int32)
+            arrays[f"input_latent_{i}_shape"] = np.asarray(t.shape, dtype=np.uint64)
+            arrays[f"input_latent_{i}_data"] = np.frombuffer(t.data, dtype=np.uint8).copy()
+        if step.HasField("action_noise"):
+            arrays["action_noise_name"] = np.asarray(step.action_noise.name)
+            arrays["action_noise_dtype"] = np.asarray(int(step.action_noise.dtype), dtype=np.int32)
+            arrays["action_noise_shape"] = np.asarray(step.action_noise.shape, dtype=np.uint64)
+            arrays["action_noise_data"] = np.frombuffer(step.action_noise.data, dtype=np.uint8).copy()
+        if step.HasField("action_condition"):
+            arrays["action_condition_name"] = np.asarray(step.action_condition.name)
+            arrays["action_condition_dtype"] = np.asarray(int(step.action_condition.dtype), dtype=np.int32)
+            arrays["action_condition_shape"] = np.asarray(step.action_condition.shape, dtype=np.uint64)
+            arrays["action_condition_data"] = np.frombuffer(step.action_condition.data, dtype=np.uint8).copy()
+        out_path = out_dir / f"{kind}_request_{request_id:06d}.npz"
+        np.savez_compressed(out_path, **arrays)
+        print(f"lingbot-world-client: dumped {kind} step request to {out_path}", flush=True)
+
     def _add_images(self, step, obs_or_sequence: dict[str, Any] | Sequence[dict[str, Any]]) -> None:
         obs_seq = self._as_obs_sequence(obs_or_sequence)
         first_pixels = obs_seq[0].get("pixels", {})
-        for key in self.image_keys:
+        for key, (height, width) in zip(self.image_keys, self.image_sizes):
             if key not in first_pixels:
                 raise KeyError(f"LingBot image key '{key}' missing; got pixels keys {list(first_pixels.keys())}")
             frames = []
@@ -208,8 +305,10 @@ class LingBotWorldClient:
                 img = np.asarray(pixels[key])
                 if img.ndim != 3 or img.shape[-1] != 3:
                     raise ValueError(f"pixels[{key!r}]: expected HWC RGB image, got {img.shape}")
-                img = np.ascontiguousarray(img[::-1, ::-1], dtype=np.uint8)
-                frames.append(_resize_hwc_u8(img, self.image_size))
+                # Match robbyant/lingbot-va's LIBERO client: MuJoCo images are
+                # flipped vertically only. A horizontal flip mirrors the scene.
+                img = np.ascontiguousarray(img[::-1], dtype=np.uint8)
+                frames.append(_resize_hwc_u8(img, int(height), int(width)))
             video = np.ascontiguousarray(np.stack(frames, axis=0), dtype=np.uint8)
             t = step.input_images.add()
             t.name = key
@@ -235,10 +334,22 @@ class LingBotWorldClient:
         t.shape.extend(noise.shape)
         t.data = noise.tobytes()
 
+    def _add_latent_noise(self, step, latent_noise: np.ndarray) -> None:
+        latent = np.ascontiguousarray(latent_noise, dtype=np.float32)
+        if latent.ndim != 5:
+            raise ValueError(f"LingBot latent_noise must be [B,C,F,H,W], got {latent.shape}")
+        t = step.input_latents.add()
+        t.name = "latent_noise"
+        t.dtype = self.pb.F32
+        t.shape.extend(latent.shape)
+        t.data = latent.tobytes()
+
     def _add_language(self, step, obs: dict[str, Any]) -> None:
         task = obs.get("task_description", "")
         if isinstance(task, bytes):
             task = task.decode()
+        if _wan_prompt_clean is not None:
+            task = _wan_prompt_clean(str(task))
         toks = self.tok(
             task,
             padding=False,
@@ -268,17 +379,31 @@ class LingBotWorldClient:
             raise ValueError("observation sequence must not be empty")
         return seq[0]
 
-    @staticmethod
-    def _chunk_to_action_condition(chunk: np.ndarray) -> np.ndarray:
+    def _action_condition_frame_count(self, chunk: np.ndarray) -> int:
+        chunk = np.asarray(chunk)
+        if chunk.ndim == 3:
+            return int(chunk.shape[1])
+        if chunk.ndim != 2:
+            return 0
+        return int(np.ceil(chunk.shape[0] / self.action_per_frame))
+
+    def _chunk_to_action_condition(self, chunk: np.ndarray) -> np.ndarray:
         chunk = np.asarray(chunk, dtype=np.float32)
+        if chunk.ndim == 3:
+            if chunk.shape[0] != 7:
+                raise ValueError(f"expected LingBot action condition [7,F,H], got {chunk.shape}")
+            if chunk.shape[2] != self.action_per_frame:
+                raise ValueError(
+                    f"expected LingBot action condition H={self.action_per_frame}, got {chunk.shape}"
+                )
+            return np.ascontiguousarray(chunk)
         if chunk.ndim != 2 or chunk.shape[1] < 7:
             raise ValueError(f"expected action chunk [T,>=7], got {chunk.shape}")
-        action_per_frame = 4
-        frames = int(np.ceil(chunk.shape[0] / action_per_frame))
-        out = np.zeros((7, frames, action_per_frame), dtype=np.float32)
+        frames = int(np.ceil(chunk.shape[0] / self.action_per_frame))
+        out = np.zeros((7, frames, self.action_per_frame), dtype=np.float32)
         for t in range(chunk.shape[0]):
-            f = t // action_per_frame
-            h = t % action_per_frame
+            f = t // self.action_per_frame
+            h = t % self.action_per_frame
             out[:, f, h] = chunk[t, :7]
         return np.ascontiguousarray(out)
 

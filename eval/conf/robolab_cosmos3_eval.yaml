@@ -11,7 +11,7 @@ paths:
   robolab_dir: eval/sim/robolab/RoboLab
   robolab_python: eval/sim/robolab/RoboLab/.venv/bin/python
   cosmos3_vllm_python: ../cosmos-framework/examples/quantized_robot_policy/.venv/bin/python
-  model: models/cosmos3_robolab_full_w8_with_vae_encoder.gguf
+  model: checkpoints/cosmos3/cosmos3_robolab_full_w8_with_vae_encoder.gguf
   output_root: outputs/cosmos3/robolab
 
 server:
@@ -23,9 +23,6 @@ server:
 robolab:
   tasks:
     - BananaOnPlateTask
-    - BowlInBinTask
-    - PlasticBottlesInSquarePailTask
-    - BananaInBowlTask
   num_envs: 1
   num_runs: 1
   sim_gpu: 0
@@ -59,11 +56,7 @@ policy:
   qwen_tokenizer_root: assets/qwen3_vl_tokenizer
 
 client:
-  # Predict 32 actions per policy forward, execute this many before replanning.
-  # TODO: Reconfirm the official DROID/RoboLab full_w8 rollout horizon against
-  # the actual RoboLab policies/cosmos3 client. The 8-step served horizon is
-  # explicit in RoboCasa365 quant, while DROID/RoboLab docs also mention 32-step
-  # open-loop chunks.
-  action_horizon: 8
+  # Predict 32 actions per policy forward and execute the full chunk before replanning.
+  action_horizon: 32
   action_dim: 8
   request_timeout_ms: 900000

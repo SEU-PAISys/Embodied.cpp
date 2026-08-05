@@ -110,6 +110,16 @@ int cosmos3_wan_vae_norm_silu_whdc_f32(
     int C,
     cudaStream_t stream);
 
+int cosmos3_wan_vae_norm_silu_whdc_f32w(
+    const float * input_whdc,
+    const float * gamma_f32,
+    float * output_whdc,
+    int W,
+    int H,
+    int T,
+    int C,
+    cudaStream_t stream);
+
 int cosmos3_wan_vae_rms_norm_whdc_f32(
     const float * input_whdc,
     const unsigned short * gamma_bf16,
@@ -124,6 +134,18 @@ int cosmos3_wan_vae_causal_conv3d_ks3_whdc_f32(
     const float * input_whdc,
     const unsigned short * weight_bf16,
     const unsigned short * bias_bf16,
+    float * output_whdc,
+    int W,
+    int H,
+    int T,
+    int in_C,
+    int out_C,
+    cudaStream_t stream);
+
+int cosmos3_wan_vae_causal_conv3d_ks3_whdc_f32w(
+    const float * input_whdc,
+    const float * weight_f32,
+    const float * bias_f32,
     float * output_whdc,
     int W,
     int H,
@@ -150,10 +172,33 @@ int cosmos3_wan_vae_spatial_downsample2d_whdc_f32(
     int C,
     cudaStream_t stream);
 
+int cosmos3_wan_vae_spatial_downsample2d_whdc_f32w(
+    const float * input_whdc,
+    const float * weight_f32,
+    const float * bias_f32,
+    float * output_whdc,
+    int W,
+    int H,
+    int T,
+    int C,
+    cudaStream_t stream);
+
 int cosmos3_wan_vae_conv1x1x1_whdc_f32(
     const float * input_whdc,
     const unsigned short * weight_bf16,
     const unsigned short * bias_bf16,
+    float * output_whdc,
+    int W,
+    int H,
+    int T,
+    int in_C,
+    int out_C,
+    cudaStream_t stream);
+
+int cosmos3_wan_vae_conv1x1x1_whdc_f32w(
+    const float * input_whdc,
+    const float * weight_f32,
+    const float * bias_f32,
     float * output_whdc,
     int W,
     int H,

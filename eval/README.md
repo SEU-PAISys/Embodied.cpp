@@ -44,7 +44,7 @@ Important paths:
 - `../adapter/sim/robotwin.py`: RoboTwin typed I/O adapter.
 
 Run the GR00T N1.7 LIBERO-object sample after starting
-`vla-groot-n1-server` on `tcp://127.0.0.1:5555`:
+`vla-server` on `tcp://127.0.0.1:5555`:
 
 ```bash
 eval/sim/libero/libero_uv/.venv/bin/python \
@@ -56,3 +56,12 @@ On the RTX 5060 Laptop validation machine, task 0
 (`pick_up_the_alphabet_soup_and_place_it_in_the_basket`) completed successfully
 in 144 environment steps with the all-BF16 strict-parity configuration. This is
 a single integration sample, not a benchmark success-rate claim.
+
+GR00T N1.7 loads its action-head matmul weights as BF16 by default, matching the
+released `*-bf16.gguf` checkpoints. Set `VLA_GROOT_WEIGHT_DTYPE` only when you
+want to override that runtime dtype, for example `VLA_GROOT_WEIGHT_DTYPE=q4_K`
+for a quantized action-head path.
+
+GR00T N1.7 disables backbone flash attention by default for validation-oriented
+runs. Set `VLA_GROOT_FLASH_ATTN=1` before starting `vla-server` to opt into the
+faster fused path.

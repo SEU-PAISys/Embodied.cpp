@@ -177,7 +177,7 @@ class NativeCosmos3Client:
 
     IMAGE_W = 640
     IMAGE_H = 360
-    DEFAULT_ACTION_HORIZON = 8
+    DEFAULT_ACTION_HORIZON = 32
     VIDEO_GRID_THW = (17, 34, 46)
     VIDEO_FRAME_SEQLEN = 391
     VIDEO_TIMESTAMPS = (0.0, 0.2, 0.3, 0.4, 0.6, 0.7, 0.8, 1.0, 1.1, 1.2, 1.4, 1.5, 1.6, 1.8, 1.9, 2.0, 2.2)
@@ -853,11 +853,15 @@ def _run_native_robolab(args: argparse.Namespace, cfg: dict[str, Any], wam_pb2: 
 
         def make_client(_: argparse.Namespace) -> NativeCosmos3Client:
             print("[cosmos3-eval] creating NativeCosmos3Client", flush=True)
+            policy_cfg = dict(cfg.get("policy", {}))
+            policy_cfg["action_horizon"] = int(
+                cfg.get("client", {}).get("action_horizon", policy_cfg.get("action_chunk_size", 32))
+            )
             return NativeCosmos3Client(
                 wam_pb2=wam_pb2,
                 wam_addr=str(args.wam_addr),
                 request_timeout_ms=int(cfg.get("client", {}).get("request_timeout_ms", 900000)),
-                policy_cfg=dict(cfg.get("policy", {})),
+                policy_cfg=policy_cfg,
             )
 
         print("[cosmos3-eval] entering RoboLab run_evaluation", flush=True)
@@ -870,6 +874,9 @@ def _run_wam_smoke(args: argparse.Namespace, cfg: dict[str, Any], wam_pb2: Any) 
     from adapter.sim.robolab import RoboLabCosmos3ObservationAdapter
 
     policy_cfg = dict(cfg.get("policy", {}))
+    policy_cfg["action_horizon"] = int(
+        cfg.get("client", {}).get("action_horizon", policy_cfg.get("action_chunk_size", 32))
+    )
     if getattr(args, "debug_layer0_trace", False):
         policy_cfg["debug_layer0_trace"] = True
         policy_cfg["debug_language_trace_layers"] = int(getattr(args, "debug_language_trace_layers", 1))

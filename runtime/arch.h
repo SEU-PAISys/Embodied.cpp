@@ -95,16 +95,17 @@ std::unique_ptr<ModelArchBase> pi05_create(const std::string& mmproj_path,
                                            const std::string& config_path);
 
 /**
- * @brief Build a LingBot-VA model. Vision/text/world-model weights are
- *        planned to be bundled in @p ckpt_path.
+ * @brief Build a LingBot-VA model from transformer and component GGUFs.
  * @param mmproj_path Ignored for LingBot-VA.
  * @param ckpt_path   Path to the LingBot-VA transformer GGUF.
  * @param config_path Optional JSON override; pass empty to use bundled config.
+ * @param components  UMT5 text encoder and Wan VAE encoder GGUF paths.
  * @return Owning pointer to the constructed model.
  */
 std::unique_ptr<ModelArchBase> lingbot_va_create(const std::string& mmproj_path,
                                                  const std::string& ckpt_path,
-                                                 const std::string& config_path);
+                                                 const std::string& config_path,
+                                                 const LingBotComponentPaths& components);
 
 /**
  * @brief Build a HY-VLA model. Full model weights are bundled in @p ckpt_path.

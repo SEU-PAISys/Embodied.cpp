@@ -35,6 +35,25 @@ The first patch is the established pre-GR00T project patch. The latter two are
 kept separate so Qwen3-VL compatibility and optional CUDA numerical controls can
 be reviewed or upstreamed independently.
 
+## CUDA Parity Controls
+
+`llama.cpp-cuda-parity.patch` adds or widens the CUDA controls used by strict
+GR00T parity builds:
+
+- `GGML_CUDA_FAST_MATH` is introduced by this patch and defaults to `ON`.
+  Setting `-DGGML_CUDA_FAST_MATH=OFF` removes `-use_fast_math` from the ggml
+  CUDA compile flags.
+- `GGML_CUDA_FORCE_CUBLAS` exists in llama.cpp, but this patch makes it cover
+  the MMF and MMVF matmul paths as well. Without this patch, the option may
+  still be accepted by CMake but has a narrower effect.
+- `GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F=1` is an optional runtime environment
+  variable for validation runs. Put it before the server command when you need
+  stricter tensor comparisons; it disables TF32 on the cuBLAS handle and uses
+  the default cuBLAS math mode instead.
+
+These controls are intended for numerical validation. Model builds that do not
+need strict PyTorch parity can use the default ggml CUDA behavior.
+
 ## Patch Profiles
 
 Select a source profile before configuring CMake:
@@ -106,7 +125,7 @@ git -C third_party/llama.cpp worktree remove --force "$check_tree"
 After changing the GR00T patches, rebuild and run the focused validators:
 
 ```bash
-cmake --build build-cuda --target vla-groot-n1-server -j2
+cmake --build build-cuda --target vla-server -j2
 
 GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F=1 \
 python scripts/validate_groot_n1_backbone.py --max-relative-error 0.05

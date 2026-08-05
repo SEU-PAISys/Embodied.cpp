@@ -102,7 +102,8 @@ bool detect_arch_from_ckpt(const std::string& ckpt_path, Arch* out) {
 }
 
 Model* model_load(const std::string& mmproj_path, const std::string& ckpt_path,
-                  const std::string& config_path) {
+                  const std::string& config_path,
+                  const LingBotComponentPaths& lingbot_components) {
     Arch arch;
     if (!detect_arch_from_ckpt(ckpt_path, &arch)) {
         std::fprintf(stderr,
@@ -127,7 +128,7 @@ Model* model_load(const std::string& mmproj_path, const std::string& ckpt_path,
         case Arch::LINGBOT_VA:
             std::printf("vla: arch = lingbot_va\n");
 #if MODEL_BUILD_WAM_LINGBOT_VA
-            impl = lingbot_va_create(mmproj_path, ckpt_path, config_path);
+            impl = lingbot_va_create(mmproj_path, ckpt_path, config_path, lingbot_components);
 #else
             std::fprintf(stderr,
                          "vla: LingBot-VA support was not built into this binary "

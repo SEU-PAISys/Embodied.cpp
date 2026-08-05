@@ -48,6 +48,10 @@ message StepRequest {
   Tensor action_condition = 9;
   bool compute_kv_cache = 10;
   bool imagine = 11;
+  uint64 frame_start_id = 12;
+  uint64 frame_delta = 13;
+  uint32 action_per_frame = 14;
+  string env_type = 15;
 }
 
 message PingRequest {

@@ -526,7 +526,7 @@ To run HY-VLA RobotWin evaluation from this environment:
     -DGGML_CUDA=ON \\
     -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \\
     -DCMAKE_CUDA_ARCHITECTURES=<your-arch>
-  cmake --build build --target vla-hy-vla-server -j"\$(nproc)"
+  cmake --build build --target vla-server -j"\$(nproc)"
   export GGML_CUDA_DISABLE_GRAPHS=1
   \$(command -v python) \\
     eval/client/run_robotwin_eval.py \\

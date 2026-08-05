@@ -185,6 +185,14 @@ struct Inputs {
     int64_t          lingbot_latent_h    = 0;
     int64_t          lingbot_latent_w    = 0;
 
+    /// Optional LingBot-VA initial world/video denoise noise tensor in B,C,F,H,W layout.
+    const float*     lingbot_latent_noise   = nullptr;
+    int64_t          lingbot_latent_noise_b = 0;
+    int64_t          lingbot_latent_noise_c = 0;
+    int64_t          lingbot_latent_noise_f = 0;
+    int64_t          lingbot_latent_noise_h = 0;
+    int64_t          lingbot_latent_noise_w = 0;
+
     /// Optional LingBot-VA RGB video tensor in V,C,F,H,W layout, normalised to [-1, 1].
     const float*     lingbot_video       = nullptr;
     int64_t          lingbot_video_views = 0;
@@ -192,6 +200,11 @@ struct Inputs {
     int64_t          lingbot_video_f     = 0;
     int64_t          lingbot_video_h     = 0;
     int64_t          lingbot_video_w     = 0;
+    const int64_t*   lingbot_video_view_f = nullptr;
+    const int64_t*   lingbot_video_view_h = nullptr;
+    const int64_t*   lingbot_video_view_w = nullptr;
+    int64_t          lingbot_video_view_shape_count = 0;
+    const char*      lingbot_env_type = nullptr;
 
     const int32_t*   lang_tokens;     ///< Tokenised language instruction.
     int              n_lang;          ///< Length of @ref lang_tokens.
@@ -218,12 +231,26 @@ struct Inputs {
     bool             lingbot_has_history_cache = false;
     uint64_t         lingbot_predict_index = 0;
     uint64_t         lingbot_cache_update_index = 0;
+    int64_t          lingbot_frame_start_id = 0;
+    int64_t          lingbot_action_per_frame = 0;
 
     /// Optional override for the language attention mask (per-token).
     const int32_t*   attention_mask   = nullptr;
     int              attention_mask_n = 0;     ///< Length of @ref attention_mask.
 
     TimingDetail     timing_detail    = TimingDetail::NONE;
+};
+
+/**
+ * @brief Optional component paths for a LingBot-VA model instance.
+ *
+ * The LingBot transformer, UMT5 text encoder, and Wan VAE encoder are stored
+ * in separate GGUF files. These paths are owned by the model configuration,
+ * rather than process-wide environment variables.
+ */
+struct LingBotComponentPaths {
+    std::string text_encoder_gguf;
+    std::string vae_encoder_gguf;
 };
 
 /**
@@ -238,10 +265,13 @@ struct Inputs {
  *        architecture bakes vision into @p ckpt_path.
  * @param ckpt_path   Path to the main checkpoint GGUF.
  * @param config_path Optional JSON override; empty to use bundled config.
+ * @param lingbot_components Optional UMT5 and Wan VAE GGUF paths for
+ *        LingBot-VA. Ignored by other architectures.
  * @return Owning handle. Free with @ref model_free.
  */
 Model* model_load(const std::string& mmproj_path, const std::string& ckpt_path,
-                  const std::string& config_path = "");
+                  const std::string& config_path = "",
+                  const LingBotComponentPaths& lingbot_components = {});
 
 /**
  * @brief Release a model handle returned by @ref model_load.

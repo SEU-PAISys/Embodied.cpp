@@ -1,0 +1,53 @@
+# HY-VLA C++ server on RoboTwin.
+# Defaults mirror Tencent-Hunyuan/Hy-Embodied-0.5-VLA's RoboTwin policy
+# settings, with local paths for the Embodied.cpp GGUF/server flow.
+
+model: /home/xuling/robot-data/hy-vlacpp/bf16/hy_vla_full_bf16.gguf
+tokenizer: /home/xuling/robot-data/hy-vla
+robotwin_root: eval/sim/robotwin/RoboTwin
+server_bin: build-hy-vla-cuda/vla-server
+addr: tcp://127.0.0.1:5555
+bind: tcp://127.0.0.1:5555
+output_dir: outputs/robotwin_hy_vla_native
+
+task_name: place_empty_cup
+task_config: demo_clean
+instruction_type: unseen
+episodes: 10
+max_steps: 0
+seed: 10000
+stable_seed_tries: 100
+
+state_dim: 32
+model_action_dim: 20
+action_chunk_size: 20
+exec_action_size: 7
+blend_mode: rel_abs
+
+img_history_size: 6
+img_history_interval: 5
+image_size: 224
+
+model_name: HY-VLA-CPP
+backbone: Hunyuan-VL / HY-VLA
+server_timeout_s: 900
+
+hy_vla_text_layers: 32
+hy_vla_vision_layers: all
+hy_vla_vision_cpu_sideload: false
+hy_vla_cuda_oom_fallback_cpu: true
+action_noise_mode: torch_cuda_seed
+noise_chunk_size: 0
+noise_action_dim: 32
+
+latency_video: false
+latency_video_dir: null
+latency_video_fps: 10
+latency_video_speed: 1.0
+forward_timing: false
+forward_timing_jsonl: null
+
+warmup_env_steps: 7
+warmup_forward_calls: 1
+clear_cache_each_episode: true
+stop_server_between_episodes: false

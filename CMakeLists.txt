@@ -22,6 +22,7 @@ set(LLAMA_BUILD_TOOLS    ON  CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(GGML_CUDA_NCCL      OFF CACHE BOOL "Build ggml CUDA backend with NCCL support" FORCE)
 add_subdirectory(third_party/llama.cpp)
 
 add_library(vla_core
@@ -105,6 +106,7 @@ if(GGML_CUDA)
         endif()
         add_library(lingbot_cuda_kernels STATIC
             kernels/lingbot/lingbot_flex_attn_cuda.cu
+            kernels/lingbot/lingbot_vae_cuda.cu
         )
         set_target_properties(lingbot_cuda_kernels PROPERTIES
             CUDA_SEPARABLE_COMPILATION ON
@@ -114,7 +116,28 @@ if(GGML_CUDA)
         target_compile_options(lingbot_cuda_kernels PRIVATE
             $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math -Xptxas=-O3>
         )
+        find_library(LINGBOT_CUDNN_LIBRARY cudnn
+            PATHS
+                ${CUDAToolkit_LIBRARY_DIR}
+                /usr/local/cuda/lib64
+                /usr/local/cuda-11.6/targets/x86_64-linux/lib
+            NO_DEFAULT_PATH)
+        find_path(LINGBOT_CUDNN_INCLUDE_DIR cudnn.h
+            PATHS
+                ${CUDAToolkit_INCLUDE_DIRS}
+                /usr/local/cuda/include
+                /usr/local/cuda-11.6/include
+                /usr/local/cuda-11.6/targets/x86_64-linux/include
+            NO_DEFAULT_PATH)
+        if(LINGBOT_CUDNN_LIBRARY AND LINGBOT_CUDNN_INCLUDE_DIR)
+            target_compile_definitions(lingbot_cuda_kernels PUBLIC VLA_LINGBOT_USE_CUDNN)
+            target_include_directories(lingbot_cuda_kernels PUBLIC ${LINGBOT_CUDNN_INCLUDE_DIR})
+            target_link_libraries(lingbot_cuda_kernels PUBLIC ${LINGBOT_CUDNN_LIBRARY})
+        endif()
         target_link_libraries(lingbot_cuda_kernels PUBLIC CUDA::cublas CUDA::cudart)
+        target_include_directories(lingbot_cuda_kernels PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/kernels/lingbot
+        )
         target_link_libraries(vla_core PRIVATE lingbot_cuda_kernels)
         target_compile_definitions(vla_core PUBLIC VLA_LINGBOT_FLEX_CUDA_KERNELS)
         target_include_directories(vla_core PUBLIC ${CUDAToolkit_INCLUDE_DIRS})
@@ -228,7 +251,7 @@ add_custom_command(
 
 function(add_vla_server_target target_name)
     add_executable(${target_name}
-        serving/server.cpp
+        serving/vla-server.cpp
         ${VLA_PROTO_GEN_DIR}/vla.pb.cc
     )
     target_include_directories(${target_name} PRIVATE
@@ -246,16 +269,8 @@ function(add_vla_server_target target_name)
     )
 endfunction()
 
-if(MODEL_BUILD_VLA_PI05)
-    add_vla_server_target(vla-pi05-server)
-endif()
-
-if(MODEL_BUILD_VLA_HY_VLA)
-    add_vla_server_target(vla-hy-vla-server)
-endif()
-
-if(MODEL_BUILD_VLA_GROOT_N1)
-    add_vla_server_target(vla-groot-n1-server)
+if(MODEL_BUILD_VLA_PI05 OR MODEL_BUILD_VLA_HY_VLA OR MODEL_BUILD_VLA_GROOT_N1)
+    add_vla_server_target(vla-server)
 endif()
 
 if(MODEL_BUILD_WAM_LINGBOT_VA)

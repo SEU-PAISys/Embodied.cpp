@@ -423,6 +423,35 @@ __global__ void norm_silu_whdc_kernel(
     }
 }
 
+__global__ void norm_silu_whdc_f32w_kernel(
+        const float * input,
+        const float * gamma_f32,
+        float * output,
+        int W,
+        int H,
+        int T,
+        int C) {
+    const int site = blockIdx.x * blockDim.x + threadIdx.x;
+    const int sites = W * H * T;
+    if (site >= sites) return;
+    int r = site;
+    const int w = r % W; r /= W;
+    const int h = r % H; r /= H;
+    const int t = r;
+
+    float ss = 0.0f;
+    for (int c = 0; c < C; ++c) {
+        const float v = input[whdc_index_dyn(w, h, t, c, W, H, T)];
+        ss += v * v;
+    }
+    const float inv = rsqrtf(ss / static_cast<float>(C) + 1e-12f);
+    for (int c = 0; c < C; ++c) {
+        const float x = input[whdc_index_dyn(w, h, t, c, W, H, T)] *
+                        inv * gamma_f32[c];
+        output[whdc_index_dyn(w, h, t, c, W, H, T)] = x / (1.0f + expf(-x));
+    }
+}
+
 __global__ void rms_norm_whdc_kernel(
         const float * input,
         const unsigned short * gamma_bf16,
@@ -486,6 +515,46 @@ __global__ void causal_conv3d_ks3_whdc_kernel(
                         (((static_cast<size_t>(co) * in_C + ci) * 3 + kt) * 3 + kh) * 3 + kw;
                     sum += input[whdc_index_dyn(iw, ih, it, ci, W, H, T)] *
                            bf16_to_float(weight_bf16[wi]);
+                }
+            }
+        }
+    }
+    output[whdc_index_dyn(w, h, t, co, W, H, T)] = sum;
+}
+
+__global__ void causal_conv3d_ks3_whdc_f32w_kernel(
+        const float * input,
+        const float * weight_f32,
+        const float * bias_f32,
+        float * output,
+        int W,
+        int H,
+        int T,
+        int in_C,
+        int out_C) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = W * H * T * out_C;
+    if (idx >= total) return;
+    int r = idx;
+    const int w = r % W; r /= W;
+    const int h = r % H; r /= H;
+    const int t = r % T; r /= T;
+    const int co = r;
+
+    float sum = bias_f32[co];
+    for (int ci = 0; ci < in_C; ++ci) {
+        for (int kt = 0; kt < 3; ++kt) {
+            const int it = t + kt - 2;
+            if (it < 0 || it >= T) continue;
+            for (int kh = 0; kh < 3; ++kh) {
+                const int ih = h + kh - 1;
+                if (ih < 0 || ih >= H) continue;
+                for (int kw = 0; kw < 3; ++kw) {
+                    const int iw = w + kw - 1;
+                    if (iw < 0 || iw >= W) continue;
+                    const size_t wi =
+                        (((static_cast<size_t>(co) * in_C + ci) * 3 + kt) * 3 + kh) * 3 + kw;
+                    sum += input[whdc_index_dyn(iw, ih, it, ci, W, H, T)] * weight_f32[wi];
                 }
             }
         }
@@ -769,6 +838,43 @@ __global__ void spatial_downsample2d_whdc_kernel(
     output[whdc_index_dyn(ow, oh, t, co, Wo, Ho, T)] = sum;
 }
 
+__global__ void spatial_downsample2d_whdc_f32w_kernel(
+        const float * input,
+        const float * weight_f32,
+        const float * bias_f32,
+        float * output,
+        int W,
+        int H,
+        int T,
+        int C) {
+    const int Wo = W / 2;
+    const int Ho = H / 2;
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = Wo * Ho * T * C;
+    if (idx >= total) return;
+    int r = idx;
+    const int ow = r % Wo; r /= Wo;
+    const int oh = r % Ho; r /= Ho;
+    const int t = r % T; r /= T;
+    const int co = r;
+
+    float sum = bias_f32[co];
+    for (int ci = 0; ci < C; ++ci) {
+        for (int kh = 0; kh < 3; ++kh) {
+            const int ih = oh * 2 + kh;
+            if (ih >= H + 1) continue;
+            for (int kw = 0; kw < 3; ++kw) {
+                const int iw = ow * 2 + kw;
+                if (iw >= W + 1) continue;
+                if (iw >= W || ih >= H) continue;
+                const size_t wi = (((static_cast<size_t>(co) * C + ci) * 3 + kh) * 3 + kw);
+                sum += input[whdc_index_dyn(iw, ih, t, ci, W, H, T)] * weight_f32[wi];
+            }
+        }
+    }
+    output[whdc_index_dyn(ow, oh, t, co, Wo, Ho, T)] = sum;
+}
+
 __global__ void conv1x1x1_whdc_kernel(
         const float * input,
         const unsigned short * weight_bf16,
@@ -791,6 +897,32 @@ __global__ void conv1x1x1_whdc_kernel(
     for (int ci = 0; ci < in_C; ++ci) {
         sum += input[whdc_index_dyn(w, h, t, ci, W, H, T)] *
                bf16_to_float(weight_bf16[static_cast<size_t>(co) * in_C + ci]);
+    }
+    output[whdc_index_dyn(w, h, t, co, W, H, T)] = sum;
+}
+
+__global__ void conv1x1x1_whdc_f32w_kernel(
+        const float * input,
+        const float * weight_f32,
+        const float * bias_f32,
+        float * output,
+        int W,
+        int H,
+        int T,
+        int in_C,
+        int out_C) {
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int total = W * H * T * out_C;
+    if (idx >= total) return;
+    int r = idx;
+    const int w = r % W; r /= W;
+    const int h = r % H; r /= H;
+    const int t = r % T; r /= T;
+    const int co = r;
+    float sum = bias_f32[co];
+    for (int ci = 0; ci < in_C; ++ci) {
+        sum += input[whdc_index_dyn(w, h, t, ci, W, H, T)] *
+               weight_f32[static_cast<size_t>(co) * in_C + ci];
     }
     output[whdc_index_dyn(w, h, t, co, W, H, T)] = sum;
 }
@@ -1145,6 +1277,24 @@ extern "C" int cosmos3_wan_vae_norm_silu_whdc_f32(
     return cudaGetLastError() == cudaSuccess ? 0 : -1;
 }
 
+extern "C" int cosmos3_wan_vae_norm_silu_whdc_f32w(
+    const float * input_whdc,
+    const float * gamma_f32,
+    float * output_whdc,
+    int W,
+    int H,
+    int T,
+    int C,
+    cudaStream_t stream) {
+    if (!input_whdc || !gamma_f32 || !output_whdc ||
+        W <= 0 || H <= 0 || T <= 0 || C <= 0) return -1;
+    constexpr int block = 128;
+    const int sites = W * H * T;
+    norm_silu_whdc_f32w_kernel<<<(sites + block - 1) / block, block, 0, stream>>>(
+        input_whdc, gamma_f32, output_whdc, W, H, T, C);
+    return cudaGetLastError() == cudaSuccess ? 0 : -1;
+}
+
 extern "C" int cosmos3_wan_vae_causal_conv3d_ks3_whdc_f32(
     const float * input_whdc,
     const unsigned short * weight_bf16,
@@ -1176,6 +1326,26 @@ extern "C" int cosmos3_wan_vae_causal_conv3d_ks3_whdc_f32(
     const int total = W * H * T * out_C;
     causal_conv3d_ks3_whdc_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
         input_whdc, weight_bf16, bias_bf16, output_whdc, W, H, T, in_C, out_C);
+    return cudaGetLastError() == cudaSuccess ? 0 : -1;
+}
+
+extern "C" int cosmos3_wan_vae_causal_conv3d_ks3_whdc_f32w(
+    const float * input_whdc,
+    const float * weight_f32,
+    const float * bias_f32,
+    float * output_whdc,
+    int W,
+    int H,
+    int T,
+    int in_C,
+    int out_C,
+    cudaStream_t stream) {
+    if (!input_whdc || !weight_f32 || !bias_f32 || !output_whdc ||
+        W <= 0 || H <= 0 || T <= 0 || in_C <= 0 || out_C <= 0) return -1;
+    constexpr int block = 128;
+    const int total = W * H * T * out_C;
+    causal_conv3d_ks3_whdc_f32w_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
+        input_whdc, weight_f32, bias_f32, output_whdc, W, H, T, in_C, out_C);
     return cudaGetLastError() == cudaSuccess ? 0 : -1;
 }
 
@@ -1231,6 +1401,27 @@ extern "C" int cosmos3_wan_vae_spatial_downsample2d_whdc_f32(
     return cudaGetLastError() == cudaSuccess ? 0 : -1;
 }
 
+extern "C" int cosmos3_wan_vae_spatial_downsample2d_whdc_f32w(
+    const float * input_whdc,
+    const float * weight_f32,
+    const float * bias_f32,
+    float * output_whdc,
+    int W,
+    int H,
+    int T,
+    int C,
+    cudaStream_t stream) {
+    if (!input_whdc || !weight_f32 || !bias_f32 || !output_whdc ||
+        W <= 0 || H <= 0 || T <= 0 || C <= 0 || (W % 2) != 0 || (H % 2) != 0) {
+        return -1;
+    }
+    constexpr int block = 128;
+    const int total = (W / 2) * (H / 2) * T * C;
+    spatial_downsample2d_whdc_f32w_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
+        input_whdc, weight_f32, bias_f32, output_whdc, W, H, T, C);
+    return cudaGetLastError() == cudaSuccess ? 0 : -1;
+}
+
 extern "C" int cosmos3_wan_vae_conv1x1x1_whdc_f32(
     const float * input_whdc,
     const unsigned short * weight_bf16,
@@ -1262,6 +1453,26 @@ extern "C" int cosmos3_wan_vae_conv1x1x1_whdc_f32(
     const int total = W * H * T * out_C;
     conv1x1x1_whdc_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
         input_whdc, weight_bf16, bias_bf16, output_whdc, W, H, T, in_C, out_C);
+    return cudaGetLastError() == cudaSuccess ? 0 : -1;
+}
+
+extern "C" int cosmos3_wan_vae_conv1x1x1_whdc_f32w(
+    const float * input_whdc,
+    const float * weight_f32,
+    const float * bias_f32,
+    float * output_whdc,
+    int W,
+    int H,
+    int T,
+    int in_C,
+    int out_C,
+    cudaStream_t stream) {
+    if (!input_whdc || !weight_f32 || !bias_f32 || !output_whdc ||
+        W <= 0 || H <= 0 || T <= 0 || in_C <= 0 || out_C <= 0) return -1;
+    constexpr int block = 128;
+    const int total = W * H * T * out_C;
+    conv1x1x1_whdc_f32w_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
+        input_whdc, weight_f32, bias_f32, output_whdc, W, H, T, in_C, out_C);
     return cudaGetLastError() == cudaSuccess ? 0 : -1;
 }
 

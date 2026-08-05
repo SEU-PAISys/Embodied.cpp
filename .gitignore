@@ -103,8 +103,17 @@ eval/conf/*.local.yaml
 # Local development notes
 docs/
 
+# Local evaluation launchers
+eval/run_*.sh
+eval/client/python_*.py
+eval/client/replay_lingbot_npz_request.py
+
+# Local large-scale evaluation plans
+eval/conf/*20task*
+eval/conf/*200ep*
+eval/utils/*200ep*.py
+
 # Local Cosmos3 parity / capture helpers
-eval/run_robolab_cosmos3_pytorch.sh
 models/cosmos3_legacy.cpp
 scripts/bench_cosmos3_w8_native_vs_marlin.py
 scripts/cosmos3_*_reference.json

@@ -25,10 +25,19 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(1, str(ROOT))
 
 import gymnasium as gym
+import numpy as np
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 
 import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
 from adapter.sim.libero import LIBEROSimAdapter
-from client.libero_profile import LiberoSuiteProfiler
+try:
+    from client.libero_profile import LiberoSuiteProfiler
+except ModuleNotFoundError:
+    LiberoSuiteProfiler: Any = None
+from client.lingbot_world_client import LingBotWorldClient
 from client.vla_cpp_client import ARCH_PRESETS as VLA_ARCH_PRESETS
 from client.vla_cpp_client import VlaCppClient
 
@@ -138,6 +147,14 @@ def build_client(args):
         if list(args.image_keys) == default_lerobot_image_keys
         else args.image_keys
     )
+    lingbot_image_sizes = None
+    if args.arch == "lingbot_va" and args.lingbot_image_sizes:
+        lingbot_image_sizes = []
+        for item in args.lingbot_image_sizes.split(","):
+            h_s, sep, w_s = item.lower().partition("x")
+            if not sep:
+                raise ValueError(f"invalid --lingbot-image-sizes item {item!r}; expected HxW")
+            lingbot_image_sizes.append((int(h_s), int(w_s)))
     if args.arch in VLA_ARCH_PRESETS:
         return LIBEROSimAdapter(
             client=VlaCppClient(
@@ -165,6 +182,9 @@ def build_client(args):
         n_action_steps=args.n_action_steps,
         session_id=args.lingbot_session_id,
         max_cache_frames=args.lingbot_max_cache_frames,
+        action_per_frame=args.lingbot_action_per_frame,
+        env_type=args.lingbot_env_type,
+        image_sizes=lingbot_image_sizes,
     )
 
 
@@ -173,23 +193,48 @@ def run_one_task(
     client,
     task: str,
     task_id: int,
-    profiler: LiberoSuiteProfiler | None = None,
+    profiler: Any = None,
 ) -> dict[str, Any]:
     output_dir = Path(args.output_dir) / args.arch / task / f"task_{task_id}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    env = gym.make(
-        f"{task}/task_{task_id}",
-        seed=args.seed,
-        video_fps=args.fps,
-        output_video_dir=output_dir,
-        video_view_mode=args.view_mode,
-        observation_width=args.observation_width,
-        observation_height=args.observation_height,
-    )
+    env_kwargs = {
+        "seed": args.seed,
+        "video_fps": args.fps,
+        "output_video_dir": output_dir,
+        "video_view_mode": args.view_mode,
+        "observation_width": args.observation_width,
+        "observation_height": args.observation_height,
+    }
+    if args.arch == "lingbot_va":
+        # Match robbyant/lingbot-va's official LIBERO client: 128px cameras,
+        # five zero-action settling steps, and an 800-step rollout cap.
+        lingbot_image_size = args.image_size or 128
+        env_kwargs.update(
+            observation_width=lingbot_image_size,
+            observation_height=lingbot_image_size,
+            num_steps_wait=5,
+            episode_length=args.max_steps if args.max_steps > 0 else 800,
+        )
+    env = gym.make(f"{task}/task_{task_id}", **env_kwargs)
 
     success_count, inference_times = 0.0, []
+    lingbot_predict_wall_ms: list[float] = []
+    lingbot_predict_server_ms: list[float] = []
+    lingbot_cache_wall_ms: list[float] = []
+    lingbot_cache_server_ms: list[float] = []
     skipped = 0
+    lingbot_noise_gen = None
+    if args.arch == "lingbot_va" and args.lingbot_noise_mode == "torch_cuda_seed":
+        if torch is None or not torch.cuda.is_available():
+            raise RuntimeError("--lingbot-noise-mode torch_cuda_seed requires CUDA torch")
+        if 16 % args.lingbot_action_per_frame != 0:
+            raise RuntimeError(
+                f"--lingbot-action-per-frame must divide 16 for the current LingBot checkpoint, "
+                f"got {args.lingbot_action_per_frame}"
+            )
+        lingbot_noise_gen = torch.Generator(device="cuda")
+        lingbot_noise_gen.manual_seed(args.lingbot_noise_seed)
     for episode in range(args.n_episodes):
         print(f"*** {task}/task_{task_id} Episode {episode + 1}/{args.n_episodes}")
 
@@ -204,20 +249,73 @@ def run_one_task(
         while True:
             if args.arch == "lingbot_va":
                 step_before_chunk = step_id
+                action_noise = None
+                latent_noise = None
+                if args.lingbot_noise_mode == "zero":
+                    action_noise = np.zeros((16, 30), dtype=np.float32)
+                    latent_h = (args.image_size or 128) // 16
+                    latent_w = latent_h * len(client.image_keys)
+                    latent_noise = np.zeros((1, 48, 4, latent_h, latent_w), dtype=np.float32)
+                elif args.lingbot_noise_mode == "torch_cuda_seed":
+                    assert lingbot_noise_gen is not None
+                    latent_h = (args.image_size or 128) // 16
+                    latent_w = latent_h * len(client.image_keys)
+                    action_frames = 16 // args.lingbot_action_per_frame
+                    latent_t = torch.randn(
+                        (1, 48, 4, latent_h, latent_w),
+                        device="cuda",
+                        dtype=torch.bfloat16,
+                        generator=lingbot_noise_gen,
+                    )
+                    action_t = torch.randn(
+                        (1, 30, action_frames, args.lingbot_action_per_frame, 1),
+                        device="cuda",
+                        dtype=torch.bfloat16,
+                        generator=lingbot_noise_gen,
+                    )
+                    latent_noise = latent_t.float().cpu().numpy()
+                    action_noise = (
+                        action_t[0, :, :, :, 0]
+                        .permute(1, 2, 0)
+                        .reshape(16, 30)
+                        .float()
+                        .cpu()
+                        .numpy()
+                    )
                 t0 = time.perf_counter()
-                chunk = client.predict_chunk(obs)
+                chunk = client.predict_chunk(obs, action_noise=action_noise, latent_noise=latent_noise)
                 predict_dt = time.perf_counter() - t0
+                predict_server_ms = float(getattr(client._last_response, "latency_ms_inference", 0.0) or 0.0)
+                lingbot_predict_wall_ms.append(1000.0 * predict_dt)
+                if predict_server_ms > 0.0:
+                    lingbot_predict_server_ms.append(predict_server_ms)
                 chunk = chunk[:, :7]
-                if chunk.ndim != 2 or chunk.shape[0] % 4 != 0:
-                    raise RuntimeError(f"LingBot action chunk must be [4*K,7], got {chunk.shape}")
-                action_per_frame = 4
+                action_per_frame = args.lingbot_action_per_frame
+                if chunk.ndim != 2 or chunk.shape[0] % action_per_frame != 0:
+                    raise RuntimeError(
+                        f"LingBot action chunk must be [{action_per_frame}*K,7], got {chunk.shape}"
+                    )
                 n_frames = chunk.shape[0] // action_per_frame
-                chunk_fh = chunk.reshape(n_frames, action_per_frame, 7)
+                action_cfh = np.ascontiguousarray(
+                    chunk.reshape(n_frames, action_per_frame, 7).transpose(2, 0, 1),
+                    dtype=np.float32,
+                )
+                if args.lingbot_dump_first_action and episode == 0 and step_id == 0:
+                    flat = action_cfh.reshape(-1)
+                    first_values = ", ".join(f"{v:.10g}" for v in flat[:12])
+                    print(
+                        "- LingBot first action condition: "
+                        f"shape={list(action_cfh.shape)} "
+                        f"checksum={float(action_cfh.astype(np.float64).sum()):.12g} "
+                        f"max_abs={float(np.max(np.abs(action_cfh))):.12g} "
+                        f"first_values=[{first_values}]",
+                        flush=True,
+                    )
                 key_frames = []
                 start_frame = 1 if step_id == 0 else 0
                 for frame_idx in range(start_frame, n_frames):
                     for sub_idx in range(action_per_frame):
-                        action = chunk_fh[frame_idx, sub_idx]
+                        action = action_cfh[:, frame_idx, sub_idx]
                         try:
                             obs, reward, done, truncated, info = env.step(action)
                         except ValueError as e:
@@ -232,16 +330,32 @@ def run_one_task(
                         if args.max_steps > 0 and step_id >= args.max_steps:
                             truncated = True
                             break
-                    key_frames.append(obs)
+                        key_frames.append(obs)
                     if done or truncated or episode_aborted:
                         break
                 cache_dt = 0.0
+                cache_server_ms = 0.0
                 if not (done or truncated or episode_aborted) and key_frames and not args.lingbot_disable_cache_update:
                     t1 = time.perf_counter()
-                    client.update_cache(key_frames, chunk, imagine=False)
+                    client.update_cache(key_frames, action_cfh, imagine=False)
                     cache_dt = time.perf_counter() - t1
-                run_times.append(predict_dt + cache_dt)
+                    cache_server_ms = float(getattr(client._last_response, "latency_ms_inference", 0.0) or 0.0)
+                    lingbot_cache_wall_ms.append(1000.0 * cache_dt)
+                    if cache_server_ms > 0.0:
+                        lingbot_cache_server_ms.append(cache_server_ms)
                 replayed_steps = step_id - step_before_chunk
+                run_times.append((predict_dt + cache_dt) / max(1, replayed_steps))
+                if args.lingbot_print_timing:
+                    print(
+                        "- LingBot timing: "
+                        f"step_start={step_before_chunk} "
+                        f"replayed_steps={replayed_steps} "
+                        f"predict_wall_ms={1000.0 * predict_dt:.2f} "
+                        f"predict_server_ms={predict_server_ms:.2f} "
+                        f"cache_wall_ms={1000.0 * cache_dt:.2f} "
+                        f"cache_server_ms={cache_server_ms:.2f}",
+                        flush=True,
+                    )
                 if profiler is not None and replayed_steps > 0:
                     amortized_ms = 1000.0 * (predict_dt + cache_dt) / replayed_steps
                     profiler.capture_inference(client)
@@ -277,6 +391,17 @@ def run_one_task(
                 print(f"- Final reward: {reward:.2f}")
                 print(f"- Episode Information:\n{info}")
                 print(f"- Average inference time per step: {round(1000 * avg_t, 2)} ms")
+                if args.arch == "lingbot_va" and args.lingbot_print_timing:
+                    def _avg(values: list[float]) -> float:
+                        return sum(values) / len(values) if values else 0.0
+                    print(
+                        "- LingBot timing summary: "
+                        f"predict_wall_ms_avg={_avg(lingbot_predict_wall_ms):.2f} "
+                        f"predict_server_ms_avg={_avg(lingbot_predict_server_ms):.2f} "
+                        f"cache_wall_ms_avg={_avg(lingbot_cache_wall_ms):.2f} "
+                        f"cache_server_ms_avg={_avg(lingbot_cache_server_ms):.2f}",
+                        flush=True,
+                    )
                 if profiler is not None:
                     profiler.record_episode(
                         task=task,
@@ -302,6 +427,13 @@ def run_one_task(
         f.write(f"Success rate: {success_count / counted:.2%}  ({int(success_count)}/{counted})\n")
         f.write(f"Skipped (terminated mid-step): {skipped}/{args.n_episodes}\n")
         f.write(f"Average inference time per step: {avg_inf_ms} ms\n")
+        if args.arch == "lingbot_va" and args.lingbot_print_timing:
+            def _avg(values: list[float]) -> float:
+                return sum(values) / len(values) if values else 0.0
+            f.write(f"LingBot predict wall ms avg: {_avg(lingbot_predict_wall_ms):.2f}\n")
+            f.write(f"LingBot predict server ms avg: {_avg(lingbot_predict_server_ms):.2f}\n")
+            f.write(f"LingBot cache wall ms avg: {_avg(lingbot_cache_wall_ms):.2f}\n")
+            f.write(f"LingBot cache server ms avg: {_avg(lingbot_cache_server_ms):.2f}\n")
 
     print(f"*** {task}/task_{task_id} completed.")
     print(f"- Success rate: {success_count / counted:.2%}  ({int(success_count)}/{counted})")
@@ -368,7 +500,7 @@ if __name__ == "__main__":
     parser.add_argument("--arch", choices=ARCH_CHOICES, default="lingbot_va",
         help="Model/client path. Also namespaces the output dir.")
     parser.add_argument("--vla-addr", type=str, default="tcp://localhost:5555",
-        help="ZMQ address of the C++ inference daemon, for example vla-pi05-server or vla-hy-vla-server.")
+        help="ZMQ address of the C++ inference daemon, for example vla-server or vla-server.")
     parser.add_argument("--tokenizer", type=str, default=None,
         help="Tokenizer directory or Hugging Face snapshot path for the selected model.")
     parser.add_argument("--image-size", type=int, default=None,
@@ -386,12 +518,27 @@ if __name__ == "__main__":
         help="ZMQ receive timeout for the selected C++ inference server.")
     parser.add_argument("--lingbot-session-id", type=int, default=1,
         help="[lingbot_va] session id sent to wam-lingbot-server.")
-    parser.add_argument("--lingbot-max-cache-frames", type=int, default=4,
+    parser.add_argument("--lingbot-max-cache-frames", type=int, default=0,
         help="[lingbot_va] maximum observation frames sent to compute_kv_cache. "
-             "Default 4 matches the original-style LIBERO key-frame update window.")
+             "0 disables truncation and matches the upstream LIBERO client cadence.")
     parser.add_argument("--lingbot-disable-cache-update", action="store_true",
         help="[lingbot_va] skip post-chunk world/cache update. Useful for validating "
              "the dense no-cache C++ parity path before enabling cached evaluation.")
+    parser.add_argument("--lingbot-dump-first-action", action="store_true",
+        help="[lingbot_va] print shape/checksum/first values for the first predicted action.")
+    parser.add_argument("--lingbot-print-timing", action="store_true",
+        help="[lingbot_va] print per-chunk predict/cache wall time and server inference latency.")
+    parser.add_argument("--lingbot-action-per-frame", type=int, default=4,
+        help="[lingbot_va] actions represented per model frame; LIBERO uses 4, RobotWin uses 16.")
+    parser.add_argument("--lingbot-env-type", type=str, default="none",
+        help="[lingbot_va] LingBot job_config env_type, e.g. none or robotwin_tshape.")
+    parser.add_argument("--lingbot-image-sizes", type=str, default=None,
+        help="[lingbot_va] comma-separated per-view HxW sizes, e.g. 256x320,128x160,128x160.")
+    parser.add_argument("--lingbot-noise-mode", choices=["server", "zero", "torch_cuda_seed"], default="torch_cuda_seed",
+        help="[lingbot_va] source for initial video/action denoise noise. "
+             "torch_cuda_seed mirrors PyTorch CUDA BF16 randn for parity probes.")
+    parser.add_argument("--lingbot-noise-seed", type=int, default=42,
+        help="[lingbot_va] seed used when --lingbot-noise-mode=torch_cuda_seed.")
     parser.add_argument(
         "--n-action-steps", type=int, default=None,
         help="How many actions to replay from each predicted chunk before "
@@ -438,6 +585,10 @@ if __name__ == "__main__":
     client = build_client(args)
     profiler = None
     if args.profile_output:
+        if LiberoSuiteProfiler is None:
+            raise RuntimeError(
+                "client.libero_profile is required when --profile-output is set"
+            )
         default_labels = {
             "groot_n1": ("GR00T N1.7", "Qwen3-VL-16L"),
             "pi05": ("pi0.5", "PaliGemma"),

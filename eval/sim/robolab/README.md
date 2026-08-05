@@ -63,16 +63,29 @@ For a shared lab server, keep machine-specific model paths, tokenizer paths,
 output directories, and GPU IDs in a git-ignored local config such as
 `eval/conf/robolab_cosmos3_eval.local.yaml`.
 
-The config defaults to one RoboLab task and one episode while the native
-forward path is being completed:
+## Evaluation Configuration
+
+[`eval/conf/robolab_cosmos3_eval.yaml`](../../conf/robolab_cosmos3_eval.yaml)
+is the checked-in default for the native Cosmos3 path. It intentionally runs
+one `BananaOnPlateTask` episode, providing a small, reproducible default while
+the native forward path is being completed:
 
 ```yaml
+paths:
+  model: checkpoints/cosmos3/cosmos3_robolab_full_w8_with_vae_encoder.gguf
+
 robolab:
   tasks:
     - BananaOnPlateTask
   num_envs: 1
   num_runs: 1
 ```
+
+The model GGUF includes the Wan VAE encoder required for native RoboLab
+rollouts. Keep the repository-default configuration portable. Put absolute
+model/tokenizer paths, GPU assignments, output locations, or expanded task
+lists in `eval/conf/robolab_cosmos3_eval.local.yaml`, then pass that file with
+`--conf`.
 
 The fast transport smoke test does not launch Isaac Sim:
 
