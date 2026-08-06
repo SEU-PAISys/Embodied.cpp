@@ -48,6 +48,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#ifndef _WIN32
+#include <sys/types.h>
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -59,6 +62,15 @@
 namespace vla {
 
 namespace {
+
+// GGUF offsets can exceed 2 GiB; `long` is only 32-bit on Windows.
+static bool seek_absolute(FILE * fp, uint64_t offset) {
+#ifdef _WIN32
+    return _fseeki64(fp, static_cast<__int64>(offset), SEEK_SET) == 0;
+#else
+    return fseeko(fp, static_cast<off_t>(offset), SEEK_SET) == 0;
+#endif
+}
 
 struct gguf_reader {
     gguf_context * gctx     = nullptr;
@@ -99,7 +111,7 @@ struct gguf_reader {
         if (id < 0) { std::fprintf(stderr, "vla(smolvla): missing tensor %s\n", name); return false; }
         const size_t off = data_off + gguf_get_tensor_offset(gctx, id);
         const size_t nb  = gguf_get_tensor_size(gctx, id);
-        if (std::fseek(fp, (long) off, SEEK_SET) != 0) return false;
+        if (!seek_absolute(fp, off)) return false;
         return std::fread(buf, 1, nb, fp) == nb;
     }
 
@@ -153,7 +165,7 @@ struct gguf_reader {
         for (size_t k = 0; k < row_ids.size(); ++k) {
             const int32_t r = row_ids[k];
             if (r < 0 || r >= rows) { std::fprintf(stderr, "vla(smolvla): row %d out of range for %s\n", r, name); return false; }
-            if (std::fseek(fp, (long) (base + (size_t) r * rb), SEEK_SET) != 0) return false;
+            if (!seek_absolute(fp, base + (size_t) r * rb)) return false;
             if (std::fread(row.data(), 1, rb, fp) != rb) return false;
             if (elsz == 4) std::memcpy(dst + k * cols, row.data(), rb);
             else ggml_bf16_to_fp32_row(reinterpret_cast<ggml_bf16_t *>(row.data()), dst + k * cols, cols);
