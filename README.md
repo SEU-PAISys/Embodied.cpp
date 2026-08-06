@@ -376,15 +376,15 @@ This project is released under the [Apache License 2.0](LICENSE.md). Third-party
 
 ### GR00T N1.7
 
-https://github.com/SEU-PAISys/Embodied.cpp/raw/refs/heads/dev/outputs_example/groot_comparison_task2_episode9.mp4
+https://github.com/user-attachments/assets/0a429ad6-d41a-4ea6-aaa7-30cd4bc48b23
 
 ### HY-VLA
 
-https://github.com/SEU-PAISys/Embodied.cpp/raw/refs/heads/dev/outputs_example/hy_vla_compare_place_a2b_left.mp4
+https://github.com/user-attachments/assets/3f74a1cb-5536-43fb-87c6-8802dbda42f0
 
 ### pi0.5
 
-https://github.com/SEU-PAISys/Embodied.cpp/raw/refs/heads/dev/outputs_example/pi05_comparison_task9_episode12.mp4
+https://github.com/user-attachments/assets/e6f8605b-90a2-43eb-91f4-92c5965836a4
 
 ## 9. 🙏 Acknowledgements
 
