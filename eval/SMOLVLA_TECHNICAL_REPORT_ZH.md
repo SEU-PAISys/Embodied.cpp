@@ -197,7 +197,30 @@ SmolVLA 运行时沿用项目模型适配器的组织形式，但算法路径和
 
 这比单看仿真成功率更直接地证明 C++ 执行的是与官方 SmolVLA 对应的数学路径。
 
-### 5.4 构建与测试
+### 5.4 C++ 与官方 PyTorch 的运行效率和显存
+
+在同一台 RTX 4060 Laptop（8 GiB，`nvidia-smi` 报告总显存 8188 MiB）上，
+使用同一 SmolVLA checkpoint、relative control、`n_action_steps=1` 和 10 个
+flow-matching steps，分别运行跨不同 LIBERO task 的 10-episode 快速样本。
+结果如下：
+
+| 指标 | Embodied.cpp C++ | 官方 PyTorch 基线 | C++ 相对基线 |
+|---|---:|---:|---:|
+| 加权平均策略耗时 | **251.43 ms/step** | 609.07 ms/step | **2.42 倍更快** |
+| `nvidia-smi` 进程峰值显存 | **1117 MiB** | 1385 MiB | **少 268 MiB（19.4%）** |
+
+官方评测器记录的是每个 episode 的总耗时，因此先除以该 episode 实际执行的
+environment steps，再按执行 steps 加权汇总为 `ms/step`。这与 C++ 客户端直接
+记录的逐 step 延迟保持相同单位；它是运行时级别的 wall-clock 对比，不是单独
+CUDA kernel 的微基准。
+
+PyTorch allocator 的补充记录为：加载后 allocated/reserved 分别为
+1185.17/1200.00 MiB，第一次 forward 后的最大 allocated/reserved 分别为
+1226.43/1264.00 MiB。表中的 1385 MiB 与 C++ 的 1117 MiB 都采用
+`nvidia-smi` 进程显存口径，因此包含 CUDA context 和 allocator/cache 开销。
+该结果是 10-episode 快速样本，不代表完整 suite 的吞吐或成功率。
+
+### 5.5 构建与测试
 
 已完成的干净构建：
 

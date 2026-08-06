@@ -135,3 +135,31 @@ passes: maximum absolute error 0.032254, mean absolute error 0.002023, RMSE
 0.003285, repeat maximum difference zero, and no NaN or infinity. The small
 change from the earlier parity numbers is expected from the CUDA matrix
 multiplication reduction order.
+
+## C++ vs official PyTorch performance
+
+The following quick comparison was recorded on the environment above with the
+same SmolVLA checkpoint, relative control, `n_action_steps=1`, and ten
+flow-matching steps. Each implementation ran the same ten-episode, cross-task
+LIBERO sample. The timing is a runtime-level wall-clock measurement, not a
+CUDA-kernel microbenchmark.
+
+| Metric | Embodied.cpp C++ | Official PyTorch | C++ vs PyTorch |
+|---|---:|---:|---:|
+| Weighted mean policy time | **251.43 ms/step** | 609.07 ms/step | **2.42x faster** |
+| Peak process GPU memory (`nvidia-smi`) | **1117 MiB** | 1385 MiB | **268 MiB less (19.4%)** |
+
+The official evaluator reports elapsed time per episode, so its values were
+divided by the number of executed environment steps before aggregation. The
+reported mean is weighted by executed steps rather than averaging episode
+durations. This keeps the unit comparable with the C++ client, which reports
+per-step latency directly.
+
+For an additional PyTorch allocator view, the recorded process reached
+1185.17 MiB allocated and 1200.00 MiB reserved after load, and 1226.43 MiB
+maximum allocated and 1264.00 MiB maximum reserved after the first forward.
+The 1385 MiB comparison value is the process usage reported by `nvidia-smi`,
+which includes the CUDA context and allocator/cache overhead. The C++ value is
+measured with the same `nvidia-smi` process-usage definition. These are quick
+cross-task measurements and should not be read as a full-suite throughput
+claim.
