@@ -38,6 +38,16 @@ int cosmos3_wan_vae_robolab_image_to_patch_whdc_f32(
     float * patch_whdc,
     cudaStream_t stream);
 
+// Same boundary with an explicit temporal extent. The RoboLab condition path
+// uses frames=1 because only latent frame 0 is consumed downstream.
+int cosmos3_wan_vae_robolab_image_to_patch_whdc_frames_f32(
+    const unsigned char * image_u8,
+    int image_h,
+    int image_w,
+    int frames,
+    float * patch_whdc,
+    cudaStream_t stream);
+
 // Debug helper: pack the first `rows` WHDC sites into a row-major [rows, 12]
 // matrix, where row order is t-major over H/W:
 //   row = (t * H + h) * W + w
@@ -73,6 +83,14 @@ int cosmos3_wan_vae_encoder_conv1_whdc_f32(
     float * conv1_whdc,
     cudaStream_t stream);
 
+int cosmos3_wan_vae_encoder_conv1_whdc_frames_f32(
+    const float * patch_whdc,
+    const unsigned short * weight_bf16,
+    const unsigned short * bias_bf16,
+    int frames,
+    float * conv1_whdc,
+    cudaStream_t stream);
+
 int cosmos3_wan_vae_encoder_conv1_whdc_prefix_f32(
     const float * conv1_whdc,
     float * prefix,
@@ -87,6 +105,12 @@ int cosmos3_wan_vae_encoder_conv1_whdc_prefix_f32(
 // mean, not a plain average-pool.
 int cosmos3_wan_vae_down0_avg_shortcut_whdc_f32(
     const float * conv1_whdc,
+    float * down0_shortcut_whdc,
+    cudaStream_t stream);
+
+int cosmos3_wan_vae_down0_avg_shortcut_whdc_frames_f32(
+    const float * conv1_whdc,
+    int frames,
     float * down0_shortcut_whdc,
     cudaStream_t stream);
 
@@ -263,6 +287,18 @@ int cosmos3_wan_vae_pack_clean_vision_condition_f32(
     const unsigned short * scale_inv_std_bf16,
     float * clean_condition,
     cudaStream_t stream);
+
+int cosmos3_wan_vae_pack_clean_vision_condition_frames_f32(
+    const float * final_conv1_whdc,
+    const unsigned short * scale_mean_bf16,
+    const unsigned short * scale_inv_std_bf16,
+    int latent_frames,
+    float * clean_condition,
+    cudaStream_t stream);
+
+// Release cuDNN input/workspace allocations while retaining the converted
+// convolution weights and cuDNN handle for reuse by the next request.
+int cosmos3_wan_vae_release_transient_workspace();
 
 // Debug/parity helper for official Wan2.2 VAE encoder.conv1:
 //   CausalConv3d(12, 160, kernel=3, padding=1)

@@ -202,4 +202,9 @@ WamOutput wam_predict(Model * m, const WamInputs & in) {
     return m->impl->predict_wam(in);
 }
 
+std::string wam_reset(Model * m, uint64_t session_id) {
+    if (!m || !m->impl) return "model is null";
+    return m->impl->reset_wam(session_id);
+}
+
 }

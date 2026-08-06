@@ -935,7 +935,7 @@ struct VisualTowerScheduler {
                 kVisualHeadDim,
                 10000.0f,
                 nullptr);
-        } else {
+		                } else {
             rc = cosmos3_visual_merge2x2_reorder_f32(
                 static_cast<const float *>(node.input->data),
                 static_cast<float *>(node.output->data),
@@ -1763,6 +1763,15 @@ struct WanVaeCudaRuntime {
     bool head_ready = false;
     bool final_conv1_ready = false;
     bool clean_vision_ready = false;
+    bool keep_intermediates = false;
+    // RoboLab's native condition tensor only consumes latent frame 0. Keep
+    // the causal first-frame path active instead of materializing 33 padded
+    // frames that never enter the downstream Qwen/MoT request.
+    int active_frames = 1;
+    // In low-residency mode, return completed VAE stage buffers to the driver.
+    // The normal path keeps cudaFreeAsync/pool reuse for throughput.
+    bool release_stage_buffers = false;
+    cudaStream_t allocation_stream = nullptr;
     bool timing_enabled = false;
     float timing_ms[VAE_T_COUNT] = {};
 
@@ -1812,6 +1821,141 @@ struct WanVaeCudaRuntime {
         timing_ms[slot] +=
             std::chrono::duration<float, std::milli>(
                 std::chrono::steady_clock::now() - start).count();
+    }
+
+    void set_keep_intermediates(bool enabled) {
+        keep_intermediates = enabled;
+    }
+
+    void set_active_frames(int frames) {
+        active_frames = std::max(1, std::min(frames, int(COSMOS3_WAN_VAE_FRAMES)));
+    }
+
+    void set_release_stage_buffers(bool enabled) {
+        release_stage_buffers = enabled;
+    }
+
+    void free_buffer(float *& ptr) {
+        if (!ptr) return;
+        if (release_stage_buffers) {
+            // Low-residency buffers use cudaMalloc/cudaFree instead of the
+            // process-wide async pool. Synchronize their producing stream
+            // before returning storage to the driver.
+            if (cudaStreamSynchronize(allocation_stream) != cudaSuccess) {
+                cudaGetLastError();
+            }
+            if (cudaFree(ptr) != cudaSuccess) cudaGetLastError();
+        } else if (cudaFreeAsync(ptr, allocation_stream) != cudaSuccess) {
+            cudaGetLastError();
+            cudaFree(ptr);
+        }
+        ptr = nullptr;
+    }
+
+    bool ensure_buffer(float ** ptr,
+                       size_t elems,
+                       const char * label,
+                       std::string * error) {
+        if (*ptr || elems == 0) return true;
+        if (release_stage_buffers) {
+            if (cudaMalloc(reinterpret_cast<void **>(ptr),
+                           elems * sizeof(float)) == cudaSuccess) {
+                return true;
+            }
+            const cudaError_t st = cudaGetLastError();
+            *ptr = nullptr;
+            *error = std::string("Cosmos3 Wan VAE ") + label +
+                     " buffer allocation failed: " + cudaGetErrorString(st);
+            return false;
+        }
+        if (cudaMallocAsync(reinterpret_cast<void **>(ptr),
+                            elems * sizeof(float), allocation_stream) == cudaSuccess) {
+            return true;
+        }
+        cudaGetLastError();
+        if (cudaMalloc(reinterpret_cast<void **>(ptr), elems * sizeof(float)) == cudaSuccess) {
+            return true;
+        }
+        const cudaError_t st = cudaGetLastError();
+        *error = std::string("Cosmos3 Wan VAE ") + label +
+                 " buffer allocation failed: " + cudaGetErrorString(st);
+        return false;
+    }
+
+    void release_intermediate_buffers(bool include_clean_condition) {
+        free_buffer(patch_whdc);
+        free_buffer(encoder_conv1_whdc);
+        free_buffer(down0_shortcut_whdc);
+        free_buffer(down0_whdc);
+        free_buffer(down0_tmp_a_whdc);
+        free_buffer(down0_tmp_b_whdc);
+        free_buffer(down1_whdc);
+        free_buffer(down1_shortcut_whdc);
+        free_buffer(down1_spatial_whdc);
+        free_buffer(down1_tmp_a_whdc);
+        free_buffer(down1_tmp_b_whdc);
+        free_buffer(down2_whdc);
+        free_buffer(down2_shortcut_whdc);
+        free_buffer(down2_spatial_whdc);
+        free_buffer(down2_tmp_a_whdc);
+        free_buffer(down2_tmp_b_whdc);
+        free_buffer(down3_whdc);
+        free_buffer(mid0_whdc);
+        free_buffer(mid_attn_whdc);
+        free_buffer(mid_qkv_whdc);
+        free_buffer(mid_scores);
+        free_buffer(mid_q_row);
+        free_buffer(mid_k_row);
+        free_buffer(mid_v_row);
+        free_buffer(mid_attn_row);
+        free_buffer(mid2_whdc);
+        free_buffer(encoder_head_whdc);
+        free_buffer(final_conv1_whdc);
+        if (include_clean_condition) free_buffer(clean_vision_condition);
+    }
+
+    bool release_transient_memory(cudaStream_t stream, std::string * error) {
+        allocation_stream = stream;
+        cudaError_t st = cudaDeviceSynchronize();
+        if (st != cudaSuccess) {
+            *error = std::string("Cosmos3 Wan VAE transient-release pre-sync failed: ") +
+                     cudaGetErrorString(st);
+            return false;
+        }
+        release_intermediate_buffers(true);
+        st = cudaStreamSynchronize(stream);
+        if (st != cudaSuccess) {
+            *error = std::string("Cosmos3 Wan VAE async-release sync failed: ") +
+                     cudaGetErrorString(st);
+            return false;
+        }
+        int device = 0;
+        cudaMemPool_t pool = nullptr;
+        if (cudaGetDevice(&device) == cudaSuccess &&
+            cudaDeviceGetDefaultMemPool(&pool, device) == cudaSuccess && pool) {
+            cudaMemPoolTrimTo(pool, 0);
+        }
+        if (cosmos3_wan_vae_release_transient_workspace() != 0) {
+            *error = "Cosmos3 Wan VAE cuDNN transient workspace release failed";
+            return false;
+        }
+        patch_ready = conv1_ready = down0_shortcut_ready = down0_ready = false;
+        down1_shortcut_ready = down1_ready = false;
+        down2_shortcut_ready = down2_ready = down3_ready = false;
+        mid0_ready = mid_attn_ready = mid2_ready = false;
+        head_ready = final_conv1_ready = clean_vision_ready = false;
+        return true;
+    }
+
+    bool finish_condition_copy(cudaStream_t stream,
+                               bool release_to_driver,
+                               std::string * error) {
+        if (keep_intermediates) return true;
+        allocation_stream = stream;
+        free_buffer(clean_vision_condition);
+        clean_vision_ready = false;
+        if (!release_to_driver) return true;
+        return release_transient_memory(stream, error);
     }
 
     void release() {
@@ -1895,6 +2039,9 @@ struct WanVaeCudaRuntime {
         head_ready = false;
         final_conv1_ready = false;
         clean_vision_ready = false;
+        keep_intermediates = false;
+        active_frames = 1;
+        release_stage_buffers = false;
         available = false;
         model = nullptr;
     }
@@ -1907,192 +2054,16 @@ struct WanVaeCudaRuntime {
         weights = bound;
         available = bound.available;
         if (!available) return true;
-        const size_t patch_elems =
-            static_cast<size_t>(COSMOS3_WAN_VAE_PATCH_W) *
-            COSMOS3_WAN_VAE_PATCH_H *
-            COSMOS3_WAN_VAE_FRAMES *
-            COSMOS3_WAN_VAE_PATCH_CHANNELS;
-        if (cudaMalloc(reinterpret_cast<void **>(&patch_whdc),
-                       patch_elems * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE patch buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
+        int device = 0;
+        cudaMemPool_t pool = nullptr;
+        uint64_t release_threshold = UINT64_MAX;
+        if (cudaGetDevice(&device) == cudaSuccess &&
+            cudaDeviceGetDefaultMemPool(&pool, device) == cudaSuccess && pool) {
+            cudaMemPoolSetAttribute(pool,
+                                    cudaMemPoolAttrReleaseThreshold,
+                                    &release_threshold);
         }
-        const size_t conv1_elems =
-            static_cast<size_t>(COSMOS3_WAN_VAE_PATCH_W) *
-            COSMOS3_WAN_VAE_PATCH_H *
-            COSMOS3_WAN_VAE_FRAMES *
-            COSMOS3_WAN_VAE_CONV1_CHANNELS;
-        if (cudaMalloc(reinterpret_cast<void **>(&encoder_conv1_whdc),
-                       conv1_elems * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE encoder.conv1 buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
-        }
-        const size_t down0_elems =
-            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN0_W) *
-            COSMOS3_WAN_VAE_DOWN0_H *
-            COSMOS3_WAN_VAE_DOWN0_T *
-            COSMOS3_WAN_VAE_DOWN0_CHANNELS;
-        if (cudaMalloc(reinterpret_cast<void **>(&down0_shortcut_whdc),
-                       down0_elems * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE down0 shortcut buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
-        }
-        if (cudaMalloc(reinterpret_cast<void **>(&down0_whdc),
-                       down0_elems * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE down0 buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
-        }
-        if (cudaMalloc(reinterpret_cast<void **>(&down0_tmp_a_whdc),
-                       conv1_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&down0_tmp_b_whdc),
-                       conv1_elems * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE down0 temp buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
-        }
-        const size_t down1_pre_elems =
-            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN0_W) *
-            COSMOS3_WAN_VAE_DOWN0_H *
-            COSMOS3_WAN_VAE_DOWN0_T *
-            COSMOS3_WAN_VAE_DOWN1_CHANNELS;
-        const size_t down1_spatial_elems =
-            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN1_W) *
-            COSMOS3_WAN_VAE_DOWN1_H *
-            COSMOS3_WAN_VAE_DOWN0_T *
-            COSMOS3_WAN_VAE_DOWN1_CHANNELS;
-        const size_t down1_elems =
-            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN1_W) *
-            COSMOS3_WAN_VAE_DOWN1_H *
-            COSMOS3_WAN_VAE_DOWN1_T *
-            COSMOS3_WAN_VAE_DOWN1_CHANNELS;
-        if (cudaMalloc(reinterpret_cast<void **>(&down1_tmp_a_whdc),
-                       down1_pre_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&down1_tmp_b_whdc),
-                       down1_pre_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&down1_spatial_whdc),
-                       down1_spatial_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&down1_shortcut_whdc),
-                       down1_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&down1_whdc),
-                       down1_elems * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE down1 buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
-        }
-        const size_t down2_pre_elems =
-            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN1_W) *
-            COSMOS3_WAN_VAE_DOWN1_H *
-            COSMOS3_WAN_VAE_DOWN1_T *
-            COSMOS3_WAN_VAE_DOWN2_CHANNELS;
-        const size_t down2_spatial_elems =
-            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN2_W) *
-            COSMOS3_WAN_VAE_DOWN2_H *
-            COSMOS3_WAN_VAE_DOWN1_T *
-            COSMOS3_WAN_VAE_DOWN2_CHANNELS;
-        const size_t down2_elems =
-            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN2_W) *
-            COSMOS3_WAN_VAE_DOWN2_H *
-            COSMOS3_WAN_VAE_DOWN2_T *
-            COSMOS3_WAN_VAE_DOWN2_CHANNELS;
-        if (cudaMalloc(reinterpret_cast<void **>(&down2_tmp_a_whdc),
-                       down2_pre_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&down2_tmp_b_whdc),
-                       down2_pre_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&down2_spatial_whdc),
-                       down2_spatial_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&down2_shortcut_whdc),
-                       down2_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&down2_whdc),
-                       down2_elems * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE down2 buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
-        }
-        if (cudaMalloc(reinterpret_cast<void **>(&down3_whdc),
-                       down2_elems * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE down3 buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
-        }
-        if (cudaMalloc(reinterpret_cast<void **>(&mid0_whdc),
-                       down2_elems * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE mid0 buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
-        }
-        const size_t mid_elems = down2_elems;
-        const size_t mid_qkv_elems = mid_elems * 3;
-        const size_t mid_tokens = static_cast<size_t>(COSMOS3_WAN_VAE_DOWN2_W) *
-                                  COSMOS3_WAN_VAE_DOWN2_H;
-        const size_t mid_scores_elems = static_cast<size_t>(COSMOS3_WAN_VAE_DOWN2_T) *
-                                        mid_tokens * mid_tokens;
-        if (cudaMalloc(reinterpret_cast<void **>(&mid_attn_whdc),
-                       mid_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&mid_qkv_whdc),
-                       mid_qkv_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&mid_scores),
-                       mid_scores_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&mid_q_row),
-                       mid_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&mid_k_row),
-                       mid_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&mid_v_row),
-                       mid_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&mid_attn_row),
-                       mid_elems * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE middle attention buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
-        }
-        if (cudaMalloc(reinterpret_cast<void **>(&mid2_whdc),
-                       mid_elems * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE mid2 buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
-        }
-        const size_t tail_elems = static_cast<size_t>(COSMOS3_WAN_VAE_DOWN2_W) *
-                                  COSMOS3_WAN_VAE_DOWN2_H *
-                                  COSMOS3_WAN_VAE_DOWN2_T *
-                                  (2 * kMotVisionVaeChannels);
-        if (cudaMalloc(reinterpret_cast<void **>(&encoder_head_whdc),
-                       tail_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&final_conv1_whdc),
-                       tail_elems * sizeof(float)) != cudaSuccess ||
-            cudaMalloc(reinterpret_cast<void **>(&clean_vision_condition),
-                       static_cast<size_t>(kMotVisionConditionTokens) *
-                           kMotVisionPatchDim * sizeof(float)) != cudaSuccess) {
-            cudaError_t st = cudaGetLastError();
-            *error = std::string("Cosmos3 Wan VAE tail buffer allocation failed: ") +
-                     cudaGetErrorString(st);
-            release();
-            return false;
-        }
+        // VAE activations are allocated by each ensure_* stage on demand.
         const std::vector<int> chunks = encode_chunks_for_robolab();
         std::string chunk_msg;
         for (size_t i = 0; i < chunks.size(); ++i) {
@@ -2102,6 +2073,9 @@ struct WanVaeCudaRuntime {
         std::fprintf(stderr,
                      "vla(cosmos3): Wan2.2 VAE encoder chunk plan=[%s]\n",
                      chunk_msg.c_str());
+        std::fprintf(stderr,
+                     "vla(cosmos3): Wan2.2 VAE activation policy=first-latent-only "
+                     "(RoboLab condition consumes causal frame 0)\n");
         return true;
     }
 
@@ -2109,6 +2083,7 @@ struct WanVaeCudaRuntime {
                                cudaStream_t stream,
                                std::string * error) {
         if (!available) return true;
+        allocation_stream = stream;
         reset_timing();
         const auto t_stage = std::chrono::steady_clock::now();
         if (image.dtype != WamDType::U8 || image.shape.size() != 3 ||
@@ -2134,16 +2109,22 @@ struct WanVaeCudaRuntime {
             }
             image_bytes = bytes;
         }
+        const size_t patch_elems =
+            static_cast<size_t>(COSMOS3_WAN_VAE_PATCH_W) *
+            COSMOS3_WAN_VAE_PATCH_H * active_frames *
+            COSMOS3_WAN_VAE_PATCH_CHANNELS;
+        if (!ensure_buffer(&patch_whdc, patch_elems, "patch", error)) return false;
         if (cudaMemcpyAsync(image_dev, image.data, bytes, cudaMemcpyHostToDevice, stream) != cudaSuccess) {
             cudaError_t st = cudaGetLastError();
             *error = std::string("Cosmos3 Wan VAE image upload failed: ") +
                      cudaGetErrorString(st);
             return false;
         }
-        if (cosmos3_wan_vae_robolab_image_to_patch_whdc_f32(
+        if (cosmos3_wan_vae_robolab_image_to_patch_whdc_frames_f32(
                 image_dev,
                 static_cast<int>(image.shape[0]),
                 static_cast<int>(image.shape[1]),
+                active_frames,
                 patch_whdc,
                 stream) != 0) {
             *error = "Cosmos3 Wan VAE patchify CUDA launch failed";
@@ -2173,19 +2154,30 @@ struct WanVaeCudaRuntime {
         if (!available) return true;
         if (conv1_ready) return true;
         const auto t_stage = std::chrono::steady_clock::now();
-        if (!patch_ready || !patch_whdc || !encoder_conv1_whdc) {
+        if (!patch_ready || !patch_whdc) {
             *error = "Cosmos3 Wan VAE encoder.conv1 requested before patch input is ready";
             return false;
         }
-        if (cosmos3_wan_vae_encoder_conv1_whdc_f32(patch_whdc,
+        const size_t conv1_elems =
+            static_cast<size_t>(COSMOS3_WAN_VAE_PATCH_W) *
+            COSMOS3_WAN_VAE_PATCH_H * active_frames *
+            COSMOS3_WAN_VAE_CONV1_CHANNELS;
+        if (!ensure_buffer(&encoder_conv1_whdc, conv1_elems,
+                           "encoder.conv1", error)) return false;
+        if (cosmos3_wan_vae_encoder_conv1_whdc_frames_f32(patch_whdc,
                                                    weights.encoder_conv1_weight,
                                                    weights.encoder_conv1_bias,
+                                                   active_frames,
                                                    encoder_conv1_whdc,
                                                    stream) != 0) {
             *error = "Cosmos3 Wan VAE encoder.conv1 CUDA launch failed";
             return false;
         }
         conv1_ready = true;
+        if (!keep_intermediates) {
+            free_buffer(patch_whdc);
+            patch_ready = false;
+        }
         add_timing(VAE_T_CONV1, t_stage);
         return true;
     }
@@ -2196,7 +2188,14 @@ struct WanVaeCudaRuntime {
         if (down0_shortcut_ready) return true;
         const auto t_stage = std::chrono::steady_clock::now();
         if (!ensure_encoder_conv1(stream, error)) return false;
-        if (cosmos3_wan_vae_down0_avg_shortcut_whdc_f32(encoder_conv1_whdc,
+        const size_t down0_elems =
+            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN0_W) *
+            COSMOS3_WAN_VAE_DOWN0_H * active_frames *
+            COSMOS3_WAN_VAE_DOWN0_CHANNELS;
+        if (!ensure_buffer(&down0_shortcut_whdc, down0_elems,
+                           "down0 shortcut", error)) return false;
+        if (cosmos3_wan_vae_down0_avg_shortcut_whdc_frames_f32(encoder_conv1_whdc,
+                                                        active_frames,
                                                         down0_shortcut_whdc,
                                                         stream) != 0) {
             *error = "Cosmos3 Wan VAE down0 AvgDown3D shortcut CUDA launch failed";
@@ -2256,13 +2255,18 @@ struct WanVaeCudaRuntime {
 
         constexpr int W = COSMOS3_WAN_VAE_PATCH_W;
         constexpr int H = COSMOS3_WAN_VAE_PATCH_H;
-        constexpr int T = COSMOS3_WAN_VAE_FRAMES;
+        const int T = active_frames;
         constexpr int Cc = COSMOS3_WAN_VAE_CONV1_CHANNELS;
         const size_t full_elems = static_cast<size_t>(W) * H * T * Cc;
         const size_t down_elems = static_cast<size_t>(COSMOS3_WAN_VAE_DOWN0_W) *
                                   COSMOS3_WAN_VAE_DOWN0_H *
-                                  COSMOS3_WAN_VAE_DOWN0_T *
+                                  active_frames *
                                   COSMOS3_WAN_VAE_DOWN0_CHANNELS;
+        if (!ensure_buffer(&down0_whdc, down_elems, "down0", error) ||
+            !ensure_buffer(&down0_tmp_a_whdc, full_elems, "down0 temp A", error) ||
+            !ensure_buffer(&down0_tmp_b_whdc, full_elems, "down0 temp B", error)) {
+            return false;
+        }
         auto apply_res = [&](float * x, const ResPtrs & r) -> bool {
             if (cosmos3_wan_vae_norm_silu_whdc_f32(x, r.n1, down0_tmp_a_whdc, W, H, T, Cc, stream) != 0 ||
                 cosmos3_wan_vae_causal_conv3d_ks3_whdc_f32(down0_tmp_a_whdc, r.c1w, r.c1b,
@@ -2285,6 +2289,14 @@ struct WanVaeCudaRuntime {
             return false;
         }
         down0_ready = true;
+        if (!keep_intermediates) {
+            free_buffer(encoder_conv1_whdc);
+            free_buffer(down0_shortcut_whdc);
+            free_buffer(down0_tmp_a_whdc);
+            free_buffer(down0_tmp_b_whdc);
+            conv1_ready = false;
+            down0_shortcut_ready = false;
+        }
         add_timing(VAE_T_DOWN0, t_stage);
         return true;
     }
@@ -2295,11 +2307,17 @@ struct WanVaeCudaRuntime {
         if (down1_shortcut_ready) return true;
         const auto t_stage = std::chrono::steady_clock::now();
         if (!ensure_down0(stream, error)) return false;
+        const size_t down1_elems =
+            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN1_W) *
+            COSMOS3_WAN_VAE_DOWN1_H * active_frames *
+            COSMOS3_WAN_VAE_DOWN1_CHANNELS;
+        if (!ensure_buffer(&down1_shortcut_whdc, down1_elems,
+                           "down1 shortcut", error)) return false;
         if (cosmos3_wan_vae_avg_down3d_whdc_f32(down0_whdc,
                                                 down1_shortcut_whdc,
                                                 COSMOS3_WAN_VAE_DOWN0_W,
                                                 COSMOS3_WAN_VAE_DOWN0_H,
-                                                COSMOS3_WAN_VAE_DOWN0_T,
+                                                active_frames,
                                                 COSMOS3_WAN_VAE_DOWN0_CHANNELS,
                                                 COSMOS3_WAN_VAE_DOWN1_CHANNELS,
                                                 2,
@@ -2375,10 +2393,27 @@ struct WanVaeCudaRuntime {
 
         constexpr int W = COSMOS3_WAN_VAE_DOWN0_W;
         constexpr int H = COSMOS3_WAN_VAE_DOWN0_H;
-        constexpr int T = COSMOS3_WAN_VAE_DOWN0_T;
+        const int T = active_frames;
         constexpr int Cin0 = COSMOS3_WAN_VAE_DOWN0_CHANNELS;
         constexpr int Cout = COSMOS3_WAN_VAE_DOWN1_CHANNELS;
         const size_t down1_pre_elems = static_cast<size_t>(W) * H * T * Cout;
+        const size_t down1_spatial_elems =
+            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN1_W) *
+            COSMOS3_WAN_VAE_DOWN1_H * T * Cout;
+        const size_t down1_elems =
+            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN1_W) *
+            COSMOS3_WAN_VAE_DOWN1_H * active_frames * Cout;
+        if (!ensure_buffer(&down0_tmp_a_whdc, down1_pre_elems,
+                           "down1 residual scratch", error) ||
+            !ensure_buffer(&down1_tmp_a_whdc, down1_pre_elems,
+                           "down1 temp A", error) ||
+            !ensure_buffer(&down1_tmp_b_whdc, down1_pre_elems,
+                           "down1 temp B", error) ||
+            !ensure_buffer(&down1_spatial_whdc, down1_spatial_elems,
+                           "down1 spatial", error) ||
+            !ensure_buffer(&down1_whdc, down1_elems, "down1", error)) {
+            return false;
+        }
         auto apply_res_160_to_320 = [&]() -> bool {
             if (cosmos3_wan_vae_norm_silu_whdc_f32(down0_whdc, r0.n1,
                                                    down0_tmp_a_whdc, W, H, T, Cin0, stream) != 0 ||
@@ -2420,7 +2455,7 @@ struct WanVaeCudaRuntime {
                                                        down1_whdc,
                                                        COSMOS3_WAN_VAE_DOWN1_W,
                                                        COSMOS3_WAN_VAE_DOWN1_H,
-                                                       COSMOS3_WAN_VAE_DOWN0_T,
+                                                       active_frames,
                                                        Cout,
                                                        chunks.data(),
                                                        static_cast<int>(chunks.size()),
@@ -2428,13 +2463,23 @@ struct WanVaeCudaRuntime {
             cosmos3_wan_vae_add_whdc_f32(down1_whdc, down1_shortcut_whdc, down1_whdc,
                                          static_cast<size_t>(COSMOS3_WAN_VAE_DOWN1_W) *
                                              COSMOS3_WAN_VAE_DOWN1_H *
-                                             COSMOS3_WAN_VAE_DOWN1_T *
+                                             active_frames *
                                              COSMOS3_WAN_VAE_DOWN1_CHANNELS,
                                          stream) != 0) {
             *error = "Cosmos3 Wan VAE down1 CUDA primitive execution failed";
             return false;
         }
         down1_ready = true;
+        if (!keep_intermediates) {
+            free_buffer(down0_whdc);
+            free_buffer(down1_shortcut_whdc);
+            free_buffer(down1_spatial_whdc);
+            free_buffer(down0_tmp_a_whdc);
+            free_buffer(down1_tmp_a_whdc);
+            free_buffer(down1_tmp_b_whdc);
+            down0_ready = false;
+            down1_shortcut_ready = false;
+        }
         add_timing(VAE_T_DOWN1, t_stage);
         return true;
     }
@@ -2445,11 +2490,17 @@ struct WanVaeCudaRuntime {
         if (down2_shortcut_ready) return true;
         const auto t_stage = std::chrono::steady_clock::now();
         if (!ensure_down1(stream, error)) return false;
+        const size_t down2_elems =
+            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN2_W) *
+            COSMOS3_WAN_VAE_DOWN2_H * active_frames *
+            COSMOS3_WAN_VAE_DOWN2_CHANNELS;
+        if (!ensure_buffer(&down2_shortcut_whdc, down2_elems,
+                           "down2 shortcut", error)) return false;
         if (cosmos3_wan_vae_avg_down3d_whdc_f32(down1_whdc,
                                                 down2_shortcut_whdc,
                                                 COSMOS3_WAN_VAE_DOWN1_W,
                                                 COSMOS3_WAN_VAE_DOWN1_H,
-                                                COSMOS3_WAN_VAE_DOWN1_T,
+                                                active_frames,
                                                 COSMOS3_WAN_VAE_DOWN1_CHANNELS,
                                                 COSMOS3_WAN_VAE_DOWN2_CHANNELS,
                                                 2,
@@ -2525,10 +2576,27 @@ struct WanVaeCudaRuntime {
 
         constexpr int W = COSMOS3_WAN_VAE_DOWN1_W;
         constexpr int H = COSMOS3_WAN_VAE_DOWN1_H;
-        constexpr int T = COSMOS3_WAN_VAE_DOWN1_T;
+        const int T = active_frames;
         constexpr int Cin = COSMOS3_WAN_VAE_DOWN1_CHANNELS;
         constexpr int Cout = COSMOS3_WAN_VAE_DOWN2_CHANNELS;
         const size_t pre_elems = static_cast<size_t>(W) * H * T * Cout;
+        const size_t spatial_elems =
+            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN2_W) *
+            COSMOS3_WAN_VAE_DOWN2_H * T * Cout;
+        const size_t down2_elems =
+            static_cast<size_t>(COSMOS3_WAN_VAE_DOWN2_W) *
+            COSMOS3_WAN_VAE_DOWN2_H * active_frames * Cout;
+        if (!ensure_buffer(&down1_tmp_a_whdc, pre_elems,
+                           "down2 residual scratch", error) ||
+            !ensure_buffer(&down2_tmp_a_whdc, pre_elems,
+                           "down2 temp A", error) ||
+            !ensure_buffer(&down2_tmp_b_whdc, pre_elems,
+                           "down2 temp B", error) ||
+            !ensure_buffer(&down2_spatial_whdc, spatial_elems,
+                           "down2 spatial", error) ||
+            !ensure_buffer(&down2_whdc, down2_elems, "down2", error)) {
+            return false;
+        }
         auto apply_res_320_to_640 = [&]() -> bool {
             if (cosmos3_wan_vae_norm_silu_whdc_f32(down1_whdc, r0.n1,
                                                    down1_tmp_a_whdc, W, H, T, Cin, stream) != 0 ||
@@ -2578,13 +2646,23 @@ struct WanVaeCudaRuntime {
             cosmos3_wan_vae_add_whdc_f32(down2_whdc, down2_shortcut_whdc, down2_whdc,
                                          static_cast<size_t>(COSMOS3_WAN_VAE_DOWN2_W) *
                                              COSMOS3_WAN_VAE_DOWN2_H *
-                                             COSMOS3_WAN_VAE_DOWN2_T *
+                                             active_frames *
                                              COSMOS3_WAN_VAE_DOWN2_CHANNELS,
                                          stream) != 0) {
             *error = "Cosmos3 Wan VAE down2 CUDA primitive execution failed";
             return false;
         }
         down2_ready = true;
+        if (!keep_intermediates) {
+            free_buffer(down1_whdc);
+            free_buffer(down2_shortcut_whdc);
+            free_buffer(down2_spatial_whdc);
+            free_buffer(down1_tmp_a_whdc);
+            free_buffer(down2_tmp_a_whdc);
+            free_buffer(down2_tmp_b_whdc);
+            down1_ready = false;
+            down2_shortcut_ready = false;
+        }
         add_timing(VAE_T_DOWN2, t_stage);
         return true;
     }
@@ -2633,9 +2711,14 @@ struct WanVaeCudaRuntime {
 
         constexpr int W = COSMOS3_WAN_VAE_DOWN2_W;
         constexpr int H = COSMOS3_WAN_VAE_DOWN2_H;
-        constexpr int T = COSMOS3_WAN_VAE_DOWN2_T;
+        const int T = active_frames;
         constexpr int Cc = COSMOS3_WAN_VAE_DOWN2_CHANNELS;
         const size_t elems = static_cast<size_t>(W) * H * T * Cc;
+        if (!ensure_buffer(&down3_whdc, elems, "down3", error) ||
+            !ensure_buffer(&down2_tmp_a_whdc, elems, "down3 temp A", error) ||
+            !ensure_buffer(&down2_tmp_b_whdc, elems, "down3 temp B", error)) {
+            return false;
+        }
         auto apply_res = [&](const float * input, float * output, const ResPtrs & r) -> bool {
             if (cosmos3_wan_vae_norm_silu_whdc_f32(input, r.n1,
                                                    down2_tmp_b_whdc, W, H, T, Cc, stream) != 0 ||
@@ -2661,6 +2744,12 @@ struct WanVaeCudaRuntime {
             return false;
         }
         down3_ready = true;
+        if (!keep_intermediates) {
+            free_buffer(down2_whdc);
+            free_buffer(down2_tmp_a_whdc);
+            free_buffer(down2_tmp_b_whdc);
+            down2_ready = false;
+        }
         add_timing(VAE_T_DOWN3, t_stage);
         return true;
     }
@@ -2695,9 +2784,14 @@ struct WanVaeCudaRuntime {
 
         constexpr int W = COSMOS3_WAN_VAE_DOWN2_W;
         constexpr int H = COSMOS3_WAN_VAE_DOWN2_H;
-        constexpr int T = COSMOS3_WAN_VAE_DOWN2_T;
+        const int T = active_frames;
         constexpr int Cc = COSMOS3_WAN_VAE_DOWN2_CHANNELS;
         const size_t elems = static_cast<size_t>(W) * H * T * Cc;
+        if (!ensure_buffer(&mid0_whdc, elems, "mid0", error) ||
+            !ensure_buffer(&down2_tmp_a_whdc, elems, "mid0 temp A", error) ||
+            !ensure_buffer(&down2_tmp_b_whdc, elems, "mid0 temp B", error)) {
+            return false;
+        }
         if (cosmos3_wan_vae_norm_silu_whdc_f32(down3_whdc, n1,
                                                down2_tmp_b_whdc, W, H, T, Cc, stream) != 0 ||
             cosmos3_wan_vae_causal_conv3d_ks3_whdc_f32(down2_tmp_b_whdc, c1w, c1b,
@@ -2712,6 +2806,12 @@ struct WanVaeCudaRuntime {
             return false;
         }
         mid0_ready = true;
+        if (!keep_intermediates) {
+            free_buffer(down3_whdc);
+            free_buffer(down2_tmp_a_whdc);
+            free_buffer(down2_tmp_b_whdc);
+            down3_ready = false;
+        }
         add_timing(VAE_T_MID0, t_stage);
         return true;
     }
@@ -2744,9 +2844,23 @@ struct WanVaeCudaRuntime {
 
         constexpr int W = COSMOS3_WAN_VAE_DOWN2_W;
         constexpr int H = COSMOS3_WAN_VAE_DOWN2_H;
-        constexpr int T = COSMOS3_WAN_VAE_DOWN2_T;
+        const int T = active_frames;
         constexpr int Cc = COSMOS3_WAN_VAE_DOWN2_CHANNELS;
         const size_t elems = static_cast<size_t>(W) * H * T * Cc;
+        const size_t qkv_elems = elems * 3;
+        const size_t spatial_tokens = static_cast<size_t>(W) * H;
+        const size_t score_elems = static_cast<size_t>(T) * spatial_tokens * spatial_tokens;
+        if (!ensure_buffer(&mid_attn_whdc, elems, "mid attention", error) ||
+            !ensure_buffer(&mid_qkv_whdc, qkv_elems, "mid attention QKV", error) ||
+            !ensure_buffer(&mid_scores, score_elems, "mid attention scores", error) ||
+            !ensure_buffer(&mid_q_row, elems, "mid attention Q row", error) ||
+            !ensure_buffer(&mid_k_row, elems, "mid attention K row", error) ||
+            !ensure_buffer(&mid_v_row, elems, "mid attention V row", error) ||
+            !ensure_buffer(&mid_attn_row, elems, "mid attention output row", error) ||
+            !ensure_buffer(&down2_tmp_a_whdc, elems, "mid attention temp A", error) ||
+            !ensure_buffer(&down2_tmp_b_whdc, elems, "mid attention temp B", error)) {
+            return false;
+        }
         if (cosmos3_wan_vae_rms_norm_whdc_f32(mid0_whdc, norm,
                                               down2_tmp_a_whdc, W, H, T, Cc, stream) != 0 ||
             cosmos3_wan_vae_conv1x1x1_whdc_f32(down2_tmp_a_whdc, qkv_w, qkv_b,
@@ -2771,6 +2885,18 @@ struct WanVaeCudaRuntime {
             return false;
         }
         mid_attn_ready = true;
+        if (!keep_intermediates) {
+            free_buffer(mid0_whdc);
+            free_buffer(mid_qkv_whdc);
+            free_buffer(mid_scores);
+            free_buffer(mid_q_row);
+            free_buffer(mid_k_row);
+            free_buffer(mid_v_row);
+            free_buffer(mid_attn_row);
+            free_buffer(down2_tmp_a_whdc);
+            free_buffer(down2_tmp_b_whdc);
+            mid0_ready = false;
+        }
         add_timing(VAE_T_MID_ATTN, t_stage);
         return true;
     }
@@ -2805,9 +2931,14 @@ struct WanVaeCudaRuntime {
 
         constexpr int W = COSMOS3_WAN_VAE_DOWN2_W;
         constexpr int H = COSMOS3_WAN_VAE_DOWN2_H;
-        constexpr int T = COSMOS3_WAN_VAE_DOWN2_T;
+        const int T = active_frames;
         constexpr int Cc = COSMOS3_WAN_VAE_DOWN2_CHANNELS;
         const size_t elems = static_cast<size_t>(W) * H * T * Cc;
+        if (!ensure_buffer(&mid2_whdc, elems, "mid2", error) ||
+            !ensure_buffer(&down2_tmp_a_whdc, elems, "mid2 temp A", error) ||
+            !ensure_buffer(&down2_tmp_b_whdc, elems, "mid2 temp B", error)) {
+            return false;
+        }
         if (cosmos3_wan_vae_norm_silu_whdc_f32(mid_attn_whdc, n1,
                                                down2_tmp_b_whdc, W, H, T, Cc, stream) != 0 ||
             cosmos3_wan_vae_causal_conv3d_ks3_whdc_f32(down2_tmp_b_whdc, c1w, c1b,
@@ -2822,6 +2953,12 @@ struct WanVaeCudaRuntime {
             return false;
         }
         mid2_ready = true;
+        if (!keep_intermediates) {
+            free_buffer(mid_attn_whdc);
+            free_buffer(down2_tmp_a_whdc);
+            free_buffer(down2_tmp_b_whdc);
+            mid_attn_ready = false;
+        }
         add_timing(VAE_T_MID2, t_stage);
         return true;
     }
@@ -2852,9 +2989,15 @@ struct WanVaeCudaRuntime {
 
         constexpr int W = COSMOS3_WAN_VAE_DOWN2_W;
         constexpr int H = COSMOS3_WAN_VAE_DOWN2_H;
-        constexpr int T = COSMOS3_WAN_VAE_DOWN2_T;
+        const int T = active_frames;
         constexpr int Cc = COSMOS3_WAN_VAE_DOWN2_CHANNELS;
         constexpr int OutC = 2 * kMotVisionVaeChannels;
+        const size_t mid_elems = static_cast<size_t>(W) * H * T * Cc;
+        const size_t tail_elems = static_cast<size_t>(W) * H * T * OutC;
+        if (!ensure_buffer(&down2_tmp_b_whdc, mid_elems, "encoder head temp", error) ||
+            !ensure_buffer(&encoder_head_whdc, tail_elems, "encoder head", error)) {
+            return false;
+        }
         if (cosmos3_wan_vae_norm_silu_whdc_f32(mid2_whdc, norm,
                                                down2_tmp_b_whdc, W, H, T, Cc, stream) != 0 ||
             cosmos3_wan_vae_causal_conv3d_ks3_whdc_f32(down2_tmp_b_whdc, conv_w, conv_b,
@@ -2863,6 +3006,11 @@ struct WanVaeCudaRuntime {
             return false;
         }
         head_ready = true;
+        if (!keep_intermediates) {
+            free_buffer(mid2_whdc);
+            free_buffer(down2_tmp_b_whdc);
+            mid2_ready = false;
+        }
         add_timing(VAE_T_HEAD, t_stage);
         return true;
     }
@@ -2892,14 +3040,22 @@ struct WanVaeCudaRuntime {
 
         constexpr int W = COSMOS3_WAN_VAE_DOWN2_W;
         constexpr int H = COSMOS3_WAN_VAE_DOWN2_H;
-        constexpr int T = COSMOS3_WAN_VAE_DOWN2_T;
+        const int T = active_frames;
         constexpr int Cc = 2 * kMotVisionVaeChannels;
+        const size_t tail_elems = static_cast<size_t>(W) * H * T * Cc;
+        if (!ensure_buffer(&final_conv1_whdc, tail_elems, "final conv1", error)) {
+            return false;
+        }
         if (cosmos3_wan_vae_conv1x1x1_whdc_f32(encoder_head_whdc, conv_w, conv_b,
                                                final_conv1_whdc, W, H, T, Cc, Cc, stream) != 0) {
             *error = "Cosmos3 Wan VAE final conv1 CUDA primitive execution failed";
             return false;
         }
         final_conv1_ready = true;
+        if (!keep_intermediates) {
+            free_buffer(encoder_head_whdc);
+            head_ready = false;
+        }
         add_timing(VAE_T_FINAL_CONV1, t_stage);
         return true;
     }
@@ -2910,11 +3066,17 @@ struct WanVaeCudaRuntime {
         if (clean_vision_ready) return true;
         const auto t_stage = std::chrono::steady_clock::now();
         if (!ensure_final_conv1(stream, error)) return false;
-        if (cosmos3_wan_vae_pack_clean_vision_condition_f32(final_conv1_whdc,
-                                                            weights.scale_mean,
-                                                            weights.scale_inv_std,
-                                                            clean_vision_condition,
-                                                            stream) != 0) {
+        const size_t clean_elems = static_cast<size_t>(kMotVisionConditionTokens) *
+                                   kMotVisionPatchDim;
+        if (!ensure_buffer(&clean_vision_condition, clean_elems,
+                           "clean vision condition", error)) return false;
+        if (cosmos3_wan_vae_pack_clean_vision_condition_frames_f32(
+                final_conv1_whdc,
+                weights.scale_mean,
+                weights.scale_inv_std,
+                active_frames,
+                clean_vision_condition,
+                stream) != 0) {
             *error = "Cosmos3 Wan VAE clean vision condition pack CUDA launch failed";
             return false;
         }
@@ -2926,6 +3088,7 @@ struct WanVaeCudaRuntime {
     const float * clean_vision_condition_ptr(cudaStream_t stream,
                                              std::string * error) {
         if (!available) return nullptr;
+        allocation_stream = stream;
         if (!ensure_clean_vision_condition(stream, error)) return nullptr;
         return clean_vision_condition;
     }
@@ -4134,6 +4297,7 @@ struct LanguageCudaRuntime {
     float * swiglu = nullptr;
     float * down = nullptr;
     float * final_norm = nullptr;
+    float * layer_workspace = nullptr;
     float * condition_input = nullptr;
     float * condition_input_uncond = nullptr;
     unsigned short * w8_x_bf16_workspace = nullptr;
@@ -4148,6 +4312,7 @@ struct LanguageCudaRuntime {
     std::vector<int> default_mrope_positions_uncond;
     int last_run_tokens = 0;
     int last_layers_run = 0;
+    int forward_workspace_tokens = 0;
     int active_language_tokens = kLanguageTokens;
     int active_mot_text_tokens = kMotTextCondTokens;
     int active_mot_text_tokens_uncond = kMotTextUncondTokens;
@@ -4167,7 +4332,51 @@ struct LanguageCudaRuntime {
     LanguageCudaRuntime(const LanguageCudaRuntime &) = delete;
     LanguageCudaRuntime & operator=(const LanguageCudaRuntime &) = delete;
 
+    void release_forward_workspace() {
+        if (x) cudaFree(x);
+        if (norm) cudaFree(norm);
+        if (layer_workspace) cudaFree(layer_workspace);
+        if (w8_x_bf16_workspace) cudaFree(w8_x_bf16_workspace);
+        if (w8_y_bf16_workspace) cudaFree(w8_y_bf16_workspace);
+        if (w8_c_tmp_workspace) cudaFree(w8_c_tmp_workspace);
+        if (w8_int_workspace) cudaFree(w8_int_workspace);
+        x = norm = q = k = v = q_norm = k_norm = q_rot = k_rot = attn = o = nullptr;
+        post_residual = post_norm = gate = up = swiglu = down = final_norm = nullptr;
+        layer_workspace = nullptr;
+        w8_x_bf16_workspace = nullptr;
+        w8_y_bf16_workspace = nullptr;
+        w8_c_tmp_workspace = nullptr;
+        w8_int_workspace = nullptr;
+        last_run_tokens = 0;
+        last_layers_run = 0;
+        forward_workspace_tokens = 0;
+    }
+
+    void select_attention_workspace() {
+        const size_t h = static_cast<size_t>(forward_workspace_tokens) * kLanguageHidden;
+        const size_t kv = static_cast<size_t>(forward_workspace_tokens) * kLanguageKv;
+        q = layer_workspace;
+        k = q + h;
+        v = k + kv;
+        q_rot = v + kv;
+        k_rot = q_rot + h;
+        attn = k_rot + kv;
+        q_norm = q;
+        k_norm = k;
+        o = q;
+    }
+
+    void select_mlp_workspace() {
+        const size_t inter = static_cast<size_t>(forward_workspace_tokens) * kLanguageIntermediate;
+        gate = layer_workspace;
+        up = gate + inter;
+        q = up + inter;
+        swiglu = gate;
+        down = q;
+    }
+
     void release() {
+        release_forward_workspace();
         if (input_ids_dev) cudaFree(input_ids_dev);
         if (visual_indices_dev) cudaFree(visual_indices_dev);
         if (mrope_positions_dev) cudaFree(mrope_positions_dev);
@@ -4176,30 +4385,8 @@ struct LanguageCudaRuntime {
         if (mrope_positions_uncond_dev) cudaFree(mrope_positions_uncond_dev);
         if (mot_text_ids_dev) cudaFree(mot_text_ids_dev);
         if (mot_text_ids_uncond_dev) cudaFree(mot_text_ids_uncond_dev);
-        if (x) cudaFree(x);
-        if (norm) cudaFree(norm);
-        if (q) cudaFree(q);
-        if (k) cudaFree(k);
-        if (v) cudaFree(v);
-        if (q_norm) cudaFree(q_norm);
-        if (k_norm) cudaFree(k_norm);
-        if (q_rot) cudaFree(q_rot);
-        if (k_rot) cudaFree(k_rot);
-        if (attn) cudaFree(attn);
-        if (o) cudaFree(o);
-        if (post_residual) cudaFree(post_residual);
-        if (post_norm) cudaFree(post_norm);
-        if (gate) cudaFree(gate);
-        if (up) cudaFree(up);
-        if (swiglu) cudaFree(swiglu);
-        if (down) cudaFree(down);
-        if (final_norm) cudaFree(final_norm);
         if (condition_input) cudaFree(condition_input);
         if (condition_input_uncond) cudaFree(condition_input_uncond);
-        if (w8_x_bf16_workspace) cudaFree(w8_x_bf16_workspace);
-        if (w8_y_bf16_workspace) cudaFree(w8_y_bf16_workspace);
-        if (w8_c_tmp_workspace) cudaFree(w8_c_tmp_workspace);
-        if (w8_int_workspace) cudaFree(w8_int_workspace);
         if (stream) cudaStreamDestroy(stream);
         input_ids_dev = nullptr;
         visual_indices_dev = nullptr;
@@ -4209,26 +4396,75 @@ struct LanguageCudaRuntime {
         mrope_positions_uncond_dev = nullptr;
         mot_text_ids_dev = nullptr;
         mot_text_ids_uncond_dev = nullptr;
-        x = norm = q = k = v = q_norm = k_norm = q_rot = k_rot = attn = o = nullptr;
-        post_residual = post_norm = gate = up = swiglu = down = final_norm = nullptr;
         condition_input = nullptr;
         condition_input_uncond = nullptr;
-        w8_x_bf16_workspace = nullptr;
-        w8_y_bf16_workspace = nullptr;
-        w8_c_tmp_workspace = nullptr;
-        w8_int_workspace = nullptr;
         default_input_ids.clear();
         default_visual_indices.clear();
         default_mrope_positions.clear();
         default_input_ids_uncond.clear();
         default_visual_indices_uncond.clear();
         default_mrope_positions_uncond.clear();
-        last_run_tokens = 0;
-        last_layers_run = 0;
         active_language_tokens = kLanguageTokens;
         active_mot_text_tokens = kMotTextCondTokens;
         active_mot_text_tokens_uncond = kMotTextUncondTokens;
         stream = nullptr;
+    }
+
+    bool ensure_forward_workspace(int tokens, std::string * error) {
+        if (tokens <= 0 || tokens > kLanguageMaxTokens) {
+            *error = "Cosmos3 language CUDA workspace token count is out of range";
+            return false;
+        }
+        if (x && forward_workspace_tokens >= tokens) return true;
+        release_forward_workspace();
+        auto fail = [&](const char * what) {
+            const cudaError_t st = cudaGetLastError();
+            *error = std::string("Cosmos3 language CUDA workspace allocation failed at ") +
+                     what + ": " + cudaGetErrorString(st);
+            release_forward_workspace();
+            return false;
+        };
+        auto alloc_f32 = [&](float ** ptr, size_t elems, const char * label) {
+            return cudaMalloc(reinterpret_cast<void **>(ptr), elems * sizeof(float)) == cudaSuccess ||
+                   fail(label);
+        };
+        auto alloc_u16 = [&](unsigned short ** ptr, size_t elems, const char * label) {
+            return cudaMalloc(reinterpret_cast<void **>(ptr), elems * sizeof(unsigned short)) == cudaSuccess ||
+                   fail(label);
+        };
+        auto alloc_i32 = [&](int ** ptr, size_t elems, const char * label) {
+            return cudaMalloc(reinterpret_cast<void **>(ptr), elems * sizeof(int)) == cudaSuccess ||
+                   fail(label);
+        };
+        const size_t h = static_cast<size_t>(tokens) * kLanguageHidden;
+        const size_t inter = static_cast<size_t>(tokens) * kLanguageIntermediate;
+        const size_t layer_workspace_elems = 2u * inter + h;
+        int dev = 0;
+        int sms = 0;
+        if (cudaGetDevice(&dev) != cudaSuccess ||
+            cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess ||
+            sms <= 0) {
+            return fail("language_w8_workspace_device");
+        }
+        const size_t w8_workspace_elems =
+            static_cast<size_t>(tokens) *
+            static_cast<size_t>(std::max(kLanguageHidden, kLanguageIntermediate));
+        const size_t w8_c_tmp_elems = static_cast<size_t>(sms) * 64u * 256u;
+        if (!alloc_f32(&x, h, "x") ||
+            !alloc_f32(&norm, h, "norm") ||
+            !alloc_f32(&layer_workspace, layer_workspace_elems, "layer_workspace") ||
+            !alloc_u16(&w8_x_bf16_workspace, w8_workspace_elems, "w8_x_bf16_workspace") ||
+            !alloc_u16(&w8_y_bf16_workspace, w8_workspace_elems, "w8_y_bf16_workspace") ||
+            !alloc_f32(&w8_c_tmp_workspace, w8_c_tmp_elems, "w8_c_tmp_workspace") ||
+            !alloc_i32(&w8_int_workspace, static_cast<size_t>(sms), "w8_int_workspace")) {
+            return false;
+        }
+        post_residual = x;
+        post_norm = norm;
+        final_norm = norm;
+        forward_workspace_tokens = tokens;
+        select_attention_workspace();
+        return true;
     }
 
     bool init(const GgufGpuResidentModel & model, std::string * error) {
@@ -4281,64 +4517,11 @@ struct LanguageCudaRuntime {
                             cudaMemcpyHostToDevice,
                             stream) != cudaSuccess) return fail("copy mot_text_ids_uncond");
 
-        auto alloc_f32 = [&](float ** ptr, size_t elems, const char * label) -> bool {
-            if (cudaMalloc(reinterpret_cast<void **>(ptr), elems * sizeof(float)) != cudaSuccess) {
-                return fail(label);
-            }
-            return true;
-        };
-        auto alloc_u16 = [&](unsigned short ** ptr, size_t elems, const char * label) -> bool {
-            if (cudaMalloc(reinterpret_cast<void **>(ptr), elems * sizeof(unsigned short)) != cudaSuccess) {
-                return fail(label);
-            }
-            return true;
-        };
-        auto alloc_i32 = [&](int ** ptr, size_t elems, const char * label) -> bool {
-            if (cudaMalloc(reinterpret_cast<void **>(ptr), elems * sizeof(int)) != cudaSuccess) {
-                return fail(label);
-            }
-            return true;
-        };
-        const size_t h = static_cast<size_t>(kLanguageMaxTokens) * kLanguageHidden;
-        const size_t kv = static_cast<size_t>(kLanguageMaxTokens) * kLanguageKv;
-        const size_t inter = static_cast<size_t>(kLanguageMaxTokens) * kLanguageIntermediate;
-        int dev = 0;
-        int sms = 0;
-        if (cudaGetDevice(&dev) != cudaSuccess ||
-            cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev) != cudaSuccess ||
-            sms <= 0) {
-            return fail("language_w8_workspace_device");
-        }
-        const size_t w8_workspace_elems =
-            static_cast<size_t>(kLanguageMaxTokens) *
-            static_cast<size_t>(std::max(kLanguageHidden, kLanguageIntermediate));
-        const size_t w8_c_tmp_elems = static_cast<size_t>(sms) * 64u * 256u;
-        if (!alloc_f32(&x, h, "x") ||
-            !alloc_f32(&norm, h, "norm") ||
-            !alloc_f32(&q, h, "q") ||
-            !alloc_f32(&k, kv, "k") ||
-            !alloc_f32(&v, kv, "v") ||
-            !alloc_f32(&q_norm, h, "q_norm") ||
-            !alloc_f32(&k_norm, kv, "k_norm") ||
-            !alloc_f32(&q_rot, h, "q_rot") ||
-            !alloc_f32(&k_rot, kv, "k_rot") ||
-            !alloc_f32(&attn, h, "attn") ||
-            !alloc_f32(&o, h, "o") ||
-            !alloc_f32(&post_residual, h, "post_residual") ||
-            !alloc_f32(&post_norm, h, "post_norm") ||
-            !alloc_f32(&gate, inter, "gate") ||
-            !alloc_f32(&up, inter, "up") ||
-            !alloc_f32(&swiglu, inter, "swiglu") ||
-            !alloc_f32(&down, h, "down") ||
-            !alloc_f32(&final_norm, h, "final_norm") ||
-            !alloc_f32(&condition_input, h, "condition_input") ||
-            !alloc_f32(&condition_input_uncond, h, "condition_input_uncond") ||
-            !alloc_u16(&w8_x_bf16_workspace, w8_workspace_elems, "language_w8_x_bf16_workspace") ||
-            !alloc_u16(&w8_y_bf16_workspace, w8_workspace_elems, "language_w8_y_bf16_workspace") ||
-            !alloc_f32(&w8_c_tmp_workspace, w8_c_tmp_elems, "language_w8_c_tmp_workspace") ||
-            !alloc_i32(&w8_int_workspace, static_cast<size_t>(sms), "language_w8_int_workspace")) {
-            return false;
-        }
+        const size_t condition_h = static_cast<size_t>(kMotTextMaxTokens) * kLanguageHidden;
+        if (cudaMalloc(reinterpret_cast<void **>(&condition_input),
+                       condition_h * sizeof(float)) != cudaSuccess) return fail("condition_input");
+        if (cudaMalloc(reinterpret_cast<void **>(&condition_input_uncond),
+                       condition_h * sizeof(float)) != cudaSuccess) return fail("condition_input_uncond");
         if (cudaStreamSynchronize(stream) != cudaSuccess) return fail("cudaStreamSynchronize");
         return true;
     }
@@ -4680,6 +4863,9 @@ struct LanguageCudaRuntime {
                 return false;
             }
             run_tokens = static_cast<int>(direct_qwen_input->shape[0]);
+        }
+        if (!ensure_forward_workspace(run_tokens, error)) return false;
+        if (direct_qwen_input) {
             if (cudaMemcpyAsync(x,
                                 direct_qwen_input->data,
                                 direct_qwen_input->bytes,
@@ -4750,6 +4936,7 @@ struct LanguageCudaRuntime {
                                           kLanguageHidden,
                                           error)) return false;
             }
+            select_attention_workspace();
             time_begin();
             if (!w8(l.q_proj, norm, q, run_tokens, "q_proj", layer, error) ||
                 !w8(l.k_proj, norm, k, run_tokens, "k_proj", layer, error) ||
@@ -4894,6 +5081,7 @@ struct LanguageCudaRuntime {
                                           kLanguageHidden,
                                           error)) return false;
             }
+            select_mlp_workspace();
             time_begin();
             if (!w8(l.gate_proj, post_norm, gate, run_tokens, "gate_proj", layer, error) ||
                 !w8(l.up_proj, post_norm, up, run_tokens, "up_proj", layer, error)) return false;
@@ -6701,6 +6889,144 @@ struct MotGenCudaRuntime {
         return internal_trace_enabled && layer == internal_trace_layer;
     }
 
+    void release_trace_workspace() {
+        if (layer0_gen_x) cudaFree(layer0_gen_x);
+        if (layer0_trace_gen_norm) cudaFree(layer0_trace_gen_norm);
+        if (layer0_trace_q_gen) cudaFree(layer0_trace_q_gen);
+        if (layer0_trace_k_gen) cudaFree(layer0_trace_k_gen);
+        if (layer0_trace_v_gen) cudaFree(layer0_trace_v_gen);
+        if (layer0_trace_q_gen_norm) cudaFree(layer0_trace_q_gen_norm);
+        if (layer0_trace_k_gen_norm) cudaFree(layer0_trace_k_gen_norm);
+        if (layer0_trace_q_gen_rot) cudaFree(layer0_trace_q_gen_rot);
+        if (layer0_trace_k_gen_rot) cudaFree(layer0_trace_k_gen_rot);
+        if (layer0_trace_attn_gen) cudaFree(layer0_trace_attn_gen);
+        if (layer0_trace_o_gen) cudaFree(layer0_trace_o_gen);
+        if (layer0_trace_post_norm_gen) cudaFree(layer0_trace_post_norm_gen);
+        if (layer0_trace_gate) cudaFree(layer0_trace_gate);
+        if (layer0_trace_up) cudaFree(layer0_trace_up);
+        if (layer0_trace_swiglu) cudaFree(layer0_trace_swiglu);
+        if (layer0_trace_down) cudaFree(layer0_trace_down);
+        if (layer0_trace_und_norm) cudaFree(layer0_trace_und_norm);
+        if (layer0_trace_q_und) cudaFree(layer0_trace_q_und);
+        if (layer0_trace_k_und) cudaFree(layer0_trace_k_und);
+        if (layer0_trace_v_und) cudaFree(layer0_trace_v_und);
+        if (layer0_trace_q_und_norm) cudaFree(layer0_trace_q_und_norm);
+        if (layer0_trace_k_und_norm) cudaFree(layer0_trace_k_und_norm);
+        if (layer0_trace_q_und_rot) cudaFree(layer0_trace_q_und_rot);
+        if (layer0_trace_k_und_rot) cudaFree(layer0_trace_k_und_rot);
+        if (layer0_trace_attn_und) cudaFree(layer0_trace_attn_und);
+        if (layer0_trace_o_und) cudaFree(layer0_trace_o_und);
+        if (layer0_trace_residual_und) cudaFree(layer0_trace_residual_und);
+        if (layer0_trace_post_norm_und) cudaFree(layer0_trace_post_norm_und);
+        if (layer0_trace_gate_und) cudaFree(layer0_trace_gate_und);
+        if (layer0_trace_up_und) cudaFree(layer0_trace_up_und);
+        if (layer0_trace_swiglu_und) cudaFree(layer0_trace_swiglu_und);
+        if (layer0_trace_down_und) cudaFree(layer0_trace_down_und);
+        if (layer0_trace_vision_gen_norm) cudaFree(layer0_trace_vision_gen_norm);
+        if (layer0_trace_vision_k_gen) cudaFree(layer0_trace_vision_k_gen);
+        if (layer0_trace_vision_v_gen) cudaFree(layer0_trace_vision_v_gen);
+        if (layer0_trace_vision_k_gen_norm) cudaFree(layer0_trace_vision_k_gen_norm);
+        if (layer0_trace_vision_k_gen_rot) cudaFree(layer0_trace_vision_k_gen_rot);
+        if (layer0_trace_k_gen_rot_full) cudaFree(layer0_trace_k_gen_rot_full);
+        if (layer0_trace_v_gen_full) cudaFree(layer0_trace_v_gen_full);
+        for (float *& ptr : layer_trace_action_hidden) {
+            if (ptr) cudaFree(ptr);
+            ptr = nullptr;
+        }
+        for (float *& ptr : layer_trace_condition_hidden) {
+            if (ptr) cudaFree(ptr);
+            ptr = nullptr;
+        }
+        layer0_gen_x = nullptr;
+        layer0_trace_gen_norm = layer0_trace_q_gen = layer0_trace_k_gen = layer0_trace_v_gen = nullptr;
+        layer0_trace_q_gen_norm = layer0_trace_k_gen_norm = nullptr;
+        layer0_trace_q_gen_rot = layer0_trace_k_gen_rot = nullptr;
+        layer0_trace_attn_gen = layer0_trace_o_gen = nullptr;
+        layer0_trace_post_norm_gen = layer0_trace_gate = layer0_trace_up = nullptr;
+        layer0_trace_swiglu = layer0_trace_down = nullptr;
+        layer0_trace_und_norm = layer0_trace_q_und = layer0_trace_k_und = layer0_trace_v_und = nullptr;
+        layer0_trace_q_und_norm = layer0_trace_k_und_norm = nullptr;
+        layer0_trace_q_und_rot = layer0_trace_k_und_rot = nullptr;
+        layer0_trace_attn_und = layer0_trace_o_und = layer0_trace_residual_und = nullptr;
+        layer0_trace_post_norm_und = layer0_trace_gate_und = layer0_trace_up_und = nullptr;
+        layer0_trace_swiglu_und = layer0_trace_down_und = nullptr;
+        layer0_trace_vision_gen_norm = layer0_trace_vision_k_gen = layer0_trace_vision_v_gen = nullptr;
+        layer0_trace_vision_k_gen_norm = layer0_trace_vision_k_gen_rot = nullptr;
+        layer0_trace_k_gen_rot_full = layer0_trace_v_gen_full = nullptr;
+    }
+
+    bool ensure_trace_workspace(std::string * error) {
+        if (!internal_trace_enabled && !layer_trace_enabled) return true;
+        if (layer0_gen_x) return true;
+        auto fail = [&](const char * what) {
+            const cudaError_t st = cudaGetLastError();
+            *error = std::string("Cosmos3 MoT trace workspace allocation failed at ") +
+                     what + ": " + cudaGetErrorString(st);
+            release_trace_workspace();
+            return false;
+        };
+        auto alloc = [&](float ** ptr, size_t elems, const char * label) {
+            return cudaMalloc(reinterpret_cast<void **>(ptr), elems * sizeof(float)) == cudaSuccess ||
+                   fail(label);
+        };
+        const size_t und_h = static_cast<size_t>(kMotTextMaxTokens) * kLanguageHidden;
+        const size_t gen_h = static_cast<size_t>(kMotFullTokens) * kLanguageHidden;
+        const size_t und_kv = static_cast<size_t>(kMotTextMaxTokens) * kLanguageKv;
+        const size_t gen_kv = static_cast<size_t>(kMotFullTokens) * kLanguageKv;
+        const size_t action_h = static_cast<size_t>(kActionTokens) * kLanguageHidden;
+        const size_t action_steps_h = static_cast<size_t>(kActionSteps) * kLanguageHidden;
+        const size_t vision_trace_h = kMotVisionTraceRows.size() * static_cast<size_t>(kLanguageHidden);
+        const size_t vision_trace_kv = kMotVisionTraceRows.size() * static_cast<size_t>(kLanguageKv);
+        if (!alloc(&layer0_gen_x, gen_h, "layer0_gen_x") ||
+            !alloc(&layer0_trace_gen_norm, action_h, "layer0_trace_gen_norm") ||
+            !alloc(&layer0_trace_q_gen, action_h, "layer0_trace_q_gen") ||
+            !alloc(&layer0_trace_k_gen, static_cast<size_t>(kActionTokens) * kLanguageKv, "layer0_trace_k_gen") ||
+            !alloc(&layer0_trace_v_gen, static_cast<size_t>(kActionTokens) * kLanguageKv, "layer0_trace_v_gen") ||
+            !alloc(&layer0_trace_q_gen_norm, action_h, "layer0_trace_q_gen_norm") ||
+            !alloc(&layer0_trace_k_gen_norm, static_cast<size_t>(kActionTokens) * kLanguageKv, "layer0_trace_k_gen_norm") ||
+            !alloc(&layer0_trace_q_gen_rot, action_h, "layer0_trace_q_gen_rot") ||
+            !alloc(&layer0_trace_k_gen_rot, static_cast<size_t>(kActionTokens) * kLanguageKv, "layer0_trace_k_gen_rot") ||
+            !alloc(&layer0_trace_attn_gen, action_h, "layer0_trace_attn_gen") ||
+            !alloc(&layer0_trace_o_gen, action_h, "layer0_trace_o_gen") ||
+            !alloc(&layer0_trace_post_norm_gen, action_h, "layer0_trace_post_norm_gen") ||
+            !alloc(&layer0_trace_gate, static_cast<size_t>(kActionSteps) * kLanguageIntermediate, "layer0_trace_gate") ||
+            !alloc(&layer0_trace_up, static_cast<size_t>(kActionSteps) * kLanguageIntermediate, "layer0_trace_up") ||
+            !alloc(&layer0_trace_swiglu, static_cast<size_t>(kActionSteps) * kLanguageIntermediate, "layer0_trace_swiglu") ||
+            !alloc(&layer0_trace_down, action_h, "layer0_trace_down") ||
+            !alloc(&layer0_trace_und_norm, und_h, "layer0_trace_und_norm") ||
+            !alloc(&layer0_trace_q_und, und_h, "layer0_trace_q_und") ||
+            !alloc(&layer0_trace_k_und, und_kv, "layer0_trace_k_und") ||
+            !alloc(&layer0_trace_v_und, und_kv, "layer0_trace_v_und") ||
+            !alloc(&layer0_trace_q_und_norm, und_h, "layer0_trace_q_und_norm") ||
+            !alloc(&layer0_trace_k_und_norm, und_kv, "layer0_trace_k_und_norm") ||
+            !alloc(&layer0_trace_q_und_rot, und_h, "layer0_trace_q_und_rot") ||
+            !alloc(&layer0_trace_k_und_rot, und_kv, "layer0_trace_k_und_rot") ||
+            !alloc(&layer0_trace_attn_und, und_h, "layer0_trace_attn_und") ||
+            !alloc(&layer0_trace_o_und, und_h, "layer0_trace_o_und") ||
+            !alloc(&layer0_trace_residual_und, und_h, "layer0_trace_residual_und") ||
+            !alloc(&layer0_trace_post_norm_und, und_h, "layer0_trace_post_norm_und") ||
+            !alloc(&layer0_trace_gate_und, static_cast<size_t>(kMotTextMaxTokens) * kLanguageIntermediate, "layer0_trace_gate_und") ||
+            !alloc(&layer0_trace_up_und, static_cast<size_t>(kMotTextMaxTokens) * kLanguageIntermediate, "layer0_trace_up_und") ||
+            !alloc(&layer0_trace_swiglu_und, static_cast<size_t>(kMotTextMaxTokens) * kLanguageIntermediate, "layer0_trace_swiglu_und") ||
+            !alloc(&layer0_trace_down_und, und_h, "layer0_trace_down_und") ||
+            !alloc(&layer0_trace_vision_gen_norm, vision_trace_h, "layer0_trace_vision_gen_norm") ||
+            !alloc(&layer0_trace_vision_k_gen, vision_trace_kv, "layer0_trace_vision_k_gen") ||
+            !alloc(&layer0_trace_vision_v_gen, vision_trace_kv, "layer0_trace_vision_v_gen") ||
+            !alloc(&layer0_trace_vision_k_gen_norm, vision_trace_kv, "layer0_trace_vision_k_gen_norm") ||
+            !alloc(&layer0_trace_vision_k_gen_rot, vision_trace_kv, "layer0_trace_vision_k_gen_rot") ||
+            !alloc(&layer0_trace_k_gen_rot_full, gen_kv, "layer0_trace_k_gen_rot_full") ||
+            !alloc(&layer0_trace_v_gen_full, gen_kv, "layer0_trace_v_gen_full")) {
+            return false;
+        }
+        for (size_t i = 0; i < kMotLayerTraceLayers.size(); ++i) {
+            if (!alloc(&layer_trace_action_hidden[i], action_steps_h, "layer_trace_action_hidden") ||
+                !alloc(&layer_trace_condition_hidden[i], und_h, "layer_trace_condition_hidden")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void invalidate_condition_cache() {
         cache_condition_tokens = {{0, 0}};
         cache_condition_keys = {{0, 0}};
@@ -6724,10 +7050,6 @@ struct MotGenCudaRuntime {
         if (v_und) cudaFree(v_und);
         if (k_gen) cudaFree(k_gen);
         if (v_gen) cudaFree(v_gen);
-        if (q_gen_norm) cudaFree(q_gen_norm);
-        if (q_und_norm) cudaFree(q_und_norm);
-        if (k_und_norm) cudaFree(k_und_norm);
-        if (k_gen_norm) cudaFree(k_gen_norm);
         if (q_und_rot) cudaFree(q_und_rot);
         if (q_gen_rot) cudaFree(q_gen_rot);
         if (k_und_rot) cudaFree(k_und_rot);
@@ -6743,20 +7065,10 @@ struct MotGenCudaRuntime {
         clear_profile_events();
         if (attn_und) cudaFree(attn_und);
         if (attn_gen) cudaFree(attn_gen);
-        if (o_und) cudaFree(o_und);
-        if (o_gen) cudaFree(o_gen);
-        if (residual_und) cudaFree(residual_und);
-        if (residual_gen) cudaFree(residual_gen);
-        if (post_norm_und) cudaFree(post_norm_und);
-        if (post_norm_gen) cudaFree(post_norm_gen);
         if (gate_und) cudaFree(gate_und);
         if (up_und) cudaFree(up_und);
-        if (swiglu_und) cudaFree(swiglu_und);
-        if (down_und) cudaFree(down_und);
         if (gate) cudaFree(gate);
         if (up) cudaFree(up);
-        if (swiglu) cudaFree(swiglu);
-        if (down) cudaFree(down);
         if (layer0_gen_x) cudaFree(layer0_gen_x);
         if (layer0_trace_gen_norm) cudaFree(layer0_trace_gen_norm);
         if (layer0_trace_q_gen) cudaFree(layer0_trace_q_gen);
@@ -6802,7 +7114,6 @@ struct MotGenCudaRuntime {
         for (float * ptr : layer_trace_condition_hidden) {
             if (ptr) cudaFree(ptr);
         }
-        if (final_norm_gen) cudaFree(final_norm_gen);
         for (float * ptr : cache_k_und_rot) {
             if (ptr) cudaFree(ptr);
         }
@@ -6891,13 +7202,6 @@ struct MotGenCudaRuntime {
         const size_t und_kv = static_cast<size_t>(kMotTextMaxTokens) * kLanguageKv;
         const size_t gen_kv = static_cast<size_t>(kMotFullTokens) * kLanguageKv;
         const size_t all_kv = static_cast<size_t>(kMotMaxPackedTokens) * kLanguageKv;
-        const size_t gen_attention_score_elems =
-            static_cast<size_t>(kMotFullTokens) *
-            static_cast<size_t>(kMotMaxPackedTokens) *
-            static_cast<size_t>(kLanguageQHeads / kLanguageKvHeads);
-        const size_t gen_attention_bf16_workspace_elems =
-            static_cast<size_t>(kMotFullTokens) * kLanguageHidden +
-            static_cast<size_t>(kMotMaxPackedTokens) * kLanguageKv * 2u;
         int dev = 0;
         int sms = 0;
         if (cudaGetDevice(&dev) != cudaSuccess ||
@@ -6913,10 +7217,14 @@ struct MotGenCudaRuntime {
         const size_t layer_und_kv = static_cast<size_t>(kLanguageLayers) * und_kv;
         const size_t gen_inter = static_cast<size_t>(kMotFullTokens) * kLanguageIntermediate;
         const size_t und_inter = static_cast<size_t>(kMotTextMaxTokens) * kLanguageIntermediate;
-        const size_t action_h = static_cast<size_t>(kActionTokens) * kLanguageHidden;
-        const size_t action_steps_h = static_cast<size_t>(kActionSteps) * kLanguageHidden;
-        const size_t vision_trace_h = kMotVisionTraceRows.size() * static_cast<size_t>(kLanguageHidden);
-        const size_t vision_trace_kv = kMotVisionTraceRows.size() * static_cast<size_t>(kLanguageKv);
+        // cuBLAS evaluates the query heads in each GQA group as one batch.
+        const size_t gen_attention_score_elems =
+            static_cast<size_t>(kMotFullTokens) *
+            static_cast<size_t>(kMotMaxPackedTokens) *
+            static_cast<size_t>(kLanguageQHeads / kLanguageKvHeads);
+        const size_t gen_attention_bf16_workspace_elems =
+            static_cast<size_t>(kMotFullTokens) * kLanguageHidden +
+            static_cast<size_t>(kMotMaxPackedTokens) * kLanguageKv * 2u;
         if (!alloc(&und_x, und_h, "und_x") ||
             !alloc(&gen_x, gen_h, "gen_x") ||
             !alloc(&und_norm, und_h, "und_norm") ||
@@ -6927,10 +7235,6 @@ struct MotGenCudaRuntime {
             !alloc(&v_und, und_kv, "v_und") ||
             !alloc(&k_gen, gen_kv, "k_gen") ||
             !alloc(&v_gen, gen_kv, "v_gen") ||
-            !alloc(&q_gen_norm, gen_h, "q_gen_norm") ||
-            !alloc(&q_und_norm, und_h, "q_und_norm") ||
-            !alloc(&k_und_norm, und_kv, "k_und_norm") ||
-            !alloc(&k_gen_norm, gen_kv, "k_gen_norm") ||
             !alloc(&q_und_rot, und_h, "q_und_rot") ||
             !alloc(&q_gen_rot, gen_h, "q_gen_rot") ||
             !alloc(&k_und_rot, und_kv, "k_und_rot") ||
@@ -6947,78 +7251,31 @@ struct MotGenCudaRuntime {
             !alloc_i32(&w8_int_workspace, static_cast<size_t>(sms), "w8_int_workspace") ||
             !alloc(&attn_und, und_h, "attn_und") ||
             !alloc(&attn_gen, gen_h, "attn_gen") ||
-            !alloc(&o_und, und_h, "o_und") ||
-            !alloc(&o_gen, gen_h, "o_gen") ||
-            !alloc(&residual_und, und_h, "residual_und") ||
-            !alloc(&residual_gen, gen_h, "residual_gen") ||
-            !alloc(&post_norm_und, und_h, "post_norm_und") ||
-            !alloc(&post_norm_gen, gen_h, "post_norm_gen") ||
             !alloc(&gate_und, und_inter, "gate_und") ||
             !alloc(&up_und, und_inter, "up_und") ||
-            !alloc(&swiglu_und, und_inter, "swiglu_und") ||
-            !alloc(&down_und, und_h, "down_und") ||
             !alloc(&gate, gen_inter, "gate") ||
             !alloc(&up, gen_inter, "up") ||
-            !alloc(&swiglu, gen_inter, "swiglu") ||
-            !alloc(&down, gen_h, "down") ||
-            !alloc(&layer0_gen_x, gen_h, "layer0_gen_x") ||
-            !alloc(&layer0_trace_gen_norm, action_h, "layer0_trace_gen_norm") ||
-            !alloc(&layer0_trace_q_gen, action_h, "layer0_trace_q_gen") ||
-            !alloc(&layer0_trace_k_gen, static_cast<size_t>(kActionTokens) * kLanguageKv, "layer0_trace_k_gen") ||
-            !alloc(&layer0_trace_v_gen, static_cast<size_t>(kActionTokens) * kLanguageKv, "layer0_trace_v_gen") ||
-            !alloc(&layer0_trace_q_gen_norm, action_h, "layer0_trace_q_gen_norm") ||
-            !alloc(&layer0_trace_k_gen_norm, static_cast<size_t>(kActionTokens) * kLanguageKv, "layer0_trace_k_gen_norm") ||
-            !alloc(&layer0_trace_q_gen_rot, action_h, "layer0_trace_q_gen_rot") ||
-            !alloc(&layer0_trace_k_gen_rot, static_cast<size_t>(kActionTokens) * kLanguageKv, "layer0_trace_k_gen_rot") ||
-            !alloc(&layer0_trace_attn_gen, action_h, "layer0_trace_attn_gen") ||
-            !alloc(&layer0_trace_o_gen, action_h, "layer0_trace_o_gen") ||
-            !alloc(&layer0_trace_post_norm_gen, action_h, "layer0_trace_post_norm_gen") ||
-            !alloc(&layer0_trace_gate, static_cast<size_t>(kActionSteps) * kLanguageIntermediate, "layer0_trace_gate") ||
-            !alloc(&layer0_trace_up, static_cast<size_t>(kActionSteps) * kLanguageIntermediate, "layer0_trace_up") ||
-            !alloc(&layer0_trace_swiglu, static_cast<size_t>(kActionSteps) * kLanguageIntermediate, "layer0_trace_swiglu") ||
-            !alloc(&layer0_trace_down, action_h, "layer0_trace_down") ||
-            !alloc(&layer0_trace_und_norm, und_h, "layer0_trace_und_norm") ||
-            !alloc(&layer0_trace_q_und, und_h, "layer0_trace_q_und") ||
-            !alloc(&layer0_trace_k_und, und_kv, "layer0_trace_k_und") ||
-            !alloc(&layer0_trace_v_und, und_kv, "layer0_trace_v_und") ||
-            !alloc(&layer0_trace_q_und_norm, und_h, "layer0_trace_q_und_norm") ||
-            !alloc(&layer0_trace_k_und_norm, und_kv, "layer0_trace_k_und_norm") ||
-            !alloc(&layer0_trace_q_und_rot, und_h, "layer0_trace_q_und_rot") ||
-            !alloc(&layer0_trace_k_und_rot, und_kv, "layer0_trace_k_und_rot") ||
-            !alloc(&layer0_trace_attn_und, und_h, "layer0_trace_attn_und") ||
-            !alloc(&layer0_trace_o_und, und_h, "layer0_trace_o_und") ||
-            !alloc(&layer0_trace_residual_und, und_h, "layer0_trace_residual_und") ||
-            !alloc(&layer0_trace_post_norm_und, und_h, "layer0_trace_post_norm_und") ||
-            !alloc(&layer0_trace_gate_und, und_inter, "layer0_trace_gate_und") ||
-            !alloc(&layer0_trace_up_und, und_inter, "layer0_trace_up_und") ||
-            !alloc(&layer0_trace_swiglu_und, und_inter, "layer0_trace_swiglu_und") ||
-            !alloc(&layer0_trace_down_und, und_h, "layer0_trace_down_und") ||
-            !alloc(&layer0_trace_vision_gen_norm, vision_trace_h, "layer0_trace_vision_gen_norm") ||
-            !alloc(&layer0_trace_vision_k_gen, vision_trace_kv, "layer0_trace_vision_k_gen") ||
-            !alloc(&layer0_trace_vision_v_gen, vision_trace_kv, "layer0_trace_vision_v_gen") ||
-            !alloc(&layer0_trace_vision_k_gen_norm, vision_trace_kv, "layer0_trace_vision_k_gen_norm") ||
-            !alloc(&layer0_trace_vision_k_gen_rot, vision_trace_kv, "layer0_trace_vision_k_gen_rot") ||
-            !alloc(&layer0_trace_k_gen_rot_full, gen_kv, "layer0_trace_k_gen_rot_full") ||
-            !alloc(&layer0_trace_v_gen_full, gen_kv, "layer0_trace_v_gen_full") ||
-            !alloc(&final_norm_gen, gen_h, "final_norm_gen") ||
             !alloc(&cache_k_und_rot[0], layer_und_kv, "cache_k_und_rot_cond") ||
             !alloc(&cache_v_und[0], layer_und_kv, "cache_v_und_cond") ||
             !alloc(&cache_k_und_rot[1], layer_und_kv, "cache_k_und_rot_uncond") ||
             !alloc(&cache_v_und[1], layer_und_kv, "cache_v_und_uncond")) {
             return false;
         }
-        for (size_t i = 0; i < kMotLayerTraceLayers.size(); ++i) {
-            if (!alloc(&layer_trace_action_hidden[i],
-                       action_steps_h,
-                       "layer_trace_action_hidden")) {
-                return false;
-            }
-            if (!alloc(&layer_trace_condition_hidden[i],
-                       und_h,
-                       "layer_trace_condition_hidden")) {
-                return false;
-            }
-        }
+        q_gen_norm = q_gen;
+        q_und_norm = q_und;
+        k_und_norm = k_und;
+        k_gen_norm = k_gen;
+        o_und = q_und;
+        o_gen = q_gen;
+        residual_und = und_x;
+        residual_gen = gen_x;
+        post_norm_und = und_norm;
+        post_norm_gen = gen_norm;
+        swiglu_und = gate_und;
+        down_und = q_und;
+        swiglu = gate;
+        down = q_gen;
+        final_norm_gen = gen_norm;
         return true;
     }
 
@@ -7337,6 +7594,7 @@ struct MotGenCudaRuntime {
             *error = "Cosmos3 MoT condition cache received invalid input";
             return false;
         }
+        if (!ensure_trace_workspace(error)) return false;
         if (cache_valid[static_cast<size_t>(slot)] &&
             cache_condition_tokens[static_cast<size_t>(slot)] == condition_tokens &&
             cache_condition_keys[static_cast<size_t>(slot)] == condition_key) {
@@ -7451,6 +7709,7 @@ struct MotGenCudaRuntime {
             *error = "Cosmos3 MoT gen forward received invalid full token count";
             return false;
         }
+        if (!ensure_trace_workspace(error)) return false;
         const float * condition_x = packed_hidden;
         const float * action_x = packed_hidden + static_cast<size_t>(condition_tokens) * kLanguageHidden;
         if (cudaMemcpyAsync(und_x,
@@ -7741,6 +8000,7 @@ struct MotGenCudaRuntime {
             *error = "Cosmos3 MoT gen cached forward called without a valid condition cache";
             return false;
         }
+        if (!ensure_trace_workspace(error)) return false;
         const float * action_x = packed_hidden + static_cast<size_t>(condition_tokens) * kLanguageHidden;
         if (cudaMemcpyAsync(gen_x,
                             action_x,
@@ -8461,6 +8721,29 @@ struct Cosmos3ModelArch : public ModelArchBase {
 
     bool supports_wam() const override { return true; }
 
+#ifdef VLA_COSMOS3_CUDA_KERNELS
+    bool ensure_mot_gen_initialized(std::string * error) {
+        if (mot_gen_initialized_) return true;
+        if (!mot_gen_cuda_) {
+            *error = "Cosmos3 direct MoT gen CUDA runtime is not available";
+            return false;
+        }
+        if (!mot_gen_cuda_->init(*weights_, error)) return false;
+        mot_gen_initialized_ = true;
+        return true;
+    }
+#endif
+
+    std::string reset_wam(uint64_t) override {
+#ifdef VLA_COSMOS3_CUDA_KERNELS
+        if (wan_vae_cuda_) {
+            std::string error;
+            if (!wan_vae_cuda_->release_transient_memory(nullptr, &error)) return error;
+        }
+#endif
+        return {};
+    }
+
     WamOutput predict_wam(const WamInputs & inputs) override {
         using clock = std::chrono::steady_clock;
         const auto t0 = clock::now();
@@ -8526,6 +8809,13 @@ struct Cosmos3ModelArch : public ModelArchBase {
             wam_param_bool(inputs, "cosmos3.debug_vae_final_conv1", false);
         const bool wan_vae_clean_condition_debug =
             wam_param_bool(inputs, "cosmos3.debug_vae_clean_condition", false);
+        const bool wan_vae_keep_intermediates =
+            wan_vae_patch_debug || wan_vae_conv1_debug ||
+            wan_vae_down0_shortcut_debug || wan_vae_down0_debug ||
+            wan_vae_down1_debug || wan_vae_down2_debug || wan_vae_down3_debug ||
+            wan_vae_mid0_debug || wan_vae_mid_attn_debug || wan_vae_mid2_debug ||
+            wan_vae_head_debug || wan_vae_final_conv1_debug ||
+            wan_vae_clean_condition_debug;
         const int wan_vae_patch_debug_rows =
             std::max(1, std::min(wam_param_int(inputs, "cosmos3.debug_vae_patch_input_rows", 16),
                                  COSMOS3_WAN_VAE_PATCH_W *
@@ -8649,17 +8939,9 @@ struct Cosmos3ModelArch : public ModelArchBase {
         const int action_domain_id = wam_param_int(inputs, "cosmos3.action_domain_id", kActionDefaultDomainId);
         const bool invert_gripper = wam_param_bool(inputs, "cosmos3.invert_gripper", true);
         const bool enable_mot_condition_cache =
-            wam_param_bool(inputs, "cosmos3.enable_mot_condition_cache", false);
-        if (mot_gen_cuda_) {
-            mot_gen_cuda_->set_internal_trace_layer(mot_internal_trace_layer);
-            mot_gen_cuda_->set_trace_enabled(first_action_step_debug || mot_gen_debug,
-                                             first_action_step_debug);
-            if (first_action_step_debug || mot_gen_debug) {
-                mot_gen_cuda_->invalidate_condition_cache();
-            }
-            mot_gen_cuda_->set_timing(denoise_timing);
-            mot_gen_cuda_->set_profile(denoise_profile);
-        }
+            wam_param_bool(inputs, "cosmos3.enable_mot_condition_cache", true);
+        const bool release_vae_after_request =
+            wam_param_bool(inputs, "cosmos3.release_vae_after_request", true);
         bool visual_executed = false;
         bool language_executed = false;
         if (!visual_cuda_) {
@@ -8691,6 +8973,11 @@ struct Cosmos3ModelArch : public ModelArchBase {
                                                  visual_tokens_debug ? 1 : 0,
                                                  visual_tokens_debug_rows,
                                                  visual_tokens_debug_cols);
+            wan_vae_cuda_->set_keep_intermediates(wan_vae_keep_intermediates);
+            wan_vae_cuda_->set_active_frames(wan_vae_keep_intermediates ?
+                                             COSMOS3_WAN_VAE_FRAMES : 1);
+            wan_vae_cuda_->set_release_stage_buffers(release_vae_after_request &&
+                                                     !wan_vae_keep_intermediates);
             const auto t_vision0 = clock::now();
             const int rc = cosmos3_visual_cuda_forward_robolab_image(
                 visual_cuda_.get(),
@@ -8704,6 +8991,10 @@ struct Cosmos3ModelArch : public ModelArchBase {
                         cudaGetErrorString(status);
             } else {
                 visual_executed = true;
+                // Python releases the visual encoder's temporary activations
+                // before VAE encoding returns. Keep only tokens/deepstack
+                // outputs that the language tower consumes below.
+                cosmos3_visual_cuda_release_transient(visual_cuda_.get());
                 stats.ms_vision = std::chrono::duration<float, std::milli>(clock::now() - t_vision0).count();
                 wan_vae_cuda_->set_timing(language_trace.timing);
                 float timing_wan_vae_ms = 0.0f;
@@ -8955,6 +9246,8 @@ struct Cosmos3ModelArch : public ModelArchBase {
 	                        }
 	                    }
 	                    language_executed = true;
+                        // MoT consumes language/VAE outputs, not visual tower outputs.
+                        cosmos3_visual_cuda_release_outputs(visual_cuda_.get());
 	                    const auto t_mot_setup0 = clock::now();
 	                    float timing_prefill_clean_ptr_ms = 0.0f;
 	                    float timing_prefill_reset_latents_ms = 0.0f;
@@ -8996,7 +9289,29 @@ struct Cosmos3ModelArch : public ModelArchBase {
                                                             kRobolabMotUncondTextIds.size(),
                                                             debug_mot_text_hidden_uncond,
                                                             true);
-                        if (!mot_gen_cuda_->configure_position_tables(condition_tokens,
+                        cudaError_t language_release_status =
+                            cudaStreamSynchronize(language_cuda_->cuda_stream());
+                        if (language_release_status != cudaSuccess) {
+                            error = std::string("Cosmos3 language workspace release sync failed: ") +
+                                    cudaGetErrorString(language_release_status);
+                        } else {
+                            language_cuda_->release_forward_workspace();
+                        }
+                        if (error.empty() && !ensure_mot_gen_initialized(&error)) {
+                            if (error.empty()) error = "Cosmos3 MoT gen CUDA runtime lazy init failed";
+                        }
+                        if (error.empty()) {
+                            mot_gen_cuda_->set_internal_trace_layer(mot_internal_trace_layer);
+                            mot_gen_cuda_->set_trace_enabled(first_action_step_debug || mot_gen_debug,
+                                                             first_action_step_debug);
+                            if (first_action_step_debug || mot_gen_debug) {
+                                mot_gen_cuda_->invalidate_condition_cache();
+                            }
+                            mot_gen_cuda_->set_timing(denoise_timing);
+                            mot_gen_cuda_->set_profile(denoise_profile);
+                        }
+                        if (error.empty() &&
+                            !mot_gen_cuda_->configure_position_tables(condition_tokens,
                                                                       uncond_condition_tokens,
                                                                       language_cuda_->cuda_stream(),
                                                                       &error)) {
@@ -9074,11 +9389,17 @@ struct Cosmos3ModelArch : public ModelArchBase {
 	                                                cudaGetErrorString(reset_status);
 	                                        return false;
 	                                    }
-	                                }
-	                                return ok;
-	                            }()) {
-	                            if (error.empty()) error = "Cosmos3 MoT action latent initialization failed";
-	                        }
+                                }
+                                return ok;
+                            }()) {
+                            if (error.empty()) error = "Cosmos3 MoT action latent initialization failed";
+                        } else if (error.empty() &&
+                                   !wan_vae_cuda_->finish_condition_copy(
+                                       language_cuda_->cuda_stream(),
+                                       release_vae_after_request,
+                                       &error)) {
+                            if (error.empty()) error = "Cosmos3 Wan VAE transient release failed";
+                        }
                         if (error.empty() && single_step_debug) {
                             if (!mot_action_cuda_->forward_current_latents(condition_hidden,
                                                                           condition_tokens,
@@ -9614,6 +9935,16 @@ struct Cosmos3ModelArch : public ModelArchBase {
 #endif
         }
 
+#ifdef VLA_COSMOS3_CUDA_KERNELS
+        if (release_vae_after_request) {
+            language_cuda_->release_forward_workspace();
+            if (mot_gen_initialized_) {
+                mot_gen_cuda_->release();
+                mot_gen_initialized_ = false;
+            }
+        }
+#endif
+
         const auto t1 = clock::now();
         stats.ms_total = std::chrono::duration<float, std::milli>(t1 - t0).count();
         stats.ms_inference = stats.ms_prefill + stats.ms_denoise;
@@ -9668,6 +9999,7 @@ struct Cosmos3ModelArch : public ModelArchBase {
         }
     };
     std::unique_ptr<MotGenCudaRuntime, MotGenCudaDeleter> mot_gen_cuda_;
+    bool mot_gen_initialized_ = false;
     struct WanVaeCudaDeleter {
         void operator()(WanVaeCudaRuntime * ctx) const {
             delete ctx;
@@ -9777,17 +10109,6 @@ std::unique_ptr<ModelArchBase> cosmos3_create(const std::string & mmproj_path,
         return nullptr;
     }
     mot_gen_cuda = new MotGenCudaRuntime();
-    std::string mot_gen_bind_error;
-    if (!mot_gen_cuda->init(*weights, &mot_gen_bind_error)) {
-        std::fprintf(stderr, "vla(cosmos3): MoT gen CUDA runtime init failed: %s\n",
-                     mot_gen_bind_error.c_str());
-        delete mot_gen_cuda;
-        delete mot_action_cuda;
-        delete action_bridge_cuda;
-        delete language_cuda;
-        cosmos3_visual_cuda_free(visual_cuda);
-        return nullptr;
-    }
     wan_vae_cuda = new WanVaeCudaRuntime();
     std::string wan_vae_bind_error;
     if (!wan_vae_cuda->init(*weights, vae_encoder_weights, &wan_vae_bind_error)) {

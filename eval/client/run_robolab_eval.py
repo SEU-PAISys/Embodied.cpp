@@ -402,6 +402,9 @@ class NativeCosmos3Client:
                 "cosmos3.enable_mot_condition_cache": str(
                     bool(self.policy_cfg.get("enable_mot_condition_cache", True))
                 ).lower(),
+                "cosmos3.release_vae_after_request": str(
+                    bool(self.policy_cfg.get("release_vae_after_request", True))
+                ).lower(),
                 "cosmos3.invert_gripper": str(bool(self.policy_cfg.get("invert_gripper", True))).lower(),
                 "cosmos3.debug_layer0_trace": str(bool(self.policy_cfg.get("debug_layer0_trace", False))).lower(),
                 "cosmos3.debug_qwen_input_splice": str(
@@ -676,6 +679,10 @@ class NativeCosmos3Client:
         if env_id is None:
             self._chunks.clear()
             self._counters.clear()
+            req = self.wam_pb2.WamRequest()
+            req.request_id = self._next_request_id()
+            req.reset.session_id = self._session_id
+            self._query_server(req.SerializeToString())
             self._session_id = int(time.time() * 1000) & 0xFFFFFFFF
         else:
             self._chunks.pop(env_id, None)
