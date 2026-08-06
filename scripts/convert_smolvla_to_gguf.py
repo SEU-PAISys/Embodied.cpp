@@ -106,6 +106,19 @@ def _stream_block(writer: gguf.GGUFWriter, sf, src_pfx: str, dst_pfx: str,
             _add_one_tensor(writer, f"{dst_pfx}.blk.{i}.{dst_suf}", t)
 
 
+def _validate_layer_counts(n_vlm: int, n_aex: int) -> None:
+    if n_vlm <= 0:
+        raise SystemExit("cannot find text_model layers")
+    if n_aex <= 0:
+        raise SystemExit("cannot find lm_expert layers")
+    if n_vlm != n_aex:
+        raise SystemExit(
+            f"unsupported layer topology: VLM has {n_vlm} layers but "
+            f"action expert has {n_aex}; the runtime requires a one-to-one "
+            "prefix KV mapping"
+        )
+
+
 def _load_stats(ckpt: Path, real_state_dim: int, real_action_dim: int):
     out = {}
     norm_sf = ckpt / "policy_preprocessor_step_5_normalizer_processor.safetensors"
@@ -254,8 +267,7 @@ def main() -> int:
         return m + 1
     n_vlm = _maxlayer(f"{PFX_VLM_TXT}.layers.")
     n_aex = _maxlayer(f"{PFX_AEX}.layers.")
-    if n_vlm <= 0: raise SystemExit("cannot find text_model layers")
-    if n_aex <= 0: raise SystemExit("cannot find lm_expert layers")
+    _validate_layer_counts(n_vlm, n_aex)
     cfg["n_layers"]        = n_vlm
     cfg["expert_n_layers"] = n_aex
 

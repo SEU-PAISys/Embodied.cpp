@@ -20,6 +20,7 @@ from typing import Any
 SUITES = ("libero_spatial", "libero_object", "libero_goal", "libero_10")
 TASK_IDS = list(range(10))
 DEFAULT_EPISODES = 10
+OFFICIAL_METADATA_VERSION = 1
 PUBLISHED_SMOLVLA = {
     "libero_spatial": 0.90,
     "libero_object": 0.96,
@@ -99,14 +100,59 @@ def run_cpp(args: argparse.Namespace) -> None:
             _run(command)
 
 
-def _official_task_complete(path: Path, episodes: int) -> bool:
+def _official_metadata(
+    suite: str,
+    task_id: int,
+    episodes: int,
+    seed: int,
+    policy: Path | str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": OFFICIAL_METADATA_VERSION,
+        "engine": "official",
+        "suite": suite,
+        "task_id": task_id,
+        "episodes": episodes,
+        "seed": seed,
+        "n_action_steps": 1,
+        "num_steps": 10,
+        "policy": str(policy),
+    }
+
+
+def _official_task_complete(
+    path: Path,
+    episodes: int,
+    suite: str | None = None,
+    task_id: int | None = None,
+    seed: int | None = None,
+    policy: Path | str | None = None,
+) -> bool:
     if not path.exists():
         return False
     try:
-        values = _official_successes(json.loads(path.read_text(encoding="utf-8")))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        values = _official_successes(payload)
+        metadata = json.loads(
+            (path.parent / "run_metadata.json").read_text(encoding="utf-8")
+        )
     except (OSError, json.JSONDecodeError):
         return False
-    return len(values) == episodes
+    expected = {
+        "schema_version": OFFICIAL_METADATA_VERSION,
+        "engine": "official",
+        "episodes": episodes,
+    }
+    if suite is not None:
+        expected["suite"] = suite
+    if task_id is not None:
+        expected["task_id"] = task_id
+    if seed is not None:
+        expected["seed"] = seed
+    if policy is not None:
+        expected["policy"] = str(policy)
+    expected.update({"n_action_steps": 1, "num_steps": 10})
+    return len(values) == episodes and all(metadata.get(k) == v for k, v in expected.items())
 
 
 def run_official(args: argparse.Namespace) -> None:
@@ -135,7 +181,9 @@ def run_official(args: argparse.Namespace) -> None:
         for task_id in args.task_ids:
             output = args.official_output / suite / f"task_{task_id}"
             result_path = output / "eval_info.json"
-            if not args.force and _official_task_complete(result_path, args.episodes):
+            if not args.force and _official_task_complete(
+                result_path, args.episodes, suite, task_id, args.seed, args.policy
+            ):
                 print(f"skip complete official task: {suite}/task_{task_id}")
                 continue
             command = [
@@ -147,6 +195,13 @@ def run_official(args: argparse.Namespace) -> None:
                 "--policy.num_steps=10", f"--seed={args.seed}",
             ]
             _run(command, env)
+            (output / "run_metadata.json").write_text(
+                json.dumps(
+                    _official_metadata(suite, task_id, args.episodes, args.seed, args.policy),
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
 
 
 def _official_successes(value: Any) -> list[bool]:
@@ -184,17 +239,17 @@ def collect(args: argparse.Namespace) -> dict[str, Any]:
             for task_id in args.task_ids
         ]
         existing_task_paths = [path for path in task_paths if path.exists()]
-        if existing_task_paths:
-            for path in existing_task_paths:
+        valid_task_paths = [
+            path for path in existing_task_paths
+            if _official_task_complete(
+                path, args.episodes, suite, int(path.parent.name.split("_")[-1]),
+                args.seed, getattr(args, "policy", None)
+            )
+        ]
+        if valid_task_paths:
+            for path in valid_task_paths:
                 official_values.extend(
                     _official_successes(json.loads(path.read_text(encoding="utf-8")))
-                )
-        else:
-            # Backward compatibility with an older suite-level run.
-            legacy_path = args.official_output / suite / "eval_info.json"
-            if legacy_path.exists():
-                official_values = _official_successes(
-                    json.loads(legacy_path.read_text(encoding="utf-8"))
                 )
         official_n = len(official_values)
         official_s = sum(official_values)

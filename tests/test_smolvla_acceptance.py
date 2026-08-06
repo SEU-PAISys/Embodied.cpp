@@ -44,8 +44,19 @@ class AcceptanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "eval_info.json"
             path.write_text(json.dumps(payload))
-            self.assertTrue(acceptance._official_task_complete(path, 3))
-            self.assertFalse(acceptance._official_task_complete(path, 10))
+            self.assertFalse(acceptance._official_task_complete(path, 3))
+            (path.parent / "run_metadata.json").write_text(json.dumps(
+                acceptance._official_metadata("libero_spatial", 0, 3, 1000, "policy")
+            ))
+            self.assertTrue(acceptance._official_task_complete(
+                path, 3, "libero_spatial", 0, 1000, "policy"
+            ))
+            self.assertFalse(acceptance._official_task_complete(
+                path, 10, "libero_spatial", 0, 1000, "policy"
+            ))
+            self.assertFalse(acceptance._official_task_complete(
+                path, 3, "libero_object", 0, 1000, "policy"
+            ))
 
     def test_minimal_report_never_claims_full_acceptance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -61,9 +72,12 @@ class AcceptanceTests(unittest.TestCase):
                 official_result = official / suite / "task_0" / "eval_info.json"
                 official_result.parent.mkdir(parents=True)
                 official_result.write_text(json.dumps({"successes": [True, True, False]}))
+                (official_result.parent / "run_metadata.json").write_text(json.dumps(
+                    acceptance._official_metadata(suite, 0, 3, 1000, "policy")
+                ))
             args = argparse.Namespace(
                 cpp_output=cpp, official_output=official, task_ids=[0], episodes=3,
-                seed=1000, noise_seed=1000, tolerance=0.05,
+                seed=1000, noise_seed=1000, tolerance=0.05, policy=Path("policy"),
             )
             report = acceptance.collect(args)
             self.assertTrue(report["criteria"]["selected_protocol_complete"])

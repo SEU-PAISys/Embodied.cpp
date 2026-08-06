@@ -78,7 +78,7 @@ PYTHONPATH=third_party/llama.cpp/gguf-py \
   python -m unittest discover -s tests -v
 ```
 
-Clean builds are checked in three independent build directories:
+Previously validated clean builds covered three independent build directories:
 
 1. CPU-only SmolVLA server.
 2. CUDA SmolVLA server for compute capability 8.9.
@@ -87,6 +87,11 @@ Clean builds are checked in three independent build directories:
 
 The only compiler warning observed is the pre-existing deprecated ZeroMQ
 `setsockopt` call in `serving/server.cpp`.
+
+The current follow-up verification rebuilt the CPU-only SmolVLA `vla-server`
+target and reran the Python regression suite after the metadata and layer-count
+guards were added. CUDA and all-model build figures above are retained from the
+earlier WSL2 validation run.
 
 ## Numerical parity
 
@@ -136,24 +141,26 @@ passes: maximum absolute error 0.032254, mean absolute error 0.002023, RMSE
 change from the earlier parity numbers is expected from the CUDA matrix
 multiplication reduction order.
 
-## C++ vs official PyTorch performance
+## C++ vs official PyTorch wall-clock sample
 
 The following quick comparison was recorded on the environment above with the
 same SmolVLA checkpoint, relative control, `n_action_steps=1`, and ten
 flow-matching steps. Each implementation ran the same ten-episode, cross-task
-LIBERO sample. The timing is a runtime-level wall-clock measurement, not a
-CUDA-kernel microbenchmark.
+LIBERO sample. The two runners expose different timing scopes: C++ records the
+client `get_action()`/RPC wall time, while the official evaluator exposes total
+episode wall time. The values below are therefore an observed end-to-end
+per-step ratio, not an apples-to-apples model-kernel benchmark.
 
-| Metric | Embodied.cpp C++ | Official PyTorch | C++ vs PyTorch |
+| Metric | Embodied.cpp C++ | Official PyTorch | Observed ratio |
 |---|---:|---:|---:|
-| Weighted mean policy time | **251.43 ms/step** | 609.07 ms/step | **2.42x faster** |
+| Weighted mean measured wall time | **251.43 ms/get_action step** | 609.07 ms/evaluator step | **2.42x lower C++ value** |
 | Peak process GPU memory (`nvidia-smi`) | **1117 MiB** | 1385 MiB | **268 MiB less (19.4%)** |
 
 The official evaluator reports elapsed time per episode, so its values were
 divided by the number of executed environment steps before aggregation. The
 reported mean is weighted by executed steps rather than averaging episode
-durations. This keeps the unit comparable with the C++ client, which reports
-per-step latency directly.
+durations. This makes the units readable side by side, but does not remove the
+different simulator/RPC overheads.
 
 For an additional PyTorch allocator view, the recorded process reached
 1185.17 MiB allocated and 1200.00 MiB reserved after load, and 1226.43 MiB
@@ -162,4 +169,8 @@ The 1385 MiB comparison value is the process usage reported by `nvidia-smi`,
 which includes the CUDA context and allocator/cache overhead. The C++ value is
 measured with the same `nvidia-smi` process-usage definition. These are quick
 cross-task measurements and should not be read as a full-suite throughput
-claim.
+claim. The C++ task JSON files used for the recorded sample are retained locally
+under `outputs/smolvla_perf_graph/smolvla/`; the official task JSON files are
+under `outputs/smolvla_acceptance/official/`. These paths are Git-ignored and
+are listed for provenance only; the generated videos, logs, checkpoints, and
+allocator traces are intentionally not committed.

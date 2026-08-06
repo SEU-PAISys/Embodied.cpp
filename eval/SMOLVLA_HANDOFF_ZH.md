@@ -127,22 +127,27 @@ NaN/Inf=false
 
 固定参考位于 `/root/smolvla_parity/inputs.npz` 和 `/root/smolvla_parity/python_action.npy`。12/12 Python 回归测试通过；优化后 CPU 和 CUDA SmolVLA target 均构建通过。
 
-### C++ 与官方 PyTorch 快速性能对比
+### C++ 与官方 PyTorch wall-clock 快速对比
 
 同一 RTX 4060 Laptop（8 GiB，`nvidia-smi` 总显存 8188 MiB）上，使用相同
 checkpoint、relative control、`n_action_steps=1`、10 flow steps，运行跨不同
-LIBERO task 的 10-episode 快速样本：
+LIBERO task 的 10-episode 快速样本。计时范围不同：C++ 是客户端
+`get_action()`/RPC wall time，PyTorch 是官方 evaluator 的 episode 总 wall time，
+所以这里记录的是逐 step 观测比值，不是纯模型推理 kernel 的严格 A/B：
 
-| 指标 | C++ | 官方 PyTorch | 对比 |
+| 指标 | C++ | 官方 PyTorch | 观测比值 |
 |---|---:|---:|---:|
-| 加权平均策略耗时 | **251.43 ms/step** | 609.07 ms/step | **2.42x** |
+| 加权平均测得 wall time | **251.43 ms/get_action step** | 609.07 ms/evaluator step | **C++ 数值低 2.42 倍** |
 | 进程峰值显存（`nvidia-smi`） | **1117 MiB** | 1385 MiB | **少 268 MiB（19.4%）** |
 
 PyTorch 原始记录是每 episode 的耗时；这里用每个 episode 实际执行的 steps
-换算成 `ms/step`，再按 steps 加权平均，避免不同 episode 长度造成偏差。PyTorch
+换算成 `ms/step`，再按 steps 加权平均，避免不同 episode 长度造成偏差，但没有
+消除 simulator/RPC 开销差异。PyTorch
 allocator 的补充峰值为 1226.43 MiB allocated、1264.00 MiB reserved；表格统一
 采用 `nvidia-smi` 进程显存口径。该数据是快速跨任务运行时对比，不是完整仿真或
-CUDA kernel 微基准。
+CUDA kernel 微基准。C++ 原始 task JSON 位于本地
+`outputs/smolvla_perf_graph/smolvla/`，官方结果位于
+`outputs/smolvla_acceptance/official/`；这些生成物不提交 PR。
 
 测试命令：
 
@@ -195,7 +200,7 @@ runner 按 task 检查完整性；不加 `--force` 会跳过已完成的 10-epis
 
 1. 重新增量构建 CUDA target，使日志文字与源码一致。
 2. 检查并提交本交接文档，若需要则推送到 PR #6。
-3. 更新 PR 描述中的完整 C++ 结果为 279/400、291.52 ms/step，并注明官方列是历史基线；同时引用上面的 251.43 vs 609.07 ms/step、1117 vs 1385 MiB 快速性能对比。
+3. 更新 PR 描述中的完整 C++ 结果为 279/400、291.52 ms/step，并注明官方列是历史基线；性能表须保留 C++ `get_action()` 与官方 evaluator episode wall-time 的口径差异说明。
 4. 做最终 code review，重点检查 graph 生命周期、显存和异常路径。
 5. 若继续优化，优先评估固定形状 compute context、graph 和 gallocr 缓存；每次修改必须跑 parity 和少量同 seed task。
 6. 老师确认后再把 Draft PR 转为 Ready for review。

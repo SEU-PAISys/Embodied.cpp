@@ -879,6 +879,16 @@ std::unique_ptr<ModelArchBase> smolvla_create(const std::string & mmproj_path,
         std::fprintf(stderr, "vla(smolvla): invalid or inconsistent GGUF dimensions/metadata\n");
         return nullptr;
     }
+    // The action expert indexes the VLM prefix KV cache by layer.  The graph
+    // therefore requires a one-to-one layer mapping; accepting mismatched
+    // metadata would make predict() index cK/cV out of bounds.
+    if (c.n_layers != m->expert_n_layers) {
+        std::fprintf(stderr,
+                     "vla(smolvla): VLM layer count (%lld) must equal action-expert "
+                     "layer count (%lld) for prefix KV mapping\n",
+                     (long long) c.n_layers, (long long) m->expert_n_layers);
+        return nullptr;
+    }
     if (m->state_norm_mode != "MEAN_STD" || m->action_norm_mode != "MEAN_STD") {
         std::fprintf(stderr,
                      "vla(smolvla): unsupported normalization modes state=%s action=%s\n",

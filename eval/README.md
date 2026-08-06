@@ -96,9 +96,12 @@ eval/sim/libero/libero_uv/.venv/bin/python \
 ```
 
 The runner skips tasks that already have complete result files, so interruption
-only causes the currently incomplete task to be replayed. Resume validation
-also checks the model, suite, task, environment seed, action-noise seed, and
-action replay horizon, so results from a different protocol are not mixed.
+only causes the currently incomplete task to be replayed. C++ resume validation
+checks the architecture, suite, task, environment seed, action-noise seed, and action
+replay horizon. Official results additionally carry a sidecar `run_metadata.json`
+with the suite, task, episode count, seed, policy path, action horizon, and flow
+step count; stale or metadata-less official results are rerun and excluded from
+aggregation, so results from a different protocol are not mixed.
 Regenerate the comparison without launching rollouts with `--run none`. It writes
 `outputs/smolvla_acceptance/report.json` and a Markdown table beside it. A suite
 passes the parity guard when its C++ success rate is no more than five percentage

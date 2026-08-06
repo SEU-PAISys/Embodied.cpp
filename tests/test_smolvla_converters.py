@@ -38,6 +38,13 @@ class FakeWriter:
 
 
 class ConverterTests(unittest.TestCase):
+    def test_policy_rejects_mismatched_vlm_and_expert_layers(self) -> None:
+        with self.assertRaises(SystemExit):
+            policy._validate_layer_counts(32, 31)
+
+    def test_policy_accepts_matching_vlm_and_expert_layers(self) -> None:
+        policy._validate_layer_counts(32, 32)
+
     def test_policy_tensor_preserves_f32(self) -> None:
         writer = FakeWriter()
         tensor = torch.tensor([[1.25, -2.5]], dtype=torch.float32)
