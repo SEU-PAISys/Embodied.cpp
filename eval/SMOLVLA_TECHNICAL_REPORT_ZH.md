@@ -1,8 +1,8 @@
 # Embodied.cpp SmolVLA 移植与 LIBERO 验证报告
 
-> 报告日期：2026-08-04  
-> 实现分支：`feat/smolvla-libero`  
-> 对比基线：`main` / `2fb77dd`  
+> 报告日期：2026-08-04
+> 实现分支：`smolvla-dev-rebase`
+> 对比基线：`origin/dev` / `490913d`
 > 内容范围：模型架构、权重转换、C++ 推理、服务接入、LIBERO 评测、数值一致性、构建与测试
 
 ## 一、项目概述
@@ -11,7 +11,7 @@
 
 - SmolVLA policy 与视觉塔的 GGUF 转换器；
 - SigLIP、SmolLM2 和 flow-matching action expert 的 C++ 推理路径；
-- 可独立构建和启动的 `vla-smolvla-server`；
+- 可通过统一 `vla-server` 构建和启动；
 - LIBERO 四套件、多 episode、断点恢复与确定性 seed 支持；
 - C++ 与官方 LeRobot evaluator 的同协议比较；
 - 固定输入数值 parity、自动化测试和 CPU/CUDA 构建验证。
@@ -86,7 +86,7 @@
 
 运行时的实际分发链为：
 
-`smolvla.architecture` → `Arch::SMOLVLA` → `smolvla_create()` → `vla-smolvla-server`
+`smolvla.architecture` → `Arch::SMOLVLA` → `smolvla_create()` → 统一 `vla-server`
 
 如果构建时未启用 `MODEL_BUILD_VLA_SMOLVLA`，程序会明确报错并要求重新配置。`smolvla_create()` 还会再次检查 `smolvla.architecture == "smolvla"`；错误或缺失元数据会导致加载失败。
 
@@ -147,7 +147,7 @@ SmolVLA 运行时沿用项目模型适配器的组织形式，但算法路径和
 | vision/mmproj 转换 | `scripts/convert_smolvla_mmproj_to_gguf.py` | 已完成 |
 | 架构识别 | `runtime/arch.h`、`runtime/model.cpp` | 已完成 |
 | C++ 推理 | `models/smolvla.cpp` | 已完成 |
-| 独立服务目标 | `vla-smolvla-server` | 已完成 |
+| 统一服务目标 | `vla-server` | 已完成 |
 | 请求预处理 | tokenizer、双图像、state、mask、noise | 已完成 |
 | LIBERO 适配 | relative control、action replay | 已完成 |
 | 多 episode/多 suite 调度 | `run_smolvla_acceptance.py` | 已完成 |
@@ -227,7 +227,7 @@ PYTHONPATH=/mnt/c/embodied.cpp/Embodied.cpp/third_party/llama.cpp/gguf-py \
 | 架构枚举 | `Arch::<MODEL>` | `Arch::SMOLVLA` | 一致 |
 | 工厂函数 | `<model>_create()` | `smolvla_create()` | 一致 |
 | CMake 开关 | `MODEL_BUILD_VLA_<MODEL>` | `MODEL_BUILD_VLA_SMOLVLA` | 一致 |
-| 服务目标 | `vla-<model>-server` | `vla-smolvla-server` | 一致 |
+| 服务目标 | `vla-server` | `vla-server` | 一致 |
 | policy 转换器 | `convert_<model>_to_gguf.py` | `convert_smolvla_to_gguf.py` | 一致 |
 | mmproj 转换器 | `convert_<model>_mmproj_to_gguf.py` | `convert_smolvla_mmproj_to_gguf.py` | 与 π0.5 一致 |
 | LIBERO 配置 | `libero_<model>_eval.yaml` | `libero_smolvla_eval.yaml` | 一致 |

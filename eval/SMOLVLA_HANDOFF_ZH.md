@@ -1,8 +1,8 @@
 # SmolVLA 项目交接说明
 
-> 更新日期：2026-08-06  
-> 工作区：`C:\embodied.cpp\Embodied.cpp`  
-> 分支：`feat/smolvla-libero`  
+> 更新日期：2026-08-06
+> 工作区：`C:\embodied.cpp\Embodied.cpp`
+> 分支：`smolvla-dev-rebase`
 > Draft PR：[SEU-PAISys/Embodied.cpp#6](https://github.com/SEU-PAISys/Embodied.cpp/pull/6)
 
 ## 当前结论
@@ -81,7 +81,7 @@ ddfbc78bafcdad9ae17ce3ed1596f7126b5d691e8241ec1f2535a228c48697dd  smolvla-parity
 | `scripts/check_smolvla_parity.py` | 固定输入动作 parity |
 | `tests/test_smolvla_*.py` | converter、seed、恢复与报告测试 |
 
-运行时链路为：`smolvla.architecture` → `Arch::SMOLVLA` → `smolvla_create()` → `vla-smolvla-server`。SmolVLA 的 10 个 flow steps 已经位于一个 policy graph 中，并非逐 step 零散调用；但每个请求仍会重建固定形状 graph 和 allocator，这是后续可能的优化点。
+运行时链路为：`smolvla.architecture` → `Arch::SMOLVLA` → `smolvla_create()` → 统一 `vla-server`。SmolVLA 的 10 个 flow steps 已经位于一个 policy graph 中，并非逐 step 零散调用；但每个请求仍会重建固定形状 graph 和 allocator，这是后续可能的优化点。
 
 ## 最新完整 C++ 仿真
 
@@ -145,7 +145,7 @@ PYTHONPATH=/mnt/c/embodied.cpp/Embodied.cpp/third_party/llama.cpp/gguf-py \
 
 ```bash
 tmux new-session -d -s smolvla-full-server \
-  /root/embodied-pr-build-cuda-smol/vla-smolvla-server \
+  /root/embodied-pr-build-cuda-smol/vla-server \
   --bind tcp://127.0.0.1:5566 \
   /root/checkpoints/smolvla/mmproj-smolvla-fixed2.gguf \
   /root/checkpoints/smolvla/smolvla-parity-rope10k.gguf
