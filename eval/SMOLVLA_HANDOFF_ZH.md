@@ -15,17 +15,22 @@ SmolVLA 的权重转换、C++/GGML 推理、ZeroMQ 服务、LIBERO 四套件评�
 
 ## Git 与 PR
 
-已推送提交：
+基于 `origin/dev` (`490913d`) 本地重放后的提交：
 
 ```text
-4988ea8 perf(smolvla): move input projections into backend graph
-2b9df17 docs(smolvla): add detailed Chinese technical report
-1f570d8 docs(smolvla): document setup and validation results
-24b4043 test(smolvla): add reproducible LIBERO acceptance workflow
-beb00d9 feat(smolvla): add C++ runtime and GGUF converters
+3b8cd45 docs(smolvla): align notes with dev server layout
+64dd7f5 fix(smolvla): use 64-bit GGUF seeks
+62b3e8b docs(smolvla): add project handoff notes
+62b507e perf(smolvla): move input projections into backend graph
+0b6dbdf docs(smolvla): add detailed Chinese technical report
+e3d09c9 docs(smolvla): document setup and validation results
+4522e73 test(smolvla): add reproducible LIBERO acceptance workflow
+0b6b2ee feat(smolvla): add C++ runtime and GGUF converters
 ```
 
-提交作者为 `刘唱 <3496280049@qq.com>`。PR #6 的目标为 `SEU-PAISys/Embodied.cpp:main`，来源为 `kchzhlc:feat/smolvla-libero`。性能提交推送后 GitHub 状态为 Draft、OPEN、MERGEABLE，仓库未返回自动 CI 检查项。
+提交作者为 `刘唱 <3496280049@qq.com>`。现有 PR #6 的目标仍为
+`SEU-PAISys/Embodied.cpp:main`，来源仍为 `kchzhlc:feat/smolvla-libero`；本地
+重放分支尚未推送，GitHub 上的 PR 文件列表因此仍不是最新 `dev` 结构。
 
 下一位 agent 接手后应先执行：
 
