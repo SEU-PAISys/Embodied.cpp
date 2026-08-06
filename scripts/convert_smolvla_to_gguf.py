@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 
 """Convert a LeRobot SmolVLA checkpoint (libero finetune) to an Embodied.cpp
-GGUF that ``vla-smolvla-server`` can load.
+GGUF that the unified ``vla-server`` can load when SmolVLA support is enabled.
 
 This converter targets the HuggingFaceVLA/smolvla_libero finetune, whose
 layout differs from the lerobot/smolvla_base "stock" checkpoint in three ways:
