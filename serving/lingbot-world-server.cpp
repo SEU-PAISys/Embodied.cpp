@@ -12,6 +12,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -78,6 +79,14 @@ std::string make_error_response(uint64_t request_id, const std::string & msg) {
     return resp.SerializeAsString();
 }
 
+int64_t env_i64(const char * name, int64_t fallback) {
+    const char * v = std::getenv(name);
+    if (!v || !*v) return fallback;
+    char * end = nullptr;
+    const long long parsed = std::strtoll(v, &end, 10);
+    return (end && *end == '\0' && parsed > 0) ? (int64_t) parsed : fallback;
+}
+
 bool tensor_f32_to_vector(const lingbot::Tensor & t, std::vector<float> & out, std::string & err) {
     if (t.dtype() != lingbot::F32) {
         err = "only F32 tensors are accepted for this bridge path";
@@ -94,8 +103,9 @@ const lingbot::Tensor * find_lingbot_latent_tensor(const lingbot::StepRequest & 
     const lingbot::Tensor * first_5d_f32 = nullptr;
     for (const auto & t : step.input_latents()) {
         if (t.dtype() != lingbot::F32 || t.shape_size() != 5) continue;
-        if (!first_5d_f32) first_5d_f32 = &t;
         const std::string & name = t.name();
+        if (name == "latent_noise" || name == "video_noise" || name == "world_noise") continue;
+        if (!first_5d_f32) first_5d_f32 = &t;
         if (name == "video_latent" || name == "world_latent" || name == "latent" ||
             name == "vae_latent") {
             return &t;
@@ -104,11 +114,25 @@ const lingbot::Tensor * find_lingbot_latent_tensor(const lingbot::StepRequest & 
     return first_5d_f32;
 }
 
+const lingbot::Tensor * find_lingbot_latent_noise_tensor(const lingbot::StepRequest & step) {
+    for (const auto & t : step.input_latents()) {
+        if (t.dtype() != lingbot::F32 || t.shape_size() != 5) continue;
+        const std::string & name = t.name();
+        if (name == "latent_noise" || name == "video_noise" || name == "world_noise") {
+            return &t;
+        }
+    }
+    return nullptr;
+}
+
 bool append_image_tensor_as_view(const lingbot::Tensor & t,
                                  std::vector<float> & video_vcfhw,
                                  uint64_t & frames,
                                  uint64_t & height,
                                  uint64_t & width,
+                                 std::vector<int64_t> * view_frames,
+                                 std::vector<int64_t> * view_heights,
+                                 std::vector<int64_t> * view_widths,
                                  std::string & err) {
     if (t.dtype() != lingbot::U8 && t.dtype() != lingbot::F32) {
         err = "input_images accepts only U8 or F32 tensors";
@@ -138,10 +162,16 @@ bool append_image_tensor_as_view(const lingbot::Tensor & t,
         frames = f;
         height = h;
         width = w;
-    } else if (frames != f || height != h || width != w) {
-        err = "all input image views must share F,H,W";
+    } else if (frames != f) {
+        err = "all input image views must share F";
         return false;
+    } else if (height != h || width != w) {
+        height = 0;
+        width = 0;
     }
+    if (view_frames) view_frames->push_back((int64_t) f);
+    if (view_heights) view_heights->push_back((int64_t) h);
+    if (view_widths) view_widths->push_back((int64_t) w);
 
     const size_t view_elems = (size_t) 3 * (size_t) f * (size_t) h * (size_t) w;
     const size_t base = video_vcfhw.size();
@@ -204,6 +234,7 @@ struct SessionCache {
     uint64_t steps = 0;
     uint64_t predict_count = 0;
     uint64_t cache_update_count = 0;
+    int64_t frame_start_id = 0;
     bool has_history_cache = false;
     uint64_t last_latent_bytes = 0;
     int last_latent_count = 0;
@@ -228,17 +259,19 @@ struct SessionCache {
         ++predict_count;
     }
 
-    void mark_cache_update_success() {
+    void mark_cache_update_success(int64_t frame_delta) {
         ++steps;
         ++cache_update_count;
         has_history_cache = true;
+        frame_start_id += frame_delta;
     }
 };
 
 void usage(const char * prog) {
     std::fprintf(stderr,
-        "usage: %s [--bind ADDR] <lingbot-transformer.gguf>\n"
-        "  --bind ADDR   ZMQ bind address (default: tcp://*:5557)\n",
+        "usage: %s [--bind ADDR] <lingbot-transformer.gguf> "
+        "<umt5-text-encoder.gguf> <wan-vae-encoder.gguf>\n"
+        "  --bind ADDR  ZMQ bind address (default: tcp://*:5557)\n",
         prog);
 }
 
@@ -261,14 +294,19 @@ int main(int argc, char ** argv) {
             positionals.push_back(std::move(a));
         }
     }
-    if (positionals.size() != 1) {
+    if (positionals.size() != 3) {
         usage(argv[0]);
         return 1;
     }
 
     const std::string ckpt_path = positionals[0];
-    std::printf("lingbot-world-server: loading model ...\n  ckpt: %s\n", ckpt_path.c_str());
-    vla::Model * model = vla::model_load("", ckpt_path);
+    const vla::LingBotComponentPaths components{ positionals[1], positionals[2] };
+    std::printf("lingbot-world-server: loading model ...\n"
+                "  transformer: %s\n  text encoder: %s\n  vae encoder: %s\n",
+                ckpt_path.c_str(),
+                components.text_encoder_gguf.c_str(),
+                components.vae_encoder_gguf.c_str());
+    vla::Model * model = vla::model_load("", ckpt_path, "", components);
     if (!model) {
         std::fprintf(stderr, "lingbot-world-server: model_load failed\n");
         return 1;
@@ -382,6 +420,18 @@ int main(int argc, char ** argv) {
             const bool is_cache_update = step.compute_kv_cache();
             const bool is_first_predict_chunk =
                 !is_cache_update && session.predict_count == 0 && !session.has_history_cache;
+            const bool robotwin_tshape = step.env_type() == "robotwin_tshape";
+            const int64_t action_per_frame = step.action_per_frame() > 0
+                ? static_cast<int64_t>(step.action_per_frame())
+                : (robotwin_tshape ? 16 : 4);
+            const int64_t request_frame_chunk_size =
+                env_i64("VLA_LINGBOT_FRAME_CHUNK_SIZE", robotwin_tshape ? 2 : 4);
+            const int64_t request_n_suffix =
+                env_i64("VLA_LINGBOT_N_SUFFIX",
+                        request_frame_chunk_size * (robotwin_tshape ? 16 : action_per_frame));
+            const int64_t frame_start_id = step.frame_start_id() > 0
+                ? static_cast<int64_t>(step.frame_start_id())
+                : session.frame_start_id;
 
             if (step.state_size() != 0 && step.state_size() != (int) cfg.max_state_dim) {
                 char buf[128];
@@ -413,7 +463,7 @@ int main(int argc, char ** argv) {
                     sock.send(zmq::buffer(make_error_response(rid, err)), zmq::send_flags::none);
                     goto next_request;
                 }
-                const size_t expected = (size_t) cfg.n_suffix * (size_t) cfg.max_action_dim;
+                const size_t expected = (size_t) request_n_suffix * (size_t) cfg.max_action_dim;
                 if (noise.size() != expected) {
                     char buf[128];
                     std::snprintf(buf, sizeof(buf), "action_noise elements %zu != expected %zu",
@@ -461,14 +511,31 @@ int main(int argc, char ** argv) {
                 }
                 for (int i = 0; i < 5; ++i) latent_shape[i] = latent_tensor->shape(i);
             }
+            std::vector<float> lingbot_latent_noise;
+            uint64_t latent_noise_shape[5] = {0, 0, 0, 0, 0};
+            const lingbot::Tensor * latent_noise_tensor = find_lingbot_latent_noise_tensor(step);
+            if (latent_noise_tensor) {
+                if (!tensor_f32_to_vector(*latent_noise_tensor, lingbot_latent_noise, err)) {
+                    sock.send(zmq::buffer(make_error_response(rid, err)), zmq::send_flags::none);
+                    goto next_request;
+                }
+                for (int i = 0; i < 5; ++i) latent_noise_shape[i] = latent_noise_tensor->shape(i);
+            }
             std::vector<float> lingbot_video;
             uint64_t video_frames = 0;
             uint64_t video_height = 0;
             uint64_t video_width = 0;
+            std::vector<int64_t> video_view_frames;
+            std::vector<int64_t> video_view_heights;
+            std::vector<int64_t> video_view_widths;
             if (!latent_tensor && step.input_images_size() > 0) {
                 for (const auto & t : step.input_images()) {
                     if (!append_image_tensor_as_view(t, lingbot_video, video_frames,
-                                                     video_height, video_width, err)) {
+                                                     video_height, video_width,
+                                                     &video_view_frames,
+                                                     &video_view_heights,
+                                                     &video_view_widths,
+                                                     err)) {
                         sock.send(zmq::buffer(make_error_response(rid, err)), zmq::send_flags::none);
                         goto next_request;
                     }
@@ -483,6 +550,8 @@ int main(int argc, char ** argv) {
             in.lingbot_has_history_cache = session.has_history_cache;
             in.lingbot_predict_index = session.predict_count;
             in.lingbot_cache_update_index = session.cache_update_count;
+            in.lingbot_frame_start_id = frame_start_id;
+            in.lingbot_action_per_frame = action_per_frame;
             in.state = state.data();
             in.noise = noise.empty() ? nullptr : noise.data();
             if (!action_condition.empty()) {
@@ -500,6 +569,17 @@ int main(int argc, char ** argv) {
                 in.lingbot_latent_f = (int64_t) latent_shape[2];
                 in.lingbot_latent_h = (int64_t) latent_shape[3];
                 in.lingbot_latent_w = (int64_t) latent_shape[4];
+            }
+            if (!lingbot_latent_noise.empty()) {
+                in.lingbot_latent_noise = lingbot_latent_noise.data();
+                in.lingbot_latent_noise_b = (int64_t) latent_noise_shape[0];
+                in.lingbot_latent_noise_c = (int64_t) latent_noise_shape[1];
+                in.lingbot_latent_noise_f = (int64_t) latent_noise_shape[2];
+                in.lingbot_latent_noise_h = (int64_t) latent_noise_shape[3];
+                in.lingbot_latent_noise_w = (int64_t) latent_noise_shape[4];
+            }
+            if (!lingbot_latent.empty()) {
+                // Explicit latent tensors bypass image encoding.
             } else if (!lingbot_video.empty()) {
                 in.lingbot_video = lingbot_video.data();
                 in.lingbot_video_views = step.input_images_size();
@@ -507,7 +587,12 @@ int main(int argc, char ** argv) {
                 in.lingbot_video_f = (int64_t) video_frames;
                 in.lingbot_video_h = (int64_t) video_height;
                 in.lingbot_video_w = (int64_t) video_width;
+                in.lingbot_video_view_f = video_view_frames.data();
+                in.lingbot_video_view_h = video_view_heights.data();
+                in.lingbot_video_view_w = video_view_widths.data();
+                in.lingbot_video_view_shape_count = (int64_t) video_view_frames.size();
             }
+            in.lingbot_env_type = step.env_type().empty() ? nullptr : step.env_type().c_str();
 
             const auto t0 = std::chrono::steady_clock::now();
             std::vector<float> actions = vla::predict(model, in);
@@ -522,14 +607,30 @@ int main(int argc, char ** argv) {
             lingbot::LingBotResponse resp;
             resp.set_request_id(rid);
             if (is_cache_update) {
-                session.mark_cache_update_success();
+                int64_t frame_delta = step.frame_delta() > 0
+                    ? static_cast<int64_t>(step.frame_delta())
+                    : (cfg.n_suffix > 0 ? cfg.n_suffix / action_per_frame : 0);
+                if (step.frame_delta() == 0 && latent_tensor && latent_tensor->shape_size() == 5) {
+                    frame_delta = static_cast<int64_t>(latent_tensor->shape(2));
+                } else if (step.frame_delta() == 0 && video_frames > 0) {
+                    frame_delta = static_cast<int64_t>((video_frames + action_per_frame - 1) / action_per_frame);
+                    if (session.cache_update_count == 0) {
+                        frame_delta += 1;
+                    }
+                } else if (step.frame_delta() == 0 && action_condition_shape[1] > 0) {
+                    frame_delta = static_cast<int64_t>(action_condition_shape[1]);
+                }
+                session.frame_start_id = frame_start_id;
+                session.mark_cache_update_success(frame_delta);
                 char status[384];
                 std::snprintf(status, sizeof(status),
-                              "kv_cache_updated session=%llu step=%llu cache_updates=%llu predicts=%llu image_count=%d image_bytes=%llu action_cond=%s imagine=%s",
+                              "kv_cache_updated session=%llu step=%llu cache_updates=%llu predicts=%llu frame_start_id=%lld frame_delta=%lld image_count=%d image_bytes=%llu action_cond=%s imagine=%s",
                               (unsigned long long) step.session_id(),
                               (unsigned long long) session.steps,
                               (unsigned long long) session.cache_update_count,
                               (unsigned long long) session.predict_count,
+                              (long long) session.frame_start_id,
+                              (long long) frame_delta,
                               session.last_image_count,
                               (unsigned long long) session.last_image_bytes,
                               action_condition.empty() ? "none" : "c_f_h",
@@ -552,18 +653,22 @@ int main(int argc, char ** argv) {
             }
             session.mark_predict_success();
             uint32_t response_action_dim = static_cast<uint32_t>(cfg.max_action_dim);
-            if (cfg.n_suffix > 0 && actions.size() % (size_t) cfg.n_suffix == 0) {
-                response_action_dim = static_cast<uint32_t>(actions.size() / (size_t) cfg.n_suffix);
+            uint32_t response_chunk_size = static_cast<uint32_t>(request_n_suffix);
+            if (request_n_suffix > 0 && actions.size() % (size_t) request_n_suffix == 0) {
+                response_action_dim = static_cast<uint32_t>(actions.size() / (size_t) request_n_suffix);
+            } else if (response_action_dim > 0 && actions.size() % response_action_dim == 0) {
+                response_chunk_size = static_cast<uint32_t>(actions.size() / response_action_dim);
             }
 
             char status[512];
-            std::snprintf(status, sizeof(status), "%s session=%llu step=%llu predicts=%llu cache_updates=%llu first_chunk=%s history_cache=%s latent_count=%d latent_bytes=%llu image_count=%d image_bytes=%llu lang_tokens=%d action_cond=%s used_latent=%s action_dim=%u",
+            std::snprintf(status, sizeof(status), "%s session=%llu step=%llu predicts=%llu cache_updates=%llu frame_start_id=%lld first_chunk=%s history_cache=%s latent_count=%d latent_bytes=%llu image_count=%d image_bytes=%llu lang_tokens=%d action_cond=%s used_latent=%s action_dim=%u",
                           latent_tensor ? "step_with_latents_bridge" :
                           (!lingbot_video.empty() ? "step_with_images_vae_bridge" : "step_bridge"),
                           (unsigned long long) step.session_id(),
                           (unsigned long long) session.steps,
                           (unsigned long long) session.predict_count,
                           (unsigned long long) session.cache_update_count,
+                          (long long) session.frame_start_id,
                           is_first_predict_chunk ? "true" : "false",
                           session.has_history_cache ? "true" : "false",
                           session.last_latent_count,
@@ -577,7 +682,7 @@ int main(int argc, char ** argv) {
             resp.set_status(status);
             resp.mutable_action_chunk()->Reserve(static_cast<int>(actions.size()));
             for (float v : actions) resp.add_action_chunk(v);
-            resp.set_chunk_size(static_cast<uint32_t>(cfg.n_suffix));
+            resp.set_chunk_size(response_chunk_size);
             resp.set_action_dim(response_action_dim);
             if (step.return_world_latents()) {
                 for (const auto & t : step.input_latents()) {

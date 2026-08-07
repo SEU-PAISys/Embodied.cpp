@@ -98,6 +98,29 @@ venv/
 outputs/
 wandb/
 runs/
+eval/conf/*.local.yaml
+
+# Local development notes
+docs/
+
+# Local evaluation launchers
+eval/run_*.sh
+eval/client/python_*.py
+eval/client/replay_lingbot_npz_request.py
+
+# Local large-scale evaluation plans
+eval/conf/*20task*
+eval/conf/*200ep*
+eval/utils/*200ep*.py
+
+# Local Cosmos3 parity / capture helpers
+models/cosmos3_legacy.cpp
+scripts/bench_cosmos3_w8_native_vs_marlin.py
+scripts/cosmos3_*_reference.json
+scripts/analyze_*
+scripts/capture_*
+scripts/check_*
+scripts/inspect_*
 
 # Third-party code populated by setup scripts
 third_party/*
@@ -129,7 +152,16 @@ models/lingbot_va_original.cpp
 /scripts/validate_*.py
 
 # test
-eval/client/libero_profile.py
 eval/conf/libero_groot_n1_profile_eval.yaml
 
-LOCAL_README.md
+# Local Python reference evaluations
+/LOCAL_README.md
+/eval/client/run_pi05_libero_python.py
+/eval/client/run_groot_libero_python.py
+/eval/client/inference_timeline.py
+/eval/conf/libero_pi05_python_eval.yaml
+/eval/conf/libero_groot_n1_python_eval.yaml
+/eval/sim/libero/setup_pi05_python_conda.sh
+/eval/sim/libero/setup_groot_python_conda.sh
+/scripts/create_groot_comparison_halves.py
+/scripts/create_pi05_comparison_halves.py

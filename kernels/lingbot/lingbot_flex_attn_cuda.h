@@ -41,6 +41,167 @@ int lingbot_flex_attn_f32_masked(
     float scale,
     cudaStream_t stream);
 
+int lingbot_runtime_kv_update_f32(
+    const float * k,
+    const float * v,
+    float * cache_k,
+    float * cache_v,
+    const int * slots,
+    int seq,
+    int n_heads,
+    int head_dim,
+    int capacity,
+    cudaStream_t stream);
+
+int lingbot_runtime_kv_attn_f32(
+    const float * q,
+    const float * cache_k,
+    const float * cache_v,
+    const int * valid_slots,
+    float * out,
+    int seq_q,
+    int seq_k,
+    int n_heads,
+    int head_dim,
+    float scale,
+    cudaStream_t stream);
+
+int lingbot_runtime_kv_attn_online_f32(
+    const float * q,
+    const float * cache_k,
+    const float * cache_v,
+    const int * valid_slots,
+    float * out,
+    int seq_q,
+    int seq_k,
+    int n_heads,
+    int head_dim,
+    float scale,
+    cudaStream_t stream);
+
+int lingbot_runtime_kv_attn_warp_f32(
+    const float * q,
+    const float * cache_k,
+    const float * cache_v,
+    const int * valid_slots,
+    float * out,
+    int seq_q,
+    int seq_k,
+    int n_heads,
+    int head_dim,
+    float scale,
+    cudaStream_t stream);
+
+int lingbot_runtime_kv_gather_f32(
+    const float * cache_k,
+    const float * cache_v,
+    const int * valid_slots,
+    float * compact_k,
+    float * compact_v,
+    int seq_k,
+    int n_heads,
+    int head_dim,
+    int capacity,
+    cudaStream_t stream);
+
+int lingbot_scheduler_step_f32(
+    float * sample,
+    const float * model_output,
+    int n,
+    float delta,
+    int bf16_round,
+    cudaStream_t stream);
+
+int lingbot_model_output_guidance_f32(
+    float * cond_in_out,
+    const float * uncond,
+    int n,
+    float scale,
+    int use_guidance,
+    int bf16_round,
+    cudaStream_t stream);
+
+int lingbot_action_finalize_f32(
+    float * action_sample,
+    const float * action_cond,
+    int C,
+    int F,
+    int H,
+    int W,
+    int used_dim,
+    int bf16_round,
+    cudaStream_t stream);
+
+int lingbot_latent_restore_round_f32(
+    float * latent_sample,
+    const float * latent_cond,
+    int C,
+    int F,
+    int H,
+    int W,
+    int cond_F,
+    int bf16_round,
+    cudaStream_t stream);
+
+int lingbot_patchify_latent_f32(
+    const float * latent_bcfhw,
+    float * tokens,
+    int B,
+    int C,
+    int F,
+    int H,
+    int W,
+    int pt,
+    int ph,
+    int pw,
+    cudaStream_t stream);
+
+int lingbot_projected_latent_to_tensor_f32(
+    const float * projected_tokens,
+    float * latent_bcfhw,
+    int B,
+    int C,
+    int F,
+    int H,
+    int W,
+    int pt,
+    int ph,
+    int pw,
+    cudaStream_t stream);
+
+int lingbot_action_tensor_to_tokens_f32(
+    const float * action_bcfhw,
+    float * tokens,
+    int B,
+    int C,
+    int F,
+    int H,
+    int W,
+    cudaStream_t stream);
+
+int lingbot_action_tokens_to_tensor_f32(
+    const float * tokens,
+    float * action_bcfhw,
+    int B,
+    int C,
+    int F,
+    int H,
+    int W,
+    cudaStream_t stream);
+
+int lingbot_action_sample_to_output_f32(
+    const float * action_bcfhw,
+    float * out,
+    int B,
+    int C,
+    int F,
+    int H,
+    int W,
+    int n_suffix,
+    int output_dim,
+    int postprocess_libero,
+    cudaStream_t stream);
+
 int lingbot_flex_attn_cuda_smoke(cudaStream_t stream);
 
 int lingbot_causal_conv1d_cache_f32(

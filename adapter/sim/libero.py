@@ -129,6 +129,14 @@ class LIBEROSimAdapter:
         return self._adapter_pipeline.parse_embodied_observation(obs)
 
     def get_action(self, obs: dict[str, Any]) -> Any:
+        has_queued_action = getattr(self._client, "has_queued_action", None)
+        get_action_from_queue = getattr(self._client, "get_action_from_queue", None)
+        if (
+            callable(has_queued_action)
+            and callable(get_action_from_queue)
+            and has_queued_action()
+        ):
+            return self._parser.parse_action(get_action_from_queue())
         embodied_obs = self.parse_embodied_observation(obs)
         action = self._client.get_action(embodied_obs.model_inputs)
         return self._parser.parse_action(action)

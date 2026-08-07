@@ -21,6 +21,7 @@ import json
 from math import prod
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any
 
 import numpy as np
@@ -40,6 +41,8 @@ except Exception as exc:
         "failed to import gguf; use the embodiedcpp environment and ensure "
         f"{GGUF_PY} exists. Original error: {exc}"
     ) from exc
+
+from gguf_quantize import TensorQuantizer, add_outtype_args
 
 
 ARCH = "groot_n1"
@@ -224,23 +227,27 @@ def _validate_tensor_map(
         raise SystemExit(f"GGUF tensor name must be shorter than 64 bytes: {too_long[0]}")
 
 
-def _add_tensor(writer, name: str, tensor: torch.Tensor) -> None:
+def _should_quantize(name: str, tensor: torch.Tensor) -> bool:
+    return (
+        name.endswith(".weight")
+        and tensor.ndim >= 2
+        and name not in {"action_position.weight", "vl.norm.weight"}
+    )
+
+
+def _add_tensor(
+    writer,
+    quantizer: TensorQuantizer,
+    name: str,
+    tensor: torch.Tensor,
+) -> None:
     tensor = tensor.detach().contiguous().cpu()
-    if tensor.dtype == torch.bfloat16:
-        writer.add_tensor(
-            name,
-            tensor.view(torch.uint16).numpy(),
-            raw_shape=list(tensor.shape),
-            raw_dtype=gguf.GGMLQuantizationType.BF16,
-        )
-    elif tensor.dtype == torch.float32:
-        writer.add_tensor(
-            name,
-            tensor.numpy(),
-            raw_dtype=gguf.GGMLQuantizationType.F32,
-        )
-    else:
-        raise SystemExit(f"unsupported source dtype {tensor.dtype} for {name}")
+    quantizer.add_tensor(
+        writer,
+        name,
+        tensor,
+        quantize=_should_quantize(name, tensor),
+    )
 
 
 def _processor_kwargs(checkpoint_dir: Path) -> dict[str, Any]:
@@ -346,6 +353,8 @@ def convert(
     output: Path,
     embodiment: str,
     dry_run: bool,
+    outtype: str = "bf16",
+    ggml_lib: Path | None = None,
 ) -> None:
     config = _load_json(checkpoint_dir / "config.json")
     processor = _processor_kwargs(checkpoint_dir)
@@ -396,8 +405,13 @@ def convert(
     if dry_run:
         return
 
+    if ggml_lib is None:
+        raise ValueError("ggml_lib is required when writing an action-head GGUF")
+    quantizer = TensorQuantizer(outtype, ggml_lib)
     output.parent.mkdir(parents=True, exist_ok=True)
-    writer = gguf.GGUFWriter(str(output), arch=ARCH)
+    previous_tempdir = tempfile.tempdir
+    tempfile.tempdir = str(output.parent)
+    writer = gguf.GGUFWriter(str(output), arch=ARCH, use_temp_file=True)
     _add_metadata(
         writer,
         config,
@@ -408,6 +422,9 @@ def convert(
         int(action_q01.size),
         action_horizon,
     )
+    writer.add_uint32("general.quantization_version", 2)
+    writer.add_file_type(quantizer.file_type)
+    writer.add_string(KV("quantization"), outtype.upper())
     for name, value in (
         ("norm.state.q01", state_q01),
         ("norm.state.q99", state_q99),
@@ -423,12 +440,14 @@ def convert(
             if source.endswith(".W"):
                 tensor = tensor.transpose(0, 1)
         print(f"  {source} -> {destination} {list(tensor.shape)}")
-        _add_tensor(writer, destination, tensor)
+        _add_tensor(writer, quantizer, destination, tensor)
 
+    quantizer.finish()
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()
     writer.close()
+    tempfile.tempdir = previous_tempdir
     print(f"wrote {output} ({output.stat().st_size / (1024 ** 3):.2f} GiB)")
 
 
@@ -444,19 +463,30 @@ def main() -> int:
         "--out",
         type=Path,
         default=None,
-        help="Output GGUF (default: <ckpt>/groot-n1-action-head-bf16.gguf).",
+        help=(
+            "Output GGUF (default: <ckpt>/"
+            "groot-n1.7-libero-object-action-head-<type>.gguf)."
+        ),
     )
     parser.add_argument("--embodiment", default=DEFAULT_EMBODIMENT)
     parser.add_argument("--dry-run", action="store_true")
+    add_outtype_args(parser)
     args = parser.parse_args()
 
     checkpoint_dir = args.ckpt.expanduser().resolve()
     output = (
         args.out.expanduser().resolve()
         if args.out
-        else checkpoint_dir / "groot-n1-action-head-bf16.gguf"
+        else checkpoint_dir / f"groot-n1.7-libero-object-action-head-{args.outtype}.gguf"
     )
-    convert(checkpoint_dir, output, args.embodiment, args.dry_run)
+    convert(
+        checkpoint_dir,
+        output,
+        args.embodiment,
+        args.dry_run,
+        args.outtype,
+        args.ggml_lib,
+    )
     return 0
 
 

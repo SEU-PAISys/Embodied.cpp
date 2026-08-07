@@ -24,7 +24,6 @@ import sentencepiece
 from transformers import AutoTokenizer
 import zmq
 
-os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 os.environ.setdefault("LANG", "C.UTF-8")
 os.environ.setdefault("LC_ALL", "C.UTF-8")
 
@@ -40,7 +39,7 @@ ARCH_PRESETS = {
         "tokenizer": None,
         "max_state_dim": 32,
         "max_length": 200,
-        "n_action_steps": 5,
+        "n_action_steps": 10,
         "use_fast_tokenizer": True,
     },
     "hy_vla": {
@@ -153,6 +152,36 @@ def _resize_with_pad(
     return t.squeeze(0).numpy()
 
 
+def _resize_with_pad_f32_hwc(
+    img_chw: np.ndarray,
+    target_h: int,
+    target_w: int,
+    pad_value: float = 0.0,
+) -> np.ndarray:
+    tensor = torch.from_numpy(img_chw).unsqueeze(0)
+    current_h, current_w = tensor.shape[2:]
+    ratio = max(current_w / target_w, current_h / target_h)
+    resized_h = int(current_h / ratio)
+    resized_w = int(current_w / ratio)
+    tensor = F.interpolate(
+        tensor,
+        size=(resized_h, resized_w),
+        mode="bilinear",
+        align_corners=False,
+    )
+    pad_h = max(0, target_h - resized_h)
+    pad_w = max(0, target_w - resized_w)
+    if pad_h or pad_w:
+        pad_left = pad_w // 2
+        pad_top = pad_h // 2
+        tensor = F.pad(
+            tensor,
+            (pad_left, pad_w - pad_left, pad_top, pad_h - pad_top),
+            value=pad_value,
+        )
+    return tensor.squeeze(0).permute(1, 2, 0).contiguous().numpy()
+
+
 def _resize_center_crop(
     img_chw: np.ndarray,
     target_size: int,
@@ -182,6 +211,39 @@ def _resize_center_crop(
         antialias=True,
     )
     return tensor.squeeze(0).numpy()
+
+
+def _resize_center_crop_u8_hwc(
+    img_chw: np.ndarray,
+    target_size: int,
+    crop_size: int,
+) -> np.ndarray:
+    tensor = torch.from_numpy(img_chw).unsqueeze(0)
+    if tensor.shape[2:] != (target_size, target_size):
+        tensor = F.interpolate(
+            tensor,
+            size=(target_size, target_size),
+            mode="bilinear",
+            align_corners=False,
+            antialias=True,
+        )
+    crop_top = (target_size - crop_size) // 2
+    crop_left = (target_size - crop_size) // 2
+    tensor = tensor[
+        :,
+        :,
+        crop_top : crop_top + crop_size,
+        crop_left : crop_left + crop_size,
+    ]
+    tensor = F.interpolate(
+        tensor,
+        size=(target_size, target_size),
+        mode="bilinear",
+        align_corners=False,
+        antialias=True,
+    )
+    tensor = tensor.clamp_(0.0, 1.0).mul_(255.0).add_(0.5).to(torch.uint8)
+    return tensor.squeeze(0).permute(1, 2, 0).contiguous().numpy()
 
 
 class VlaCppClient:
@@ -307,8 +369,11 @@ class VlaCppClient:
             raise RuntimeError("action queue is empty; call get_action(obs) first")
         return self._action_queue.popleft()
 
+    def has_queued_action(self) -> bool:
+        return bool(self._action_queue)
+
     def _predict_chunk(self, observations: dict[str, Any]) -> np.ndarray:
-        images_f32: list[np.ndarray] = []
+        images: list[tuple[np.ndarray, int]] = []
         for key in self.image_keys:
             if key not in observations:
                 raise KeyError(f"image key '{key}' missing; got {list(observations.keys())}")
@@ -319,15 +384,27 @@ class VlaCppClient:
             if img.ndim != 3 or img.shape[0] != 3:
                 raise ValueError(f"{key}: expected CHW float32 [3, H, W], got {img.shape}")
             if self.arch == "groot_n1":
-                img = _resize_center_crop(
+                img_u8 = _resize_center_crop_u8_hwc(
                     img,
                     self.image_size,
                     self.image_crop_size,
                 )
+                images.append((img_u8, self.pb.Image.RGB_U8))
+            elif self.arch == "pi05":
+                img_hwc = _resize_with_pad_f32_hwc(
+                    img,
+                    self.image_size,
+                    self.image_size,
+                    pad_value=0.0,
+                )
+                images.append((img_hwc, self.pb.Image.F32_RGB_01))
             else:
                 img = _resize_with_pad(img, self.image_size, self.image_size, pad_value=0.0)
-            img_hwc = np.transpose(img, (1, 2, 0))
-            images_f32.append(np.ascontiguousarray(img_hwc, dtype=np.float32))
+                img_hwc = np.transpose(img, (1, 2, 0))
+                images.append((
+                    np.ascontiguousarray(img_hwc, dtype=np.float32),
+                    self.pb.Image.F32_RGB_01,
+                ))
 
         state = observations["observation.state"]
         if isinstance(state, torch.Tensor):
@@ -370,9 +447,9 @@ class VlaCppClient:
         req = self.pb.PredictRequest()
         req.request_id = self._step
         self._step += 1
-        for img in images_f32:
+        for img, encoding in images:
             ip = req.images.add()
-            ip.encoding = self.pb.Image.F32_RGB_01
+            ip.encoding = encoding
             ip.height = img.shape[0]
             ip.width = img.shape[1]
             ip.data = img.tobytes()

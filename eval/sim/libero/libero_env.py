@@ -74,7 +74,7 @@ def get_task_init_states(task_suite: Any, i: int) -> np.ndarray:
 
 def get_libero_dummy_action():
 
-    return [0, 0, 0, 0, 0, 0, -1]
+    return [0.0] * ACTION_DIM
 
 ACTION_DIM = 7
 ACTION_LOW = -1.0

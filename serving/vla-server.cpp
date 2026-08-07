@@ -490,6 +490,18 @@ int main(int argc, char ** argv) {
         const auto & st = vla::last_stats(model);
 
         if (action_chunk.empty()) {
+            std::fprintf(stderr,
+                         "vla-server: predict returned empty action for rid=%llu images=%d lang_tokens=%d state=%d "
+                         "precomputed_img_emb=%d precomputed_backbone=%d timing(total=%.1f vision=%.1f inference=%.1f)\n",
+                         (unsigned long long) rid,
+                         req.images_size(),
+                         req.lang_tokens_size(),
+                         req.state_size(),
+                         req.precomputed_img_emb_size(),
+                         req.precomputed_backbone_features_size(),
+                         st.ms_total,
+                         st.ms_vision,
+                         st.ms_inference);
             sock.send(zmq::buffer(make_error_response(rid, "predict failed")),
                       zmq::send_flags::none);
             continue;

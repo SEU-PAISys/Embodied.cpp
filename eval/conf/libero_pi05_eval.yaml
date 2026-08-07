@@ -3,12 +3,22 @@
 
 arch: pi05
 libero_suite: object
-task_ids: all
-n_episodes: 1
+task_ids: 
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+n_episodes: 20
 max_steps: 0
 seed: 42
 
-tokenizer: /home/xuling/robotic_dataset/models/pi05cpp/tokenizer.model
+tokenizer: checkpoints/pi05_libero_finetuned_v044/tokenizer.model
 vla_addr: tcp://127.0.0.1:5555
 
 output_dir: outputs/pi05_libero_object
@@ -22,5 +32,10 @@ image_keys:
   - observation.images.image
   - observation.images.image2
 max_length: 200
-n_action_steps: 5
 recv_timeout_ms: 900000
+
+profile_output: outputs/profiles/pi05_libero_object.json
+profile_model_label: pi0.5
+profile_backbone_label: PaliGemma
+profile_vram_interval_s: 0.25
+profile_warmup_requests: 5

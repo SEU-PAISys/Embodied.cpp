@@ -14,6 +14,7 @@ import math
 import os
 import locale
 import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -71,6 +72,130 @@ def _nvidia_used_mib() -> int | None:
     return max(vals) if vals else None
 
 
+def _robotwin_head_rgb(observation: dict[str, Any] | None) -> np.ndarray | None:
+    if not observation:
+        return None
+    try:
+        frame = observation["observation"]["head_camera"]["rgb"]
+    except Exception:
+        return None
+    arr = np.asarray(frame)
+    if arr.ndim != 3 or arr.shape[2] != 3:
+        return None
+    if arr.dtype != np.uint8:
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+    return np.ascontiguousarray(arr)
+
+
+def _ffmpeg_exe() -> str:
+    try:
+        import imageio_ffmpeg
+
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe:
+            return str(exe)
+    except Exception:
+        pass
+    exe = shutil.which("ffmpeg")
+    if exe is None:
+        raise FileNotFoundError(
+            "ffmpeg not found. Install ffmpeg or imageio-ffmpeg to write latency videos."
+        )
+    return exe
+
+
+def _chw_image_to_rgb_u8(chw: Any) -> np.ndarray | None:
+    arr = np.asarray(chw)
+    if arr.ndim != 3 or arr.shape[0] != 3:
+        return None
+    hwc = np.moveaxis(arr, 0, -1)
+    if np.issubdtype(hwc.dtype, np.floating):
+        hwc = np.clip(hwc, 0.0, 1.0) * 255.0
+    return np.ascontiguousarray(np.clip(hwc, 0, 255).astype(np.uint8))
+
+
+def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+class LatencyVideoWriter:
+    def __init__(self, path: Path, *, fps: int, speed: float):
+        if fps <= 0:
+            raise ValueError("--latency-video-fps must be positive")
+        if speed <= 0:
+            raise ValueError("--latency-video-speed must be positive")
+        self.path = path
+        self.fps = fps
+        self.speed = speed
+        self.proc: subprocess.Popen | None = None
+        self.frame_size: tuple[int, int] | None = None
+        self.frames = 0
+
+    def _start(self, frame: np.ndarray) -> None:
+        h, w = frame.shape[:2]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.frame_size = (w, h)
+        self.proc = subprocess.Popen(
+            [
+                _ffmpeg_exe(),
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "rawvideo",
+                "-pixel_format",
+                "rgb24",
+                "-video_size",
+                f"{w}x{h}",
+                "-framerate",
+                str(self.fps),
+                "-i",
+                "-",
+                "-pix_fmt",
+                "yuv420p",
+                "-vcodec",
+                "libx264",
+                "-crf",
+                "23",
+                str(self.path),
+            ],
+            stdin=subprocess.PIPE,
+        )
+
+    def write_frame(self, frame: np.ndarray | None, repeat: int = 1) -> None:
+        if frame is None or repeat <= 0:
+            return
+        if self.proc is None:
+            self._start(frame)
+        assert self.proc is not None and self.proc.stdin is not None
+        assert self.frame_size is not None
+        h, w = frame.shape[:2]
+        if (w, h) != self.frame_size:
+            raise ValueError(
+                f"latency video frame size changed from {self.frame_size} to {(w, h)}"
+            )
+        data = np.ascontiguousarray(frame).tobytes()
+        for _ in range(repeat):
+            self.proc.stdin.write(data)
+            self.frames += 1
+
+    def write_latency_pause(self, frame: np.ndarray | None, latency_ms: float) -> None:
+        repeat = int(round((latency_ms / 1000.0) * self.fps / self.speed))
+        self.write_frame(frame, max(1, repeat) if latency_ms > 0 else 0)
+
+    def close(self) -> None:
+        if self.proc is None:
+            return
+        assert self.proc.stdin is not None
+        self.proc.stdin.close()
+        ret = self.proc.wait()
+        self.proc = None
+        if ret != 0:
+            raise RuntimeError(f"ffmpeg failed while writing {self.path}")
+
+
 def _cleanup_after_env(*, torch_cuda: bool = True) -> None:
     gc.collect()
     if torch_cuda and torch.cuda.is_available():
@@ -115,14 +240,14 @@ def _wait_server_ready(proc: subprocess.Popen, log_path: Path, timeout_s: int) -
     while time.time() < deadline:
         if proc.poll() is not None:
             tail = log_path.read_text(errors="replace")[-4000:] if log_path.exists() else ""
-            raise RuntimeError(f"vla-hy-vla-server exited early with code {proc.returncode}\n{tail}")
+            raise RuntimeError(f"vla-server exited early with code {proc.returncode}\n{tail}")
         if log_path.exists():
             text = log_path.read_text(errors="replace")
             last = text[-4000:]
             if "ready." in text:
                 return
         time.sleep(1)
-    raise TimeoutError(f"vla-hy-vla-server did not become ready within {timeout_s}s\n{last}")
+    raise TimeoutError(f"vla-server did not become ready within {timeout_s}s\n{last}")
 
 
 def _image_chw(img: Any) -> np.ndarray:
@@ -461,9 +586,170 @@ def _make_instruction(task_name: str, episode_info: dict[str, Any], instruction_
     return str(np.random.choice(choices))
 
 
+def _restore_episode_side_effects(task_env: Any, episode_info: dict[str, Any] | None) -> None:
+    """Mirror task attributes that RoboTwin's official eval keeps on TASK_ENV.
+
+    Some tasks set rollout-critical attributes during the expert play_once()
+    used for seed validation. The official script reuses the same TASK_ENV
+    object for policy rollout; this client creates a fresh env, so restore the
+    minimal attributes that are encoded in episode_info.
+    """
+    info = (episode_info or {}).get("info", {})
+    arm = info.get("{a}")
+    if arm in ("left", "right") and not hasattr(task_env, "arm_tag"):
+        from envs.utils import ArmTag
+        task_env.arm_tag = ArmTag(arm)
+    if not hasattr(task_env, "origin_z") and hasattr(task_env, "object"):
+        try:
+            task_env.origin_z = float(task_env.object.get_pose().p[2])
+        except Exception:
+            pass
+
+
 def _default_episode_info(task_name: str) -> dict[str, Any] | None:
     if task_name == "place_empty_cup":
         return {"info": {"{A}": "021_cup/base0", "{B}": "019_coaster/base0"}}
+    return None
+
+
+def _derive_episode_info_from_task_env(task_name: str, task_env: Any) -> dict[str, Any] | None:
+    from envs.utils import ArmTag
+
+    def arm_from_x(actor: Any, *, positive: str = "right") -> Any:
+        x = actor.get_pose().p[0]
+        if positive == "right":
+            return ArmTag("right" if x > 0 else "left")
+        return ArmTag("left" if x < 0 else "right")
+
+    existing = getattr(task_env, "info", None)
+    if isinstance(existing, dict) and isinstance(existing.get("info"), dict) and existing["info"]:
+        return existing
+    if task_name == "adjust_bottle":
+        arm_tag = ArmTag("right" if task_env.qpose_tag == 1 else "left")
+        return {"info": {"{A}": f"001_bottle/base{task_env.model_id}", "{a}": str(arm_tag)}}
+    if task_name == "click_bell":
+        arm_tag = arm_from_x(task_env.bell)
+        return {"info": {"{A}": f"050_bell/base{task_env.bell_id}", "{a}": str(arm_tag)}}
+    if task_name == "pick_dual_bottles":
+        return {"info": {"{A}": "001_bottle/base13", "{B}": "001_bottle/base16"}}
+    if task_name == "place_empty_cup":
+        return {"info": {"{A}": "021_cup/base0", "{B}": "019_coaster/base0"}}
+    if task_name == "place_a2b_left":
+        arm_tag = arm_from_x(task_env.object)
+        return {
+            "info": {
+                "{A}": f"{task_env.selected_modelname_A}/base{task_env.selected_model_id_A}",
+                "{B}": f"{task_env.selected_modelname_B}/base{task_env.selected_model_id_B}",
+                "{a}": str(arm_tag),
+            }
+        }
+    if task_name == "stack_blocks_two":
+        arm_tag1 = arm_from_x(task_env.block1)
+        arm_tag2 = arm_from_x(task_env.block2)
+        return {
+            "info": {
+                "{A}": "red block",
+                "{B}": "green block",
+                "{a}": str(arm_tag1),
+                "{b}": str(arm_tag2),
+            }
+        }
+    if task_name == "handover_block":
+        return {"info": {}}
+    if task_name == "open_laptop":
+        from envs.utils import get_face_prod
+
+        face_prod = get_face_prod(task_env.laptop.get_pose().q, [1, 0, 0], [1, 0, 0])
+        arm_tag = ArmTag("left" if face_prod > 0 else "right")
+        task_env.arm_tag = arm_tag
+        return {"info": {"{A}": f"{task_env.model_name}/base{task_env.model_id}", "{a}": str(arm_tag)}}
+    if task_name == "move_can_pot":
+        arm_tag = task_env.arm_tag
+        return {
+            "info": {
+                "{A}": f"060_kitchenpot/base{task_env.pot_id}",
+                "{B}": f"105_sauce-can/base{task_env.can_id}",
+                "{a}": str(arm_tag),
+            }
+        }
+    if task_name == "turn_switch":
+        switch_pose = task_env.switch.get_pose()
+        face_dir = -switch_pose.to_transformation_matrix()[:3, 0]
+        arm_tag = ArmTag("right" if face_dir[0] > 0 else "left")
+        return {"info": {"{A}": f"056_switch/base{task_env.model_id}", "{a}": str(arm_tag)}}
+    if task_name == "open_microwave":
+        arm_tag = ArmTag("left")
+        return {"info": {"{A}": f"{task_env.model_name}/base{task_env.model_id}", "{a}": str(arm_tag)}}
+    if task_name == "press_stapler":
+        arm_tag = arm_from_x(task_env.stapler, positive="left")
+        return {"info": {"{A}": f"048_stapler/base{task_env.stapler_id}", "{a}": str(arm_tag)}}
+    if task_name == "place_mouse_pad":
+        arm_tag = arm_from_x(task_env.mouse)
+        return {
+            "info": {
+                "{A}": f"047_mouse/base{task_env.mouse_id}",
+                "{B}": f"{task_env.color_name}",
+                "{a}": str(arm_tag),
+            }
+        }
+    if task_name == "place_phone_stand":
+        arm_tag = arm_from_x(task_env.phone, positive="left")
+        return {
+            "info": {
+                "{A}": f"077_phone/base{task_env.phone_id}",
+                "{B}": f"078_phonestand/base{task_env.stand_id}",
+                "{a}": str(arm_tag),
+            }
+        }
+    if task_name == "shake_bottle":
+        arm_tag = arm_from_x(task_env.bottle)
+        return {"info": {"{A}": f"001_bottle/base{task_env.bottle_id}", "{a}": str(arm_tag)}}
+    if task_name == "stack_bowls_two":
+        arm_tag1 = arm_from_x(task_env.bowl1, positive="left")
+        arm_tag2 = arm_from_x(task_env.bowl2, positive="left")
+        return {
+            "info": {
+                "{A}": "002_bowl/base3",
+                "{B}": "002_bowl/base3",
+                "{a}": str(arm_tag1),
+                "{b}": str(arm_tag2),
+            }
+        }
+    if task_name == "place_shoe":
+        arm_tag = arm_from_x(task_env.shoe, positive="left")
+        return {"info": {"{A}": f"041_shoe/base{task_env.shoe_id}", "{a}": str(arm_tag)}}
+    if task_name == "scan_object":
+        scanner_arm_tag = arm_from_x(task_env.scanner, positive="left")
+        object_arm_tag = scanner_arm_tag.opposite
+        return {
+            "info": {
+                "{A}": f"112_tea-box/base{task_env.object_id}",
+                "{B}": f"024_scanner/base{task_env.scanner_id}",
+                "{a}": str(object_arm_tag),
+                "{b}": str(scanner_arm_tag),
+            }
+        }
+    if task_name == "put_object_cabinet":
+        object_pose = task_env.object.get_pose().p
+        arm_tag = ArmTag("right" if object_pose[0] > 0 else "left")
+        task_env.arm_tag = arm_tag
+        task_env.origin_z = object_pose[2]
+        return {
+            "info": {
+                "{A}": f"{task_env.selected_modelname}/base{task_env.selected_model_id}",
+                "{B}": "036_cabinet/base0",
+                "{a}": str(arm_tag),
+                "{b}": str(arm_tag.opposite),
+            }
+        }
+    if task_name == "rotate_qrcode":
+        arm_tag = ArmTag("left" if task_env.qrcode.get_pose().p[0] < 0 else "right")
+        return {
+            "info": {
+                "{A}": f"070_paymentsign/base{task_env.model_id}",
+                "{a}": str(arm_tag),
+            }
+        }
     return None
 
 
@@ -476,12 +762,40 @@ def _parse_seed_list(value: str | None) -> list[int] | None:
     return seeds
 
 
+def _load_yaml_config(path: str | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    conf_path = Path(path)
+    if not conf_path.exists() and not conf_path.is_absolute():
+        candidate = REPO_ROOT / "eval" / "conf" / path
+        if candidate.exists():
+            conf_path = candidate
+    if not conf_path.exists():
+        raise FileNotFoundError(f"config file not found: {path}")
+
+    with conf_path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{conf_path} must contain a YAML mapping at top level")
+    return {str(k).replace("-", "_"): v for k, v in data.items()}
+
+
 def main() -> None:
-    ap = argparse.ArgumentParser()
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument(
+        "--conf", "--config",
+        dest="conf",
+        default=None,
+        help="YAML RoboTwin/HY-VLA eval config. Relative names are resolved under eval/conf/.",
+    )
+    conf_args, _ = pre_parser.parse_known_args()
+    conf_defaults = _load_yaml_config(conf_args.conf)
+
+    ap = argparse.ArgumentParser(parents=[pre_parser])
     ap.add_argument("--model", default="/home/xuling/robotic_dataset/models/hy_vla_full_bf16_vlmvisionstable.gguf")
     ap.add_argument("--tokenizer", default="/home/xuling/robotic_dataset/HY-VLA")
     ap.add_argument("--robotwin-root", default=str(REPO_ROOT / "eval/sim/robotwin/RoboTwin"))
-    ap.add_argument("--server-bin", default=str(REPO_ROOT / "build/vla-hy-vla-server"))
+    ap.add_argument("--server-bin", default=str(REPO_ROOT / "build/vla-server"))
     ap.add_argument("--addr", default="tcp://127.0.0.1:5555")
     ap.add_argument("--bind", default="tcp://*:5555")
     ap.add_argument("--task-name", default="place_empty_cup")
@@ -527,9 +841,9 @@ def main() -> None:
     ap.add_argument("--start-server-after-env", action="store_true",
                     help="Initialize RoboTwin/curobo before loading the HY-VLA server.")
     ap.add_argument("--hy-vla-text-layers", default="32",
-                    help="Resident HY-VLA VLM text layers loaded by vla-hy-vla-server; use 32 for full HY-VLA.")
+                    help="Resident HY-VLA VLM text layers loaded by vla-server; use 32 for full HY-VLA.")
     ap.add_argument("--hy-vla-vision-layers", default="all",
-                    help="HyViT2 visual frontend layers loaded by vla-hy-vla-server; use all for full HY-VLA.")
+                    help="HyViT2 visual frontend layers loaded by vla-server; use all for full HY-VLA.")
     ap.add_argument("--hy-vla-vision-cpu-sideload", action=argparse.BooleanOptionalAction, default=False,
                     help="Load the HyViT2 visual frontend on CPU. Default is CUDA vision; use this only when CUDA vision does not fit.")
     ap.add_argument("--hy-vla-cuda-oom-fallback-cpu", action=argparse.BooleanOptionalAction, default=True,
@@ -537,21 +851,56 @@ def main() -> None:
     ap.add_argument("--action-noise-mode", choices=["server", "zero", "torch_cuda_seed"], default="torch_cuda_seed",
                     help="HY-VLA flow initial noise. torch_cuda_seed mirrors the official Python seed-controlled CUDA torch noise.")
     ap.add_argument("--noise-chunk-size", type=int, default=0,
-                    help="Noise sequence length sent to vla-hy-vla-server. 0 uses 2 * action_chunk_size for rel_abs/abs_only, else action_chunk_size.")
+                    help="Noise sequence length sent to vla-server. 0 uses 2 * action_chunk_size for rel_abs/abs_only, else action_chunk_size.")
     ap.add_argument("--noise-action-dim", type=int, default=32,
                     help="HY-VLA max_action_dim for flow noise.")
     ap.add_argument("--dump-action-dir", default=None,
                     help="Optional directory for per-forward raw C++ chunks and decoded RoboTwin actions.")
+    ap.add_argument("--latency-video", action=argparse.BooleanOptionalAction, default=False,
+                    help="Write latency-aware RoboTwin rollout videos with forward latency encoded as pause frames.")
+    ap.add_argument("--latency-video-dir", default=None,
+                    help="Directory for latency-aware videos. Defaults to <output-dir>/latency_video.")
+    ap.add_argument("--latency-video-fps", type=int, default=10,
+                    help="Output FPS for latency-aware videos.")
+    ap.add_argument("--latency-video-speed", type=float, default=1.0,
+                    help="Wall-clock speed multiplier for forward-latency pause frames.")
+    ap.add_argument("--native-video", action=argparse.BooleanOptionalAction, default=False,
+                    help="Write RoboTwin head-camera action frames without latency pause insertion.")
+    ap.add_argument("--native-video-dir", default=None,
+                    help="Directory for --native-video mp4 files. Defaults to <output-dir>/native_video.")
+    ap.add_argument("--native-video-fps", type=int, default=10,
+                    help="Output FPS for --native-video mp4 files.")
+    ap.add_argument("--forward-timing", action=argparse.BooleanOptionalAction, default=False,
+                    help="Write per-forward timing JSONL without changing native rollout/video behavior.")
+    ap.add_argument("--forward-timing-jsonl", default=None,
+                    help="Path for --forward-timing JSONL. Defaults to <output-dir>/forward_timing.jsonl.")
     ap.add_argument("--clear-cache-each-episode", action=argparse.BooleanOptionalAction, default=True,
                     help="Close each RoboTwin episode with SAPIEN cache cleanup and clear Python torch CUDA cache.")
     ap.add_argument("--stop-server-between-episodes", action=argparse.BooleanOptionalAction, default=False,
-                    help="Free vla-hy-vla-server GPU memory between episodes before the next RoboTwin expert seed search.")
+                    help="Free vla-server GPU memory between episodes before the next RoboTwin expert seed search.")
     ap.add_argument("--debug-seed-search", action="store_true",
                     help="Print per-candidate expert seed search status and exceptions.")
+    if conf_defaults:
+        valid_dests = {action.dest for action in ap._actions}
+        unknown = sorted(set(conf_defaults) - valid_dests)
+        if unknown:
+            raise ValueError(
+                f"unknown keys in {conf_args.conf}: {', '.join(unknown)}. "
+                f"Valid keys are: {', '.join(sorted(valid_dests))}"
+            )
+        ap.set_defaults(**conf_defaults)
     args = ap.parse_args()
 
     if args.robotwin_eval_seed is not None:
         args.seed = 100000 * (1 + args.robotwin_eval_seed)
+    if args.reuse_server and not args.no_image_history and args.img_history_size > 1:
+        print(
+            "WARNING: --reuse-server with HY-VLA image history requires the external "
+            f"vla-server to be started with VLA_HY_VLA_VIDEO_HISTORY={args.img_history_size}. "
+            "Without it, 3 cameras x K frames are interpreted as independent camera views "
+            "and RoboTwin rollouts can fail even when single-forward parity looks good.",
+            flush=True,
+        )
     seed_list = _parse_seed_list(args.seed_list)
     if seed_list is not None:
         args.skip_stable_seed_search = True
@@ -564,6 +913,27 @@ def main() -> None:
     dump_action_dir = Path(args.dump_action_dir).resolve() if args.dump_action_dir else None
     if dump_action_dir is not None:
         dump_action_dir.mkdir(parents=True, exist_ok=True)
+    latency_video_dir = (
+        Path(args.latency_video_dir).resolve()
+        if args.latency_video_dir
+        else out_dir / "latency_video"
+    )
+    if args.latency_video:
+        latency_video_dir.mkdir(parents=True, exist_ok=True)
+    native_video_dir = (
+        Path(args.native_video_dir).resolve()
+        if args.native_video_dir
+        else out_dir / "native_video"
+    )
+    if args.native_video:
+        native_video_dir.mkdir(parents=True, exist_ok=True)
+    forward_timing_jsonl = (
+        Path(args.forward_timing_jsonl).resolve()
+        if args.forward_timing_jsonl
+        else out_dir / "forward_timing.jsonl"
+    )
+    if args.forward_timing:
+        forward_timing_jsonl.parent.mkdir(parents=True, exist_ok=True)
 
     baseline_vram = _nvidia_used_mib()
     server_proc: subprocess.Popen | None = None
@@ -652,6 +1022,7 @@ def main() -> None:
     total_ms: list[float] = []
     vision_ms: list[float] = []
     action_inf_ms: list[float] = []
+    forward_timing_records: list[dict[str, Any]] = []
     episodes: list[dict[str, Any]] = []
     observed_chunk_size: int | None = None
     noise_chunk_size = args.noise_chunk_size
@@ -676,9 +1047,6 @@ def main() -> None:
                         _cleanup_after_env()
                 elif args.instruction is None:
                     episode_info = _default_episode_info(args.task_name)
-                    if episode_info is None:
-                        raise RuntimeError(
-                            f"--skip-expert-check needs --instruction or a built-in episode_info for {args.task_name}")
             else:
                 stable_seed, episode_info, rw_args = _find_valid_seed(
                     robotwin_root, args.task_name, args.task_config,
@@ -688,6 +1056,12 @@ def main() -> None:
                 next_search_seed = stable_seed + 1
             task_env, rw_args = _prepare_task(robotwin_root, args.task_name, args.task_config, stable_seed)
             task_env.setup_demo(now_ep_num=ep, seed=stable_seed, is_test=True, **rw_args)
+            if episode_info is None:
+                episode_info = _derive_episode_info_from_task_env(args.task_name, task_env)
+            if episode_info is None and args.instruction is None:
+                raise RuntimeError(
+                    f"--skip-expert-check needs --instruction or derived episode_info for {args.task_name}")
+            _restore_episode_side_effects(task_env, episode_info)
             if args.instruction is not None:
                 instruction = str(args.instruction)
             else:
@@ -711,6 +1085,30 @@ def main() -> None:
             steps = 0
             succ = False
             stop_reason = "step_lim"
+            latency_video_path: Path | None = None
+            latency_writer: LatencyVideoWriter | None = None
+            native_video_path: Path | None = None
+            native_video_writer: LatencyVideoWriter | None = None
+            if args.latency_video:
+                latency_video_path = (
+                    latency_video_dir
+                    / f"{args.task_name}_ep{ep:03d}_seed{stable_seed}_latency.mp4"
+                )
+                latency_writer = LatencyVideoWriter(
+                    latency_video_path,
+                    fps=args.latency_video_fps,
+                    speed=args.latency_video_speed,
+                )
+            if args.native_video:
+                native_video_path = (
+                    native_video_dir
+                    / f"{args.task_name}_ep{ep:03d}_seed{stable_seed}_native.mp4"
+                )
+                native_video_writer = LatencyVideoWriter(
+                    native_video_path,
+                    fps=args.native_video_fps,
+                    speed=1.0,
+                )
             while task_env.take_action_cnt < task_env.step_lim:
                 if args.max_steps > 0 and steps >= args.max_steps:
                     stop_reason = "max_steps"
@@ -718,6 +1116,7 @@ def main() -> None:
                 t0 = time.time()
                 observation = task_env.get_obs()
                 obs, eepose16 = _encode_robotwin_obs(observation, args.state_dim)
+                latency_frame = _chw_image_to_rgb_u8(obs["observation.images.top_head"])
                 _append_history(image_history, obs)
                 if not args.no_image_history:
                     _inject_history_images(
@@ -744,6 +1143,36 @@ def main() -> None:
                     resp = getattr(active_client, "_last_response", None)
                     if resp is not None and resp.request_id != last_rid:
                         forward_calls += 1
+                        timing_record = {
+                            "schema": "robotwin_forward_timing.v1",
+                            "backend": "cpp",
+                            "model_name": args.model_name,
+                            "model": str(args.model),
+                            "task_name": args.task_name,
+                            "episode": int(ep),
+                            "seed": int(stable_seed),
+                            "instruction": instruction,
+                            "forward_index": int(forward_calls - 1),
+                            "forward_call": int(forward_calls),
+                            "request_id": int(resp.request_id),
+                            "steps_before_forward": int(steps),
+                            "take_action_cnt_before_forward": int(task_env.take_action_cnt),
+                            "step_lim": int(task_env.step_lim),
+                            "latency_ms_total": float(resp.latency_ms_total),
+                            "latency_ms_vision": float(resp.latency_ms_vision),
+                            "latency_ms_inference": float(resp.latency_ms_inference),
+                            "server_chunk_size": int(resp.chunk_size),
+                            "model_action_chunk_size": int(resp.chunk_size),
+                            "action_chunk_size": int(args.action_chunk_size),
+                            "exec_action_size": int(args.exec_action_size),
+                            "warmup_forward": bool(forward_calls <= args.warmup_forward_calls),
+                        }
+                        forward_timing_records.append(timing_record)
+                        if args.forward_timing:
+                            _append_jsonl(forward_timing_jsonl, timing_record)
+                        if latency_writer is not None:
+                            latency_writer.write_latency_pause(
+                                latency_frame, float(resp.latency_ms_total))
                         if forward_calls > args.warmup_forward_calls:
                             total_ms.append(float(resp.latency_ms_total))
                             vision_ms.append(float(resp.latency_ms_vision))
@@ -773,6 +1202,16 @@ def main() -> None:
 
                 action_exec = action_cache.pop(0)
                 task_env.take_action(action_exec, action_type="ee")
+                if latency_writer is not None:
+                    action_frame = _robotwin_head_rgb(getattr(task_env, "now_obs", None))
+                    if action_frame is None:
+                        action_frame = latency_frame
+                    latency_writer.write_frame(action_frame)
+                if native_video_writer is not None:
+                    action_frame = _robotwin_head_rgb(getattr(task_env, "now_obs", None))
+                    if action_frame is None:
+                        action_frame = latency_frame
+                    native_video_writer.write_frame(action_frame)
                 elapsed_ms = (time.time() - t0) * 1000.0
                 if steps >= args.warmup_env_steps:
                     step_ms.append(elapsed_ms)
@@ -781,9 +1220,13 @@ def main() -> None:
                     succ = True
                     stop_reason = "success"
                     break
+            if latency_writer is not None:
+                latency_writer.close()
+            if native_video_writer is not None:
+                native_video_writer.close()
             if succ:
                 successes += 1
-            episodes.append({
+            episode_record = {
                 "episode": ep,
                 "seed": stable_seed,
                 "instruction": instruction,
@@ -792,7 +1235,12 @@ def main() -> None:
                 "forward_calls": int(forward_calls),
                 "stop_reason": stop_reason,
                 "success": bool(succ),
-            })
+            }
+            if latency_video_path is not None:
+                episode_record["latency_video"] = str(latency_video_path)
+            if native_video_path is not None:
+                episode_record["native_video"] = str(native_video_path)
+            episodes.append(episode_record)
             task_env.close_env(clear_cache=args.clear_cache_each_episode)
             _cleanup_after_env()
             if args.stop_server_between_episodes:
@@ -807,7 +1255,9 @@ def main() -> None:
     avg_vision = float(np.mean(vision_ms)) if vision_ms else 0.0
     avg_action_inf = float(np.mean(action_inf_ms)) if action_inf_ms else 0.0
     na = observed_chunk_size if observed_chunk_size is not None else args.action_chunk_size
-    avg_step = avg_total / max(1, int(na))
+    avg_raw_step = avg_total / max(1, int(na))
+    avg_action_step = avg_total / max(1, int(args.action_chunk_size))
+    avg_exec_step = avg_total / max(1, int(args.exec_action_size))
     max_used = sampler.max_used
     vram = None
     if max_used is not None:
@@ -818,9 +1268,13 @@ def main() -> None:
         "Model": args.model_name,
         "Backbone": args.backbone,
         "na": na,
+        "action chunk": args.action_chunk_size,
+        "exec chunk": args.exec_action_size,
         "SR (%)": f"{sr:.1f} [{100*lo:.1f}, {100*hi:.1f}]",
-        "step (ms)": f"{avg_step:.1f}",
-        "inf (ms)": f"{avg_total:.1f}",
+        "step (ms)": f"{avg_action_step:.1f}",
+        "raw step (ms)": f"{avg_raw_step:.1f}",
+        "exec step (ms)": f"{avg_exec_step:.1f}",
+        "forward (ms)": f"{avg_total:.1f}",
         "vision (ms)": f"{avg_vision:.1f}",
         "action inf (ms)": f"{avg_action_inf:.1f}",
         "VRAM (MiB)": str(vram) if vram is not None else "NA",
@@ -829,8 +1283,9 @@ def main() -> None:
     csv_path = out_dir / "summary.csv"
     json_path = out_dir / "summary.json"
     headers = [
-        "Model", "Backbone", "na", "SR (%)", "step (ms)",
-        "inf (ms)", "vision (ms)", "action inf (ms)", "VRAM (MiB)",
+        "Model", "Backbone", "na", "action chunk", "exec chunk", "SR (%)",
+        "step (ms)", "raw step (ms)", "exec step (ms)", "forward (ms)",
+        "vision (ms)", "action inf (ms)", "VRAM (MiB)",
     ]
     md.write_text(
         "| " + " | ".join(headers) + " |\n"
@@ -857,10 +1312,23 @@ def main() -> None:
             "server_chunk_size": observed_chunk_size,
             "action_chunk_size": args.action_chunk_size,
             "exec_action_size": args.exec_action_size,
+            "step_ms_definition": "forward_total_ms / action_chunk_size",
+            "raw_step_ms_definition": "forward_total_ms / server_chunk_size",
+            "exec_step_ms_definition": "forward_total_ms / exec_action_size",
             "blend_mode": args.blend_mode,
             "image_history_size": 1 if args.no_image_history else args.img_history_size,
             "image_history_interval": 1 if args.no_image_history else args.img_history_interval,
             "image_count_per_forward": len(image_keys),
+            "latency_video": bool(args.latency_video),
+            "latency_video_dir": str(latency_video_dir) if args.latency_video else None,
+            "latency_video_fps": int(args.latency_video_fps),
+            "latency_video_speed": float(args.latency_video_speed),
+            "native_video": bool(args.native_video),
+            "native_video_dir": str(native_video_dir) if args.native_video else None,
+            "native_video_fps": int(args.native_video_fps),
+            "forward_timing": bool(args.forward_timing),
+            "forward_timing_jsonl": str(forward_timing_jsonl) if args.forward_timing else None,
+            "forward_timing_records": forward_timing_records,
             "baseline_vram_mib": baseline_vram,
             "max_sampled_vram_mib": max_used,
             "server_log": str(server_log),

@@ -47,6 +47,33 @@ only useful for lightweight import checks:
 bash eval/sim/robotwin/setup_robotwin.sh --torch-backend cpu --no-curobo
 ```
 
+## Configuration
+
+[`eval/conf/robotwin_hy_vla_eval.yaml`](../../conf/robotwin_hy_vla_eval.yaml)
+is the standard configuration used by the main README. It defines the HY-VLA
+model, server binary, RoboTwin task, rollout settings, and output location.
+
+Before running on a new machine, update these path-dependent fields for the
+local installation:
+
+- `model`: HY-VLA GGUF checkpoint;
+- `tokenizer`: HY-VLA tokenizer directory;
+- `robotwin_root`: RoboTwin checkout created by the setup script;
+- `server_bin`: CMake build output containing `vla-server`;
+- `output_dir`: directory for rollout artifacts.
+
+To preserve the checked-in default, copy it to a git-ignored local file and
+pass that file to the runner:
+
+```bash
+cp eval/conf/robotwin_hy_vla_eval.yaml \
+  eval/conf/robotwin_hy_vla_eval.local.yaml
+
+eval/sim/robotwin/robotwin_uv/.venv/bin/python \
+  eval/client/run_robotwin_eval.py \
+  --conf eval/conf/robotwin_hy_vla_eval.local.yaml
+```
+
 ## Native HY-VLA C++ Runner
 
 For HY-VLA, prefer the native runner:
@@ -75,7 +102,7 @@ cmake -S . -B build \
   -DGGML_CUDA=ON \
   -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
   -DCMAKE_CUDA_ARCHITECTURES=<your-arch>
-cmake --build build --target vla-hy-vla-server -j"$(nproc)"
+cmake --build build --target vla-server -j"$(nproc)"
 ```
 
 Run one `place_empty_cup/demo_clean` episode:
