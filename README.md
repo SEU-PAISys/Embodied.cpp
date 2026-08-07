@@ -26,10 +26,27 @@
 
 ---
 
+## 🎬 Demos
+
+### GR00T N1.7
+
+[outputs_example/groot_comparison_task2_episode9.mp4](outputs_example/groot_comparison_task2_episode9.mp4)
+
+### HY-VLA
+
+[outputs_example/hy_vla_compare_place_a2b_left.mp4](outputs_example/hy_vla_compare_place_a2b_left.mp4)
+
+### pi0.5
+
+[outputs_example/pi05_comparison_task9_episode12.mp4](outputs_example/pi05_comparison_task9_episode12.mp4)
+
+---
+
 ## Table of Contents
 
 - [Embodied.cpp 🤖](#embodiedcpp-)
   - [NEWS](#news)
+  - [Demos](#-demos)
   - [Table of Contents](#table-of-contents)
   - [1. 🧭 Current Support and Roadmap](#1--current-support-and-roadmap)
     - [1.1 Model Support Roadmap](#11-model-support-roadmap)
@@ -48,8 +65,7 @@
   - [5. 🗂️ Project Structure](#5-️-project-structure)
   - [6. 📄 Citation](#6--citation)
   - [7. ⚖️ License](#7-️-license)
-  - [8. 🎬 Demos](#8--demos)
-  - [9. 🙏 Acknowledgements](#9--acknowledgements)
+  - [8. 🙏 Acknowledgements](#8--acknowledgements)
 
 ---
 
@@ -372,21 +388,7 @@ If you find `Embodied.cpp` useful in your research, please consider citing:
 
 This project is released under the [Apache License 2.0](LICENSE.md). Third-party dependencies, model checkpoints, datasets, and upstream reference implementations are distributed under their own licenses.
 
-## 8. 🎬 Demos
-
-### GR00T N1.7
-
-https://github.com/user-attachments/assets/0a429ad6-d41a-4ea6-aaa7-30cd4bc48b23
-
-### HY-VLA
-
-https://github.com/user-attachments/assets/3f74a1cb-5536-43fb-87c6-8802dbda42f0
-
-### pi0.5
-
-https://github.com/user-attachments/assets/e6f8605b-90a2-43eb-91f4-92c5965836a4
-
-## 9. 🙏 Acknowledgements
+## 8. 🙏 Acknowledgements
 
 **Supported models:**
 - [pi0.5 / OpenPI](https://github.com/Physical-Intelligence/openpi)
