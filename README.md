@@ -32,21 +32,27 @@
 
 https://github.com/user-attachments/assets/0a429ad6-d41a-4ea6-aaa7-30cd4bc48b23
 
+- Successful execution ✅
+- Cumulative inference time 2.5 s → 1.7 s (⬇32%).
+- End-to-end execution time 14.6 s → 13.3 s. 
+
 ### HY-VLA
 
 https://github.com/user-attachments/assets/3f74a1cb-5536-43fb-87c6-8802dbda42f0
 
-### pi0.5
-
-https://github.com/user-attachments/assets/e6f8605b-90a2-43eb-91f4-92c5965836a4
-
+- Successful execution ✅
+- Cumulative inference time 9.4 s → 6.6 s (⬇30%).
+- End-to-end execution time 14.8 s → 12.0 s. 
+  
 ---
 
 ## Table of Contents
 
 - [Embodied.cpp 🤖](#embodiedcpp-)
   - [NEWS](#news)
-  - [Demos](#-demos)
+  - [🎬 Demos](#-demos)
+    - [GR00T N1.7](#gr00t-n17)
+    - [HY-VLA](#hy-vla)
   - [Table of Contents](#table-of-contents)
   - [1. 🧭 Current Support and Roadmap](#1--current-support-and-roadmap)
     - [1.1 Model Support Roadmap](#11-model-support-roadmap)
