@@ -24,6 +24,9 @@ import sentencepiece
 from transformers import AutoTokenizer
 import zmq
 
+from client.reproducibility import generate_action_noise
+
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 os.environ.setdefault("LANG", "C.UTF-8")
 os.environ.setdefault("LC_ALL", "C.UTF-8")
 
@@ -41,6 +44,16 @@ ARCH_PRESETS = {
         "max_length": 200,
         "n_action_steps": 10,
         "use_fast_tokenizer": True,
+    },
+    "smolvla": {
+        "image_size": 512,
+        "tokenizer": None,
+        "max_state_dim": 32,
+        "max_length": 48,
+        "n_action_steps": 1,
+        "use_fast_tokenizer": True,
+        "noise_chunk_size": 50,
+        "noise_action_dim": 32,
     },
     "hy_vla": {
         "image_size": 224,
@@ -265,6 +278,7 @@ class VlaCppClient:
         max_length: int | None = None,
         recv_timeout_ms: int = DEFAULT_RECV_TIMEOUT_MS,
         n_action_steps: int | None = None,
+        noise_seed: int | None = None,
     ):
         if arch not in ARCH_PRESETS:
             raise ValueError(f"unknown arch {arch!r}; expected one of {sorted(ARCH_PRESETS)}")
@@ -331,6 +345,10 @@ class VlaCppClient:
         self.real_action_dim = real_action_dim
         self.image_keys = list(image_keys)
         self.max_length = max_length
+        self.noise_chunk_size = int(preset.get("noise_chunk_size", 0))
+        self.noise_action_dim = int(preset.get("noise_action_dim", 0))
+        self._initial_noise_seed = noise_seed
+        self._noise_rng: np.random.Generator | None = None
         self._step = 0
         self._last_response = None
         self._inference_sequence = 0
@@ -347,10 +365,14 @@ class VlaCppClient:
     def ping(self) -> bool:
         return True
 
-    def reset(self) -> None:
+    def reset(self, noise_seed: int | None = None) -> None:
         self._action_queue.clear()
         self._step = 0
         self._last_inference_profile = None
+        resolved_seed = self._initial_noise_seed if noise_seed is None else noise_seed
+        self._noise_rng = (
+            np.random.default_rng(resolved_seed) if resolved_seed is not None else None
+        )
 
     def get_last_inference_profile(self) -> dict[str, float | int] | None:
         if self._last_inference_profile is None:
@@ -437,12 +459,31 @@ class VlaCppClient:
                 return_tensors="np",
                 add_special_tokens=False,
             )
+        elif self.arch == "smolvla":
+            # SmolVLA uses the SmolVLM2 HuggingFace tokenizer (auto). LeRobot's
+            # serialized pipeline first applies smolvla_new_line_processor.
+            # Keep the fixed 48-token transport shape and carry its real
+            # padding mask separately for the runtime attention mask.
+            task = task.strip().replace("\n", " ") + "\n"
+            toks = self.tok(
+                task,
+                padding="max_length",
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="np",
+                add_special_tokens=False,
+            )
         else:
             assert self.tok is not None
             lang = _tokenize_paligemma_prompt(self.tok, task, self.max_length)
             toks = None
         if toks is not None:
             lang = toks["input_ids"][0].astype(np.int32)
+            lang_attention_mask = toks.get("attention_mask")
+            if lang_attention_mask is not None:
+                lang_attention_mask = lang_attention_mask[0].astype(np.uint32)
+        else:
+            lang_attention_mask = None
 
         req = self.pb.PredictRequest()
         req.request_id = self._step
@@ -458,9 +499,20 @@ class VlaCppClient:
         else:
             assert lang is not None
             req.lang_tokens.extend(lang.tolist())
+            if lang_attention_mask is not None:
+                req.attention_mask.extend(lang_attention_mask.tolist())
         req.state.extend(state_padded.tolist())
 
         action_noise = observations.get("action_noise")
+        if (
+            action_noise is None
+            and self._noise_rng is not None
+            and self.noise_chunk_size
+            and self.noise_action_dim
+        ):
+            action_noise = generate_action_noise(
+                self._noise_rng, self.noise_chunk_size, self.noise_action_dim
+            )
         if action_noise is not None:
             noise = np.ascontiguousarray(action_noise, dtype=np.float32).reshape(-1)
             req.noise.extend(noise.tolist())

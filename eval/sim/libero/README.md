@@ -38,6 +38,7 @@ Available checked-in configurations are:
 | Model | Configuration |
 |---|---|
 | pi0.5 | [`libero_pi05_eval.yaml`](../../conf/libero_pi05_eval.yaml) |
+| SmolVLA | [`libero_smolvla_eval.yaml`](../../conf/libero_smolvla_eval.yaml) |
 | GR00T N1.7 | [`libero_groot_n1_eval.yaml`](../../conf/libero_groot_n1_eval.yaml) |
 | LingBot-VA | [`libero_lingbot_va_eval.yaml`](../../conf/libero_lingbot_va_eval.yaml) |
 
