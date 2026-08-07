@@ -26,10 +26,27 @@
 
 ---
 
+## 🎬 Demos
+
+### GR00T N1.7
+
+https://github.com/user-attachments/assets/0a429ad6-d41a-4ea6-aaa7-30cd4bc48b23
+
+### HY-VLA
+
+https://github.com/user-attachments/assets/3f74a1cb-5536-43fb-87c6-8802dbda42f0
+
+### pi0.5
+
+https://github.com/user-attachments/assets/e6f8605b-90a2-43eb-91f4-92c5965836a4
+
+---
+
 ## Table of Contents
 
 - [Embodied.cpp 🤖](#embodiedcpp-)
   - [NEWS](#news)
+  - [Demos](#-demos)
   - [Table of Contents](#table-of-contents)
   - [1. 🧭 Current Support and Roadmap](#1--current-support-and-roadmap)
     - [1.1 Model Support Roadmap](#11-model-support-roadmap)
@@ -48,8 +65,7 @@
   - [5. 🗂️ Project Structure](#5-️-project-structure)
   - [6. 📄 Citation](#6--citation)
   - [7. ⚖️ License](#7-️-license)
-  - [8. 🎬 Demos](#8--demos)
-  - [9. 🙏 Acknowledgements](#9--acknowledgements)
+  - [8. 🙏 Acknowledgements](#8--acknowledgements)
 
 ---
 
@@ -245,9 +261,9 @@ configuration and runner for the model and benchmark you want to evaluate.
 | Model | Benchmark | Configuration | Server |
 |---|---|---|---|
 | pi0.5 | LIBERO | [pi0.5](eval/conf/libero_pi05_eval.yaml) | Manual |
+| SmolVLA | LIBERO | [SmolVLA](eval/conf/libero_smolvla_eval.yaml) | Manual |
 | GR00T N1.7 | LIBERO | [GR00T](eval/conf/libero_groot_n1_eval.yaml) | Manual |
 | LingBot-VA | LIBERO | [LingBot](eval/conf/libero_lingbot_va_eval.yaml) | Manual |
-| SmolVLA | LIBERO | [SmolVLA](eval/conf/libero_smolvla_eval.yaml) | Manual |
 | HY-VLA | RoboTwin | [HY-VLA](eval/conf/robotwin_hy_vla_eval.yaml) | Managed |
 | Cosmos3-Nano | RoboLab | [Cosmos3](eval/conf/robolab_cosmos3_eval.yaml) | Managed |
 
@@ -258,8 +274,8 @@ configuration and stop them when the evaluation finishes.
 **SmolVLA on LIBERO:**
 
 Convert a LeRobot LIBERO checkpoint into the policy GGUF and the SigLIP
-identity-proxy mmproj. The real pixel-shuffle connector is stored in the
-policy GGUF and executed by `models/smolvla.cpp`.
+identity-proxy mmproj. The pixel-shuffle connector is stored in the policy
+GGUF and executed by `models/smolvla.cpp`.
 
 ```bash
 python scripts/convert_smolvla_to_gguf.py \
@@ -269,7 +285,7 @@ python scripts/convert_smolvla_mmproj_to_gguf.py \
   --ckpt checkpoints/smolvla_libero \
   --out checkpoints/smolvla/mmproj-smolvla.gguf
 
-# Start `vla-server` with `MODEL_BUILD_VLA_SMOLVLA=ON`, then run the smoke test.
+# Start `vla-server` with MODEL_BUILD_VLA_SMOLVLA=ON, then run the smoke test.
 MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \
 eval/sim/libero/libero_uv/.venv/bin/python \
   eval/client/run_sim_client_direct.py \
@@ -277,13 +293,12 @@ eval/sim/libero/libero_uv/.venv/bin/python \
 ```
 
 The serialized SmolVLA processor requires a trailing newline in each task
-prompt. The direct client applies it automatically. The checked-in config uses
-the checkpoint replay horizon (`n_action_steps: 1`) and the full LIBERO episode
-horizon (`max_steps: 0`).
+prompt; the direct client applies it automatically. The checked-in configuration
+uses one replayed action per model request and the full LIBERO episode horizon.
 
-See [eval/SMOLVLA_VALIDATION.md](eval/SMOLVLA_VALIDATION.md) for the full
-acceptance matrix, PR smoke protocol, build matrix, and parity methodology.
-A detailed Chinese implementation and validation report is available at
+See [eval/SMOLVLA_VALIDATION.md](eval/SMOLVLA_VALIDATION.md) for the acceptance
+matrix, smoke protocol, build matrix, and parity methodology. The implementation
+and validation report is available at
 [eval/SMOLVLA_TECHNICAL_REPORT_ZH.md](eval/SMOLVLA_TECHNICAL_REPORT_ZH.md).
 
 **HY-VLA on RoboTwin:**
@@ -412,21 +427,7 @@ If you find `Embodied.cpp` useful in your research, please consider citing:
 
 This project is released under the [Apache License 2.0](LICENSE.md). Third-party dependencies, model checkpoints, datasets, and upstream reference implementations are distributed under their own licenses.
 
-## 8. 🎬 Demos
-
-### GR00T N1.7
-
-https://github.com/user-attachments/assets/0a429ad6-d41a-4ea6-aaa7-30cd4bc48b23
-
-### HY-VLA
-
-https://github.com/user-attachments/assets/3f74a1cb-5536-43fb-87c6-8802dbda42f0
-
-### pi0.5
-
-https://github.com/user-attachments/assets/e6f8605b-90a2-43eb-91f4-92c5965836a4
-
-## 9. 🙏 Acknowledgements
+## 8. 🙏 Acknowledgements
 
 **Supported models:**
 - [pi0.5 / OpenPI](https://github.com/Physical-Intelligence/openpi)

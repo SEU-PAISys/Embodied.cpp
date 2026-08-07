@@ -191,19 +191,19 @@ __global__ void robolab_image_to_vae_patch_whdc_kernel(
         const unsigned char * image,
         int image_h,
         int image_w,
+        int frames,
         float * patch_whdc) {
     constexpr int W = COSMOS3_WAN_VAE_PATCH_W;
     constexpr int H = COSMOS3_WAN_VAE_PATCH_H;
-    constexpr int T = COSMOS3_WAN_VAE_FRAMES;
     constexpr int C = COSMOS3_WAN_VAE_PATCH_CHANNELS;
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    const int total = W * H * T * C;
+    const int total = W * H * frames * C;
     if (idx >= total) return;
 
     int r = idx;
     const int w = r % W; r /= W;
     const int h = r % H; r /= H;
-    const int t = r % T; r /= T;
+    const int t = r % frames; r /= frames;
     const int c_patch = r;
 
     const int channel = c_patch / 4;
@@ -213,7 +213,7 @@ __global__ void robolab_image_to_vae_patch_whdc_kernel(
     const int y = h * 2 + ph;
     const int x = w * 2 + pw;
 
-    patch_whdc[whdc_index(w, h, t, c_patch)] =
+    patch_whdc[whdc_index_dyn(w, h, t, c_patch, W, H, frames)] =
         (t == 0) ? robolab_image_sample_norm(image, image_h, image_w, channel, y, x) : -1.0f;
 }
 
@@ -283,27 +283,27 @@ __global__ void encoder_conv1_whdc_kernel(
         const float * patch_whdc,
         const unsigned short * weight_bf16,
         const unsigned short * bias_bf16,
+        int frames,
         float * conv1_whdc) {
     constexpr int W = COSMOS3_WAN_VAE_PATCH_W;
     constexpr int H = COSMOS3_WAN_VAE_PATCH_H;
-    constexpr int T = COSMOS3_WAN_VAE_FRAMES;
     constexpr int Cin = COSMOS3_WAN_VAE_PATCH_CHANNELS;
     constexpr int Cout = COSMOS3_WAN_VAE_CONV1_CHANNELS;
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    const int total = W * H * T * Cout;
+    const int total = W * H * frames * Cout;
     if (idx >= total) return;
 
     int r = idx;
     const int w = r % W; r /= W;
     const int h = r % H; r /= H;
-    const int t = r % T; r /= T;
+    const int t = r % frames; r /= frames;
     const int co = r;
 
     float sum = bf16_to_float(bias_bf16[co]);
     for (int ci = 0; ci < Cin; ++ci) {
         for (int kt = 0; kt < 3; ++kt) {
             const int it = t + kt - 2; // F.pad temporal=(2,0), Conv3d kt=3.
-            if (it < 0 || it >= T) continue;
+            if (it < 0 || it >= frames) continue;
             for (int kh = 0; kh < 3; ++kh) {
                 const int ih = h + kh - 1;
                 if (ih < 0 || ih >= H) continue;
@@ -312,13 +312,13 @@ __global__ void encoder_conv1_whdc_kernel(
                     if (iw < 0 || iw >= W) continue;
                     const size_t wi =
                         (((static_cast<size_t>(co) * Cin + ci) * 3 + kt) * 3 + kh) * 3 + kw;
-                    sum += patch_whdc[whdc_index(iw, ih, it, ci)] *
+                    sum += patch_whdc[whdc_index_dyn(iw, ih, it, ci, W, H, frames)] *
                            bf16_to_float(weight_bf16[wi]);
                 }
             }
         }
     }
-    conv1_whdc[conv1_whdc_index(w, h, t, co)] = sum;
+    conv1_whdc[whdc_index_dyn(w, h, t, co, W, H, frames)] = sum;
 }
 
 __global__ void encoder_conv1_whdc_prefix_kernel(
@@ -342,21 +342,21 @@ __global__ void encoder_conv1_whdc_prefix_kernel(
 
 __global__ void down0_avg_shortcut_kernel(
         const float * conv1_whdc,
+        int frames,
         float * down0_shortcut_whdc) {
     constexpr int Wo = COSMOS3_WAN_VAE_DOWN0_W;
     constexpr int Ho = COSMOS3_WAN_VAE_DOWN0_H;
-    constexpr int T = COSMOS3_WAN_VAE_DOWN0_T;
     constexpr int Co = COSMOS3_WAN_VAE_DOWN0_CHANNELS;
     constexpr int factor_s = 2;
     constexpr int group_size = 4;
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    const int total = Wo * Ho * T * Co;
+    const int total = Wo * Ho * frames * Co;
     if (idx >= total) return;
 
     int r = idx;
     const int w = r % Wo; r /= Wo;
     const int h = r % Ho; r /= Ho;
-    const int t = r % T; r /= T;
+    const int t = r % frames; r /= frames;
     const int co = r;
 
     float acc = 0.0f;
@@ -367,12 +367,15 @@ __global__ void down0_avg_shortcut_kernel(
         const int rem = flat - ci * factor_s * factor_s;
         const int fs_h = rem / factor_s;
         const int fs_w = rem - fs_h * factor_s;
-        acc += conv1_whdc[conv1_whdc_index(w * factor_s + fs_w,
-                                           h * factor_s + fs_h,
-                                           t,
-                                           ci)];
+        acc += conv1_whdc[whdc_index_dyn(w * factor_s + fs_w,
+                                         h * factor_s + fs_h,
+                                         t,
+                                         ci,
+                                         COSMOS3_WAN_VAE_PATCH_W,
+                                         COSMOS3_WAN_VAE_PATCH_H,
+                                         frames)];
     }
-    down0_shortcut_whdc[down0_whdc_index(w, h, t, co)] = acc * 0.25f;
+    down0_shortcut_whdc[whdc_index_dyn(w, h, t, co, Wo, Ho, frames)] = acc * 0.25f;
 }
 
 __global__ void down0_whdc_prefix_kernel(
@@ -1119,12 +1122,12 @@ __global__ void pack_clean_vision_condition_kernel(
         const float * final_conv1_whdc,
         const unsigned short * scale_mean_bf16,
         const unsigned short * scale_inv_std_bf16,
+        int latent_T,
         float * clean_condition) {
     constexpr int latent_W = COSMOS3_WAN_VAE_DOWN2_W;
     constexpr int latent_H_full = COSMOS3_WAN_VAE_DOWN2_H;
     constexpr int latent_H = 33;
     constexpr int latent_W_packed = 40;
-    constexpr int latent_T = COSMOS3_WAN_VAE_DOWN2_T;
     constexpr int z_dim = 48;
     constexpr int patch_dim = 192;
     constexpr int rows = 17 * 20;
@@ -1155,19 +1158,30 @@ __global__ void pack_clean_vision_condition_kernel(
 } // namespace
 
 extern "C" int cosmos3_wan_vae_robolab_image_to_patch_whdc_f32(
-    const unsigned char * image_u8,
-    int image_h,
-    int image_w,
-    float * patch_whdc,
-    cudaStream_t stream) {
+        const unsigned char * image_u8,
+        int image_h,
+        int image_w,
+        float * patch_whdc,
+        cudaStream_t stream) {
+    return cosmos3_wan_vae_robolab_image_to_patch_whdc_frames_f32(
+        image_u8, image_h, image_w, COSMOS3_WAN_VAE_FRAMES, patch_whdc, stream);
+}
+
+extern "C" int cosmos3_wan_vae_robolab_image_to_patch_whdc_frames_f32(
+        const unsigned char * image_u8,
+        int image_h,
+        int image_w,
+        int frames,
+        float * patch_whdc,
+        cudaStream_t stream) {
     if (!image_u8 || !patch_whdc || image_h <= 0 || image_w <= 0) return -1;
+    if (frames <= 0 || frames > COSMOS3_WAN_VAE_FRAMES) return -1;
     constexpr int block = 256;
-    constexpr int total = COSMOS3_WAN_VAE_PATCH_W *
-                          COSMOS3_WAN_VAE_PATCH_H *
-                          COSMOS3_WAN_VAE_FRAMES *
-                          COSMOS3_WAN_VAE_PATCH_CHANNELS;
-    robolab_image_to_vae_patch_whdc_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
-        image_u8, image_h, image_w, patch_whdc);
+    const int frame_total = COSMOS3_WAN_VAE_PATCH_W *
+                            COSMOS3_WAN_VAE_PATCH_H * frames *
+                            COSMOS3_WAN_VAE_PATCH_CHANNELS;
+    robolab_image_to_vae_patch_whdc_kernel<<<(frame_total + block - 1) / block, block, 0, stream>>>(
+        image_u8, image_h, image_w, frames, patch_whdc);
     return cudaGetLastError() == cudaSuccess ? 0 : -1;
 }
 
@@ -1190,17 +1204,28 @@ extern "C" int cosmos3_wan_vae_patch_whdc_prefix_f32(
 extern "C" int cosmos3_wan_vae_encoder_conv1_whdc_f32(
     const float * patch_whdc,
     const unsigned short * weight_bf16,
-    const unsigned short * bias_bf16,
-    float * conv1_whdc,
-    cudaStream_t stream) {
+        const unsigned short * bias_bf16,
+        float * conv1_whdc,
+        cudaStream_t stream) {
+    return cosmos3_wan_vae_encoder_conv1_whdc_frames_f32(
+        patch_whdc, weight_bf16, bias_bf16, COSMOS3_WAN_VAE_FRAMES, conv1_whdc, stream);
+}
+
+extern "C" int cosmos3_wan_vae_encoder_conv1_whdc_frames_f32(
+        const float * patch_whdc,
+        const unsigned short * weight_bf16,
+        const unsigned short * bias_bf16,
+        int frames,
+        float * conv1_whdc,
+        cudaStream_t stream) {
     if (!patch_whdc || !weight_bf16 || !bias_bf16 || !conv1_whdc) return -1;
+    if (frames <= 0 || frames > COSMOS3_WAN_VAE_FRAMES) return -1;
     constexpr int block = 256;
-    constexpr int total = COSMOS3_WAN_VAE_PATCH_W *
-                          COSMOS3_WAN_VAE_PATCH_H *
-                          COSMOS3_WAN_VAE_FRAMES *
-                          COSMOS3_WAN_VAE_CONV1_CHANNELS;
+    const int total = COSMOS3_WAN_VAE_PATCH_W *
+                      COSMOS3_WAN_VAE_PATCH_H * frames *
+                      COSMOS3_WAN_VAE_CONV1_CHANNELS;
     encoder_conv1_whdc_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
-        patch_whdc, weight_bf16, bias_bf16, conv1_whdc);
+        patch_whdc, weight_bf16, bias_bf16, frames, conv1_whdc);
     return cudaGetLastError() == cudaSuccess ? 0 : -1;
 }
 
@@ -1225,17 +1250,26 @@ extern "C" int cosmos3_wan_vae_encoder_conv1_whdc_prefix_f32(
 }
 
 extern "C" int cosmos3_wan_vae_down0_avg_shortcut_whdc_f32(
-    const float * conv1_whdc,
-    float * down0_shortcut_whdc,
-    cudaStream_t stream) {
+        const float * conv1_whdc,
+        float * down0_shortcut_whdc,
+        cudaStream_t stream) {
+    return cosmos3_wan_vae_down0_avg_shortcut_whdc_frames_f32(
+        conv1_whdc, COSMOS3_WAN_VAE_FRAMES, down0_shortcut_whdc, stream);
+}
+
+extern "C" int cosmos3_wan_vae_down0_avg_shortcut_whdc_frames_f32(
+        const float * conv1_whdc,
+        int frames,
+        float * down0_shortcut_whdc,
+        cudaStream_t stream) {
     if (!conv1_whdc || !down0_shortcut_whdc) return -1;
+    if (frames <= 0 || frames > COSMOS3_WAN_VAE_FRAMES) return -1;
     constexpr int block = 256;
-    constexpr int total = COSMOS3_WAN_VAE_DOWN0_W *
-                          COSMOS3_WAN_VAE_DOWN0_H *
-                          COSMOS3_WAN_VAE_DOWN0_T *
-                          COSMOS3_WAN_VAE_DOWN0_CHANNELS;
+    const int total = COSMOS3_WAN_VAE_DOWN0_W *
+                      COSMOS3_WAN_VAE_DOWN0_H * frames *
+                      COSMOS3_WAN_VAE_DOWN0_CHANNELS;
     down0_avg_shortcut_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
-        conv1_whdc, down0_shortcut_whdc);
+        conv1_whdc, frames, down0_shortcut_whdc);
     return cudaGetLastError() == cudaSuccess ? 0 : -1;
 }
 
@@ -1643,17 +1677,51 @@ extern "C" int cosmos3_wan_vae_mid_attention_f32(
 extern "C" int cosmos3_wan_vae_pack_clean_vision_condition_f32(
     const float * final_conv1_whdc,
     const unsigned short * scale_mean_bf16,
-    const unsigned short * scale_inv_std_bf16,
-    float * clean_condition,
-    cudaStream_t stream) {
+        const unsigned short * scale_inv_std_bf16,
+        float * clean_condition,
+        cudaStream_t stream) {
+    return cosmos3_wan_vae_pack_clean_vision_condition_frames_f32(
+        final_conv1_whdc,
+        scale_mean_bf16,
+        scale_inv_std_bf16,
+        COSMOS3_WAN_VAE_DOWN2_T,
+        clean_condition,
+        stream);
+}
+
+extern "C" int cosmos3_wan_vae_pack_clean_vision_condition_frames_f32(
+        const float * final_conv1_whdc,
+        const unsigned short * scale_mean_bf16,
+        const unsigned short * scale_inv_std_bf16,
+        int latent_frames,
+        float * clean_condition,
+        cudaStream_t stream) {
     if (!final_conv1_whdc || !scale_mean_bf16 || !scale_inv_std_bf16 || !clean_condition) {
         return -1;
     }
+    if (latent_frames <= 0 || latent_frames > COSMOS3_WAN_VAE_DOWN2_T) return -1;
     constexpr int block = 256;
     constexpr int total = 17 * 20 * 192;
     pack_clean_vision_condition_kernel<<<(total + block - 1) / block, block, 0, stream>>>(
-        final_conv1_whdc, scale_mean_bf16, scale_inv_std_bf16, clean_condition);
+        final_conv1_whdc, scale_mean_bf16, scale_inv_std_bf16, latent_frames, clean_condition);
     return cudaGetLastError() == cudaSuccess ? 0 : -1;
+}
+
+extern "C" int cosmos3_wan_vae_release_transient_workspace() {
+#ifdef VLA_COSMOS3_USE_CUDNN
+    auto & cache = g_cudnn_conv3d_cache;
+    if (cache.padded && cudaFree(cache.padded) != cudaSuccess) return -1;
+    cache.padded = nullptr;
+    cache.padded_elems = 0;
+    if (cache.workspace && cudaFree(cache.workspace) != cudaSuccess) return -1;
+    cache.workspace = nullptr;
+    cache.workspace_bytes = 0;
+    for (auto & item : cache.weights_f32) {
+        if (item.second.data && cudaFree(item.second.data) != cudaSuccess) return -1;
+    }
+    cache.weights_f32.clear();
+#endif
+    return 0;
 }
 
 extern "C" int cosmos3_wan_vae_encoder_conv1_prefix_f32(

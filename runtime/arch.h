@@ -82,6 +82,7 @@ public:
         out.error = "architecture does not implement the typed WAM interface";
         return out;
     }
+    virtual std::string reset_wam(uint64_t) { return {}; }
 };
 
 /**

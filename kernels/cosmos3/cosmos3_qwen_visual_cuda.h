@@ -73,6 +73,15 @@ typedef struct {
 cosmos3_visual_cuda_ctx * cosmos3_visual_cuda_init(const cosmos3_visual_cuda_config * cfg);
 void cosmos3_visual_cuda_free(cosmos3_visual_cuda_ctx * ctx);
 
+// Release visual-tower workspaces while retaining the final visual tokens,
+// deepstack outputs, weights, and lookup tables needed by the next stage.
+// The next forward call recreates the workspaces on demand.
+void cosmos3_visual_cuda_release_transient(cosmos3_visual_cuda_ctx * ctx);
+
+// Release final visual/deepstack outputs after the language tower consumes
+// them. The next visual forward recreates these buffers on demand.
+void cosmos3_visual_cuda_release_outputs(cosmos3_visual_cuda_ctx * ctx);
+
 void cosmos3_visual_cuda_set_embed(
     cosmos3_visual_cuda_ctx * ctx,
     const void * patch_w,

@@ -52,6 +52,7 @@ policy:
   seed: 0
   deterministic_seed: 0
   enable_mot_condition_cache: true
+  release_vae_after_request: true
   invert_gripper: true
   qwen_tokenizer_root: assets/qwen3_vl_tokenizer
 

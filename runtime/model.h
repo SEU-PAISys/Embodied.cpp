@@ -327,4 +327,7 @@ bool model_supports_wam(const Model * m);
 /// Run a typed WAM request. Returns an error-bearing WamOutput when unsupported.
 WamOutput wam_predict(Model * m, const WamInputs & in);
 
+/// Notify a WAM model that an inference session has ended or reset.
+std::string wam_reset(Model * m, uint64_t session_id);
+
 }

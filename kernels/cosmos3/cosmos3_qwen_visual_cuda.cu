@@ -634,6 +634,7 @@ struct cosmos3_visual_cuda_ctx {
     cublasHandle_t blas = nullptr;
     unsigned char * d_image = nullptr;
     size_t d_image_bytes = 0;
+    float * d_workspace = nullptr;
     float * d_pixel_values = nullptr;
     float * d_tokens = nullptr;
     float * d_x0 = nullptr;
@@ -714,18 +715,13 @@ struct VisualTimingGuard {
 static void visual_cuda_release_allocs(cosmos3_visual_cuda_ctx * ctx) {
     if (!ctx) return;
     if (ctx->d_image) cudaFree(ctx->d_image);
-    if (ctx->d_pixel_values) cudaFree(ctx->d_pixel_values);
+    if (ctx->d_workspace) cudaFree(ctx->d_workspace);
     if (ctx->d_tokens) cudaFree(ctx->d_tokens);
     if (ctx->d_x0) cudaFree(ctx->d_x0);
     if (ctx->d_x1) cudaFree(ctx->d_x1);
     if (ctx->d_norm) cudaFree(ctx->d_norm);
-    if (ctx->d_qkv) cudaFree(ctx->d_qkv);
     if (ctx->d_q_rope) cudaFree(ctx->d_q_rope);
     if (ctx->d_k_rope) cudaFree(ctx->d_k_rope);
-    if (ctx->d_attn) cudaFree(ctx->d_attn);
-    if (ctx->d_mlp) cudaFree(ctx->d_mlp);
-    if (ctx->d_merged) cudaFree(ctx->d_merged);
-    if (ctx->d_merger_h) cudaFree(ctx->d_merger_h);
     for (float * ptr : ctx->d_deepstack_tokens) {
         if (ptr) cudaFree(ptr);
     }
@@ -741,6 +737,8 @@ static void visual_cuda_release_allocs(cosmos3_visual_cuda_ctx * ctx) {
     if (ctx->d_rope_sin) cudaFree(ctx->d_rope_sin);
     if (ctx->d_attn_scores) cudaFree(ctx->d_attn_scores);
     ctx->d_image = nullptr;
+    ctx->d_image_bytes = 0;
+    ctx->d_workspace = nullptr;
     ctx->d_pixel_values = nullptr;
     ctx->d_tokens = nullptr;
     ctx->d_x0 = nullptr;
@@ -767,6 +765,127 @@ static void visual_cuda_release_allocs(cosmos3_visual_cuda_ctx * ctx) {
     ctx->d_rope_sin = nullptr;
     ctx->d_attn_scores = nullptr;
     ctx->max_window_tokens = 0;
+}
+
+static void visual_cuda_release_transient_allocs(cosmos3_visual_cuda_ctx * ctx) {
+    if (!ctx) return;
+    if (ctx->d_image) cudaFree(ctx->d_image);
+    if (ctx->d_workspace) cudaFree(ctx->d_workspace);
+    if (ctx->d_x0) cudaFree(ctx->d_x0);
+    if (ctx->d_x1) cudaFree(ctx->d_x1);
+    if (ctx->d_norm) cudaFree(ctx->d_norm);
+    if (ctx->d_q_rope) cudaFree(ctx->d_q_rope);
+    if (ctx->d_k_rope) cudaFree(ctx->d_k_rope);
+    if (ctx->d_linear_in_bf16) cudaFree(ctx->d_linear_in_bf16);
+    if (ctx->d_attn_scores) cudaFree(ctx->d_attn_scores);
+    ctx->d_image = nullptr;
+    ctx->d_image_bytes = 0;
+    ctx->d_workspace = nullptr;
+    ctx->d_pixel_values = nullptr;
+    ctx->d_x0 = nullptr;
+    ctx->d_x1 = nullptr;
+    ctx->d_norm = nullptr;
+    ctx->d_qkv = nullptr;
+    ctx->d_q_rope = nullptr;
+    ctx->d_k_rope = nullptr;
+    ctx->d_attn = nullptr;
+    ctx->d_mlp = nullptr;
+    ctx->d_merged = nullptr;
+    ctx->d_merger_h = nullptr;
+    ctx->d_linear_in_bf16 = nullptr;
+    ctx->d_attn_scores = nullptr;
+}
+
+static void visual_cuda_release_output_allocs(cosmos3_visual_cuda_ctx * ctx) {
+    if (!ctx) return;
+    if (ctx->d_tokens) cudaFree(ctx->d_tokens);
+    for (float *& ptr : ctx->d_deepstack_tokens) {
+        if (ptr) cudaFree(ptr);
+        ptr = nullptr;
+    }
+    ctx->d_tokens = nullptr;
+}
+
+static bool visual_cuda_allocate_outputs(cosmos3_visual_cuda_ctx * ctx) {
+    if (!ctx) return false;
+    if (ctx->d_tokens && ctx->d_deepstack_tokens[0] &&
+        ctx->d_deepstack_tokens[1] && ctx->d_deepstack_tokens[2]) {
+        return true;
+    }
+    visual_cuda_release_output_allocs(ctx);
+    const int visual_tokens = ctx->cfg.patch_rows / (ctx->cfg.merge * ctx->cfg.merge);
+    const size_t bytes = static_cast<size_t>(visual_tokens) *
+                         static_cast<size_t>(ctx->cfg.output_hidden) * sizeof(float);
+    if (cudaMalloc(reinterpret_cast<void **>(&ctx->d_tokens), bytes) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&ctx->d_deepstack_tokens[0]), bytes) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&ctx->d_deepstack_tokens[1]), bytes) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&ctx->d_deepstack_tokens[2]), bytes) != cudaSuccess) {
+        cudaGetLastError();
+        visual_cuda_release_output_allocs(ctx);
+        return false;
+    }
+    return true;
+}
+
+static bool visual_cuda_allocate_transient(cosmos3_visual_cuda_ctx * ctx) {
+    if (!ctx) return false;
+    if (ctx->d_workspace && ctx->d_pixel_values && ctx->d_x0 && ctx->d_qkv && ctx->d_mlp &&
+        ctx->d_linear_in_bf16 && ctx->d_attn_scores) {
+        return true;
+    }
+    const auto & cfg = ctx->cfg;
+    const size_t pixel_values_bytes =
+        static_cast<size_t>(cfg.patch_rows) * static_cast<size_t>(cfg.patch_dim) * sizeof(float);
+    const size_t hidden_bytes = static_cast<size_t>(cfg.patch_rows) * cfg.hidden * sizeof(float);
+    const size_t qkv_bytes = static_cast<size_t>(cfg.patch_rows) * 3u * cfg.hidden * sizeof(float);
+    const size_t mlp_bytes = static_cast<size_t>(cfg.patch_rows) * cfg.intermediate * sizeof(float);
+    const int visual_tokens = cfg.patch_rows / (cfg.merge * cfg.merge);
+    const size_t merged_bytes = static_cast<size_t>(visual_tokens) *
+                                static_cast<size_t>(cfg.hidden * cfg.merge * cfg.merge) * sizeof(float);
+    const size_t merger_h_bytes = merged_bytes;
+    const size_t workspace_bytes = std::max(
+        std::max(pixel_values_bytes, qkv_bytes),
+        std::max(mlp_bytes, merged_bytes + merger_h_bytes));
+    const int max_linear_in = std::max(std::max(cfg.patch_dim, cfg.hidden),
+                                       std::max(cfg.intermediate, cfg.hidden * cfg.merge * cfg.merge));
+    const size_t linear_in_bf16_bytes =
+        static_cast<size_t>(cfg.patch_rows) * static_cast<size_t>(max_linear_in) * sizeof(__nv_bfloat16);
+    const size_t attn_scores_bytes = static_cast<size_t>(cfg.heads) *
+                                     static_cast<size_t>(cfg.grid_h * cfg.grid_w) *
+                                     static_cast<size_t>(cfg.grid_h * cfg.grid_w) * sizeof(float);
+    if (cudaMalloc(reinterpret_cast<void **>(&ctx->d_workspace), workspace_bytes) != cudaSuccess) {
+        cudaGetLastError();
+        visual_cuda_release_transient_allocs(ctx);
+        return false;
+    }
+    ctx->d_pixel_values = ctx->d_workspace;
+    ctx->d_qkv = ctx->d_workspace;
+    ctx->d_mlp = ctx->d_workspace;
+    ctx->d_merged = ctx->d_workspace;
+    ctx->d_merger_h = ctx->d_workspace + merged_bytes / sizeof(float);
+    if (cudaMalloc(reinterpret_cast<void **>(&ctx->d_x0), hidden_bytes) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&ctx->d_x1), hidden_bytes) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&ctx->d_norm), hidden_bytes) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&ctx->d_q_rope), hidden_bytes) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&ctx->d_k_rope), hidden_bytes) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&ctx->d_linear_in_bf16), linear_in_bf16_bytes) != cudaSuccess ||
+        cudaMalloc(reinterpret_cast<void **>(&ctx->d_attn_scores), attn_scores_bytes) != cudaSuccess) {
+        cudaGetLastError();
+        visual_cuda_release_transient_allocs(ctx);
+        return false;
+    }
+    ctx->d_attn = ctx->d_norm;
+    return true;
+}
+
+extern "C" void cosmos3_visual_cuda_release_transient(cosmos3_visual_cuda_ctx * ctx) {
+    visual_cuda_release_transient_allocs(ctx);
+}
+
+extern "C" void cosmos3_visual_cuda_release_outputs(cosmos3_visual_cuda_ctx * ctx) {
+    if (!ctx) return;
+    if (cudaDeviceSynchronize() != cudaSuccess) cudaGetLastError();
+    visual_cuda_release_output_allocs(ctx);
 }
 
 static void visual_debug_release(cosmos3_visual_cuda_ctx * ctx) {
@@ -1017,40 +1136,15 @@ extern "C" cosmos3_visual_cuda_ctx * cosmos3_visual_cuda_init(
         return nullptr;
     }
     ctx->layers.resize(static_cast<size_t>(cfg->blocks));
-    const size_t pixel_values_bytes =
-        static_cast<size_t>(cfg->patch_rows) * static_cast<size_t>(cfg->patch_dim) * sizeof(float);
     const int visual_tokens = cfg->patch_rows / (cfg->merge * cfg->merge);
     const size_t tokens_bytes =
         static_cast<size_t>(visual_tokens) * static_cast<size_t>(cfg->output_hidden) * sizeof(float);
-    const size_t hidden_bytes = static_cast<size_t>(cfg->patch_rows) * cfg->hidden * sizeof(float);
-    const size_t qkv_bytes = static_cast<size_t>(cfg->patch_rows) * 3u * cfg->hidden * sizeof(float);
-    const size_t mlp_bytes = static_cast<size_t>(cfg->patch_rows) * cfg->intermediate * sizeof(float);
-    const size_t merged_bytes = static_cast<size_t>(visual_tokens) *
-                                static_cast<size_t>(cfg->hidden * cfg->merge * cfg->merge) * sizeof(float);
-    const size_t merger_h_bytes = static_cast<size_t>(visual_tokens) *
-                                  static_cast<size_t>(cfg->hidden * cfg->merge * cfg->merge) * sizeof(float);
     const size_t deepstack_bytes =
         static_cast<size_t>(visual_tokens) * static_cast<size_t>(cfg->output_hidden) * sizeof(float);
-    const int max_linear_in = std::max(std::max(cfg->patch_dim, cfg->hidden),
-                                       std::max(cfg->intermediate, cfg->hidden * cfg->merge * cfg->merge));
-    const size_t linear_in_bf16_bytes =
-        static_cast<size_t>(cfg->patch_rows) * static_cast<size_t>(max_linear_in) * sizeof(__nv_bfloat16);
-    if (cudaMalloc(reinterpret_cast<void **>(&ctx->d_pixel_values), pixel_values_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_tokens), tokens_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_x0), hidden_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_x1), hidden_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_norm), hidden_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_qkv), qkv_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_q_rope), hidden_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_k_rope), hidden_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_attn), hidden_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_mlp), mlp_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_merged), merged_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_merger_h), merger_h_bytes) != cudaSuccess ||
+    if (cudaMalloc(reinterpret_cast<void **>(&ctx->d_tokens), tokens_bytes) != cudaSuccess ||
         cudaMalloc(reinterpret_cast<void **>(&ctx->d_deepstack_tokens[0]), deepstack_bytes) != cudaSuccess ||
         cudaMalloc(reinterpret_cast<void **>(&ctx->d_deepstack_tokens[1]), deepstack_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_deepstack_tokens[2]), deepstack_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_linear_in_bf16), linear_in_bf16_bytes) != cudaSuccess) {
+        cudaMalloc(reinterpret_cast<void **>(&ctx->d_deepstack_tokens[2]), deepstack_bytes) != cudaSuccess) {
         cosmos3_visual_cuda_free(ctx);
         return nullptr;
     }
@@ -1092,11 +1186,6 @@ extern "C" cosmos3_visual_cuda_ctx * cosmos3_visual_cuda_init(
     const int window_size = cfg->grid_h * cfg->grid_w;
     ctx->windows = cfg->grid_t;
     ctx->max_window_tokens = window_size;
-    const size_t attn_scores_bytes =
-        static_cast<size_t>(cfg->heads) *
-        static_cast<size_t>(ctx->max_window_tokens) *
-        static_cast<size_t>(ctx->max_window_tokens) *
-        sizeof(float);
     std::vector<int> offsets(static_cast<size_t>(ctx->windows) + 1u, 0);
     std::vector<int> token_to_window(cfg->patch_rows, 0);
     for (int w = 0; w <= ctx->windows; ++w) {
@@ -1108,8 +1197,7 @@ extern "C" cosmos3_visual_cuda_ctx * cosmos3_visual_cuda_init(
             token_to_window[static_cast<size_t>(token)] = w;
         }
     }
-    if (cudaMalloc(reinterpret_cast<void **>(&ctx->d_attn_scores), attn_scores_bytes) != cudaSuccess ||
-        cudaMalloc(reinterpret_cast<void **>(&ctx->d_coords_yx), coords.size() * sizeof(int)) != cudaSuccess ||
+    if (cudaMalloc(reinterpret_cast<void **>(&ctx->d_coords_yx), coords.size() * sizeof(int)) != cudaSuccess ||
         cudaMalloc(reinterpret_cast<void **>(&ctx->d_window_offsets), offsets.size() * sizeof(int)) != cudaSuccess ||
         cudaMalloc(reinterpret_cast<void **>(&ctx->d_token_to_window), token_to_window.size() * sizeof(int)) != cudaSuccess ||
         cudaMalloc(reinterpret_cast<void **>(&ctx->d_pos_ids), pos_ids.size() * sizeof(int)) != cudaSuccess ||
@@ -1213,7 +1301,10 @@ extern "C" int cosmos3_visual_cuda_forward_robolab_image(
         cudaStream_t stream) {
     if (!ctx || !image_u8_host || image_h <= 0 || image_w <= 0 ||
         !ctx->d_pixel_values || !ctx->d_tokens) {
-        return -1;
+        if (!ctx || !image_u8_host || image_h <= 0 || image_w <= 0 ||
+            !visual_cuda_allocate_outputs(ctx) || !visual_cuda_allocate_transient(ctx)) {
+            return -1;
+        }
     }
     const size_t image_bytes = static_cast<size_t>(image_h) * static_cast<size_t>(image_w) * 3u;
     if (image_bytes > ctx->d_image_bytes) {

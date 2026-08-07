@@ -106,6 +106,7 @@ int main(int argc, char ** argv) {
     zmq::socket_t socket(context, zmq::socket_type::rep);
     int linger = 0;
     socket.setsockopt(ZMQ_LINGER, &linger, sizeof(linger));
+    socket.set(zmq::sockopt::rcvtimeo, 250);
     socket.bind(bind_addr);
     std::printf("wam-server: bound to %s. ready.\n", bind_addr.c_str());
     std::fflush(stdout);
@@ -134,7 +135,9 @@ int main(int argc, char ** argv) {
             continue;
         }
         if (request.has_reset()) {
-            response.set_status("reset");
+            const std::string reset_error = vla::wam_reset(model, request.reset().session_id());
+            if (!reset_error.empty()) response.set_error(reset_error);
+            else response.set_status("reset");
             socket.send(zmq::buffer(response.SerializeAsString()), zmq::send_flags::none);
             continue;
         }

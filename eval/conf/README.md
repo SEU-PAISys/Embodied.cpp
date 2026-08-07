@@ -22,23 +22,8 @@ eval/sim/libero/libero_uv/.venv/bin/python \
 
 Use explicit paths for machine-local assets such as tokenizers when needed.
 
-Run the SmolVLA LIBERO-object smoke test after starting
-`vla-server` with `MODEL_BUILD_VLA_SMOLVLA=ON` on `tcp://127.0.0.1:5566`:
-
-```bash
-MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \
-eval/sim/libero/libero_uv/.venv/bin/python \
-  eval/client/run_sim_client_direct.py \
-  --conf eval/conf/libero_smolvla_eval.yaml
-```
-
-For the complete 4-suite SmolVLA acceptance matrix, use
-`eval/client/run_smolvla_acceptance.py`. It drives
-`libero_smolvla_benchmark.yaml` across all suites and generates a comparison
-against the official LeRobot evaluator.
-
-GR00T N1.7 uses the tokenizer embedded in its Qwen3-VL GGUF, so its LIBERO
-configuration needs no tokenizer path:
+The C++ GR00T N1.7 path uses the tokenizer embedded in its Qwen3-VL GGUF, so its
+LIBERO configuration needs no tokenizer path:
 
 ```bash
 eval/sim/libero/libero_uv/.venv/bin/python \
