@@ -65,3 +65,68 @@ for a quantized action-head path.
 GR00T N1.7 disables backbone flash attention by default for validation-oriented
 runs. Set `VLA_GROOT_FLASH_ATTN=1` before starting `vla-server` to opt into the
 faster fused path.
+
+For SmolVLA, the checked-in `libero_smolvla_eval.yaml` is an integration
+configuration rather than a benchmark claim. During bring-up on an RTX 4060
+Laptop, one seed each for LIBERO-object tasks 0, 1, and 2 completed
+successfully at steps 149, 133, and 155 respectively.
+
+## SmolVLA acceptance benchmark
+
+The acceptance protocol is deliberately larger than the integration sample:
+`libero_spatial`, `libero_object`, `libero_goal`, and `libero_10`, with all ten
+tasks and ten episodes per task. This is 400 episodes for the C++ runtime and
+another 400 episodes for the official LeRobot SmolVLA implementation. Both use
+relative control, fixed LIBERO initial states, one replayed action per model
+request, and ten flow-matching steps.
+
+With the C++ SmolVLA server already listening on `tcp://127.0.0.1:5566`, run:
+
+```bash
+eval/sim/libero/libero_uv/.venv/bin/python \
+  eval/client/run_smolvla_acceptance.py --run cpp
+```
+
+Run the official GPU baseline from the LeRobot environment:
+
+```bash
+eval/sim/libero/libero_uv/.venv/bin/python \
+  eval/client/run_smolvla_acceptance.py --run official \
+  --lerobot-eval /root/smolvla-port/bin/lerobot-eval
+```
+
+The runner skips tasks that already have complete result files, so interruption
+only causes the currently incomplete task to be replayed. C++ resume validation
+checks the architecture, suite, task, environment seed, action-noise seed, and action
+replay horizon. Official results additionally carry a sidecar `run_metadata.json`
+with the suite, task, episode count, seed, policy path, action horizon, and flow
+step count; stale or metadata-less official results are rerun and excluded from
+aggregation, so results from a different protocol are not mixed.
+Regenerate the comparison without launching rollouts with `--run none`. It writes
+`outputs/smolvla_acceptance/report.json` and a Markdown table beside it. A suite
+passes the parity guard when its C++ success rate is no more than five percentage
+points below the locally executed official baseline; change this explicit
+tolerance with `--tolerance` if an acceptance contract specifies another value.
+
+The three successful one-episode tasks documented above are not a complete
+benchmark result and do not satisfy these acceptance criteria.
+
+For a PR smoke benchmark, select one task per suite and three episodes:
+
+```bash
+eval/sim/libero/libero_uv/.venv/bin/python \
+  eval/client/run_smolvla_acceptance.py \
+  --run all --task-ids 0 --episodes 3
+```
+
+This sets `selected_protocol_complete` when all 24 rollouts (12 C++ and 12
+official) exist. It intentionally does not set the full-benchmark acceptance
+flags, which require all ten tasks and ten episodes per task.
+
+Run the lightweight regression suite with the repository's `gguf-py` package
+on `PYTHONPATH`:
+
+```bash
+PYTHONPATH=third_party/llama.cpp/gguf-py \
+  python -m unittest discover -s tests -v
+```

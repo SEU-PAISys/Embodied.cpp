@@ -81,6 +81,12 @@ The HY-VLA RoboTwin config mirrors the upstream Python policy defaults:
 `blend_mode=rel_abs`, `exec_action_size=7`, `img_history_size=6`, and
 `img_history_interval=5`.
 
+SmolVLA on LIBERO uses the dedicated `libero_smolvla_eval.yaml` configuration.
+It expects the policy and SigLIP mmproj GGUFs described in
+[`scripts/README.md`](../../scripts/README.md), uses one replayed action per
+model request, and applies the serialized processor's trailing task-prompt
+newline automatically in the direct client.
+
 Latency-aware RoboTwin videos can be enabled for presentation/debug runs:
 
 ```bash

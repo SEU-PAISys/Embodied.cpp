@@ -13,7 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -39,10 +42,11 @@ except ModuleNotFoundError:
     LiberoSuiteProfiler: Any = None
 from client.lingbot_world_client import LingBotWorldClient
 from client.inference_timeline import timeline_path_for_video, write_inference_timeline
+from client.reproducibility import derive_episode_noise_seed
 from client.vla_cpp_client import ARCH_PRESETS as VLA_ARCH_PRESETS
 from client.vla_cpp_client import VlaCppClient
 
-ARCH_CHOICES = ["pi05", "groot_n1", "lingbot_va"]
+ARCH_CHOICES = ["pi05", "groot_n1", "lingbot_va", "smolvla"]
 LIBERO_SUITE_TASK_COUNTS = {
     "libero_spatial": 10,
     "libero_object": 10,
@@ -169,6 +173,7 @@ def build_client(args):
                 max_length=args.max_length,
                 recv_timeout_ms=args.recv_timeout_ms,
                 n_action_steps=args.n_action_steps,
+                noise_seed=args.noise_seed,
             )
         )
     from client.lingbot_world_client import LingBotWorldClient
@@ -224,6 +229,7 @@ def run_one_task(
     lingbot_predict_server_ms: list[float] = []
     lingbot_cache_wall_ms: list[float] = []
     lingbot_cache_server_ms: list[float] = []
+    episode_results: list[dict[str, Any]] = []
     skipped = 0
     lingbot_noise_gen = None
     if args.arch == "lingbot_va" and args.lingbot_noise_mode == "torch_cuda_seed":
@@ -239,7 +245,14 @@ def run_one_task(
     for episode in range(args.n_episodes):
         print(f"*** {task}/task_{task_id} Episode {episode + 1}/{args.n_episodes}")
 
-        client.reset()
+        if args.arch == "smolvla" and args.noise_seed is not None:
+            episode_noise_seed = derive_episode_noise_seed(
+                args.noise_seed, task, task_id, episode
+            )
+            client.reset(noise_seed=episode_noise_seed)
+        else:
+            episode_noise_seed = None
+            client.reset()
         obs, info = env.reset()
         run_times, step_id = [], 0
         inference_requests: list[dict[str, float | int]] = []
@@ -439,6 +452,14 @@ def run_one_task(
                     video_has_initial_frame=True,
                     requests=inference_requests,
                 )
+                episode_results.append({
+                    "episode": episode,
+                    "noise_seed": episode_noise_seed,
+                    "success": bool(info.get("is_success", 0.0)),
+                    "skipped": episode_aborted,
+                    "environment_steps": step_id,
+                    "average_step_ms": round(1000 * avg_t, 2),
+                })
                 break
 
         if episode_aborted:
@@ -448,6 +469,24 @@ def run_one_task(
     counted = max(1, args.n_episodes - skipped)
     avg_inf_ms = (round(1000 * sum(inference_times) / len(inference_times), 2)
                   if inference_times else 0.0)
+    result = {
+        "arch": args.arch,
+        "suite": task,
+        "task_id": task_id,
+        "episodes_requested": args.n_episodes,
+        "episodes_counted": args.n_episodes - skipped,
+        "successes": int(success_count),
+        "skipped": skipped,
+        "success_rate": success_count / counted,
+        "average_step_ms": avg_inf_ms,
+        "seed": args.seed,
+        "noise_seed": args.noise_seed,
+        "n_action_steps": args.n_action_steps,
+        "episodes": episode_results,
+    }
+    with (output_dir / "result.json").open("w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2)
+        f.write("\n")
     with open(output_dir / "summary.txt", "w") as f:
         f.write(f"Arch: {args.arch}\n")
         f.write(f"Task: {task}/task_{task_id}\n")
@@ -467,14 +506,7 @@ def run_one_task(
     print(f"- Success rate: {success_count / counted:.2%}  ({int(success_count)}/{counted})")
     print(f"- Skipped (terminated mid-step): {skipped}/{args.n_episodes}")
     print(f"- Saved videos to: {output_dir.resolve()}")
-    return {
-        "task": task,
-        "task_id": task_id,
-        "episodes": args.n_episodes,
-        "successes": int(success_count),
-        "skipped": skipped,
-        "average_step_ms": avg_inf_ms,
-    }
+    return result
 
 if __name__ == "__main__":
     pre_parser = argparse.ArgumentParser(add_help=False)
@@ -524,6 +556,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--seed", type=int, default=42,
         help="Seed for the LIBERO env reset/init-state rollout (default: 42).")
+    parser.add_argument("--noise-seed", type=int, default=None,
+        help="Deterministic SmolVLA action-noise seed. Each task/episode gets a stable derived seed.")
 
     parser.add_argument("--arch", choices=ARCH_CHOICES, default="lingbot_va",
         help="Model/client path. Also namespaces the output dir.")
@@ -621,6 +655,7 @@ if __name__ == "__main__":
             "groot_n1": ("GR00T N1.7", "Qwen3-VL-16L"),
             "pi05": ("pi0.5", "PaliGemma"),
             "lingbot_va": ("LingBot-VA", "LingBot-VLM"),
+            "smolvla": ("SmolVLA", "SmolVLM2-500M"),
         }
         model_default, backbone_default = default_labels[args.arch]
         profiler = LiberoSuiteProfiler(

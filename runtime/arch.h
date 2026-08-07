@@ -44,6 +44,7 @@ enum class Arch {
     HY_VLA,     ///< Tencent Hy-Embodied-0.5-VLA dual-tower flow policy.
     COSMOS3,    ///< NVIDIA Cosmos3 video-action world model.
     GROOT_N1,   ///< NVIDIA GR00T N1 vision-language-action policy.
+    SMOLVLA,    ///< LeRobot SmolVLA (SigLIP + SmolLM2 + flow-matching action expert).
 };
 
 /**
@@ -126,6 +127,19 @@ std::unique_ptr<ModelArchBase> cosmos3_create(const std::string& mmproj_path,
 std::unique_ptr<ModelArchBase> groot_n1_create(const std::string& mmproj_path,
                                                const std::string& ckpt_path,
                                                 const std::string& config_path);
+
+/**
+ * @brief Build a SmolVLA model from its mmproj (SigLIP vision tower + connector)
+ *        and policy GGUF (SmolLM2 text backbone + flow-matching action expert +
+ *        action projections + normalization statistics).
+ * @param mmproj_path Path to the SmolVLA mmproj GGUF (SigLIP + connector).
+ * @param ckpt_path   Path to the SmolVLA policy GGUF.
+ * @param config_path Optional JSON override; pass empty to use bundled config.
+ * @return Owning pointer to the constructed model.
+ */
+std::unique_ptr<ModelArchBase> smolvla_create(const std::string& mmproj_path,
+                                               const std::string& ckpt_path,
+                                               const std::string& config_path);
 
 /**
  * @brief Inspect a GGUF and identify the architecture tag.

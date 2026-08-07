@@ -60,12 +60,14 @@ bool detect_arch_gguf(const std::string& path, Arch* out) {
         try_str("lingbot_va.architecture", arch_str) ||
         try_str("hy_vla.architecture",     arch_str) ||
         try_str("groot_n1.architecture",   arch_str) ||
-        try_str("cosmos3.architecture",    arch_str)) {
+        try_str("cosmos3.architecture",    arch_str) ||
+        try_str("smolvla.architecture",    arch_str)) {
         if      (arch_str == "pi05")       { *out = Arch::PI05;       ok = true; }
         else if (arch_str == "lingbot_va") { *out = Arch::LINGBOT_VA; ok = true; }
         else if (arch_str == "hy_vla")     { *out = Arch::HY_VLA;     ok = true; }
         else if (arch_str == "groot_n1")   { *out = Arch::GROOT_N1;   ok = true; }
         else if (arch_str == "cosmos3")    { *out = Arch::COSMOS3;    ok = true; }
+        else if (arch_str == "smolvla")    { *out = Arch::SMOLVLA;    ok = true; }
     }
 
     gguf_free(gctx);
@@ -163,6 +165,16 @@ Model* model_load(const std::string& mmproj_path, const std::string& ckpt_path,
             std::fprintf(stderr,
                          "vla: Cosmos3 support was not built into this binary "
                          "(reconfigure with -DMODEL_BUILD_WAM_COSMOS3=ON)\n");
+#endif
+            break;
+        case Arch::SMOLVLA:
+            std::printf("vla: arch = smolvla\n");
+#if MODEL_BUILD_VLA_SMOLVLA
+            impl = smolvla_create(mmproj_path, ckpt_path, config_path);
+#else
+            std::fprintf(stderr,
+                         "vla: SmolVLA support was not built into this binary "
+                         "(reconfigure with -DMODEL_BUILD_VLA_SMOLVLA=ON)\n");
 #endif
             break;
     }

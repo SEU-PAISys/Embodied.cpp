@@ -97,7 +97,7 @@ $\dagger$ We plan to support this model once it is open sourcece :)
 | Family | Subtype | Support ✅ | Planned 🚧 |
 |---|---|---|---|
 | VLA | AR-Token VLA | - | [OpenVLA](https://github.com/openvla/openvla) |
-| VLA | VLM-Backboned VLA | [pi0.5](https://github.com/Physical-Intelligence/openpi), [HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA) | [Octo](https://github.com/octo-models/octo) |
+| VLA | VLM-Backboned VLA | [pi0.5](https://github.com/Physical-Intelligence/openpi), [SmolVLA](https://github.com/huggingface/lerobot), [HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA) | [Octo](https://github.com/octo-models/octo) |
 | VLA | Hierarchical VLA | - | [Hi Robot](https://arxiv.org/abs/2502.19417), [GeneralVLA](https://github.com/AIGeeksGroup/GeneralVLA-2) |
 | VLA | Asynchronous VLA | [GR00T N1.7](https://developer.nvidia.com/isaac/gr00t) | [Fast-in-Slow](https://github.com/CHEN-H01/Fast-in-Slow) |
 | WAM | Predict-then-Act WAM | - | [UniPi](https://github.com/flow-diffusion/AVDC_experiments/) |
@@ -139,6 +139,7 @@ The repository currently hosts GGUF artifacts prepared for the current
 - `HY-VLA-0.5`: combined VLA GGUF for RoboTwin and related runtime paths
 - `LingBot-VA`: transformer GGUF and companion artifacts used by the LingBot path
 - `Cosmos3-Nano`: RoboLab WAM GGUF with the Wan VAE encoder
+- `SmolVLA`: LeRobot policy GGUF plus SigLIP mmproj GGUF
 
 Recommended local layout:
 
@@ -159,6 +160,9 @@ checkpoints/
     ...
   cosmos3/
     cosmos3_robolab_full_w8_with_vae_encoder.gguf
+  smolvla/
+    smolvla.gguf
+    mmproj-smolvla.gguf
 ```
 
 You can also convert upstream checkpoints yourself with the scripts in
@@ -220,6 +224,7 @@ Replace the placeholders with the model you want to build:
 | Model | `<MODEL_BUILD_FLAG>` | `<SERVER_TARGET>` |
 |---|---|---|
 | pi0.5 | `MODEL_BUILD_VLA_PI05` | `vla-server` |
+| SmolVLA | `MODEL_BUILD_VLA_SMOLVLA` | `vla-server` |
 | HY-VLA | `MODEL_BUILD_VLA_HY_VLA` | `vla-server` |
 | GR00T N1.7 | `MODEL_BUILD_VLA_GROOT_N1` | `vla-server` |
 | LingBot-VA | `MODEL_BUILD_WAM_LINGBOT_VA` | `wam-lingbot-server` |
@@ -244,6 +249,7 @@ Use the `<BUILD_DIR>` and `<SERVER_TARGET>` selected in section 2.4. Replace
 | Model | `<SERVER_TARGET>` | `<MODEL_ARGUMENTS>` |
 |---|---|---|
 | pi0.5 | `vla-server` | `<MMPROJ_GGUF> <MODEL_GGUF>` |
+| SmolVLA | `vla-server` | `<MMPROJ_GGUF> <MODEL_GGUF>` |
 | HY-VLA | `vla-server` | `<MODEL_GGUF>` |
 | GR00T N1.7 | `vla-server` | `--backbone <BACKBONE_GGUF> <MMPROJ_GGUF> <ACTION_HEAD_GGUF>` |
 | LingBot-VA | `wam-lingbot-server` | `<TRANSFORMER_GGUF> <TEXT_ENCODER_GGUF> <VAE_ENCODER_GGUF>` |
@@ -261,6 +267,7 @@ configuration and runner for the model and benchmark you want to evaluate.
 | Model | Benchmark | Configuration | Server |
 |---|---|---|---|
 | pi0.5 | LIBERO | [pi0.5](eval/conf/libero_pi05_eval.yaml) | Manual |
+| SmolVLA | LIBERO | [SmolVLA](eval/conf/libero_smolvla_eval.yaml) | Manual |
 | GR00T N1.7 | LIBERO | [GR00T](eval/conf/libero_groot_n1_eval.yaml) | Manual |
 | LingBot-VA | LIBERO | [LingBot](eval/conf/libero_lingbot_va_eval.yaml) | Manual |
 | HY-VLA | RoboTwin | [HY-VLA](eval/conf/robotwin_hy_vla_eval.yaml) | Managed |
@@ -269,6 +276,38 @@ configuration and runner for the model and benchmark you want to evaluate.
 LIBERO uses `eval/client/run_sim_client_direct.py`; start its matching server
 separately. RoboTwin and RoboLab runners start their servers from the selected
 configuration and stop them when the evaluation finishes.
+
+**SmolVLA on LIBERO:**
+
+Convert a LeRobot LIBERO checkpoint into the policy GGUF and the SigLIP
+identity-proxy mmproj. The pixel-shuffle connector is stored in the policy
+GGUF and executed by `models/smolvla.cpp`.
+
+```bash
+python scripts/convert_smolvla_to_gguf.py \
+  --ckpt checkpoints/smolvla_libero \
+  --out checkpoints/smolvla/smolvla.gguf
+python scripts/convert_smolvla_mmproj_to_gguf.py \
+  --ckpt checkpoints/smolvla_libero \
+  --out checkpoints/smolvla/mmproj-smolvla.gguf
+
+# Start `vla-server` with MODEL_BUILD_VLA_SMOLVLA=ON, then run the smoke test.
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \
+eval/sim/libero/libero_uv/.venv/bin/python \
+  eval/client/run_sim_client_direct.py \
+  --conf eval/conf/libero_smolvla_eval.yaml
+```
+
+The serialized SmolVLA processor requires a trailing newline in each task
+prompt; the direct client applies it automatically. The checked-in configuration
+uses one replayed action per model request and the full LIBERO episode horizon.
+
+See [eval/SMOLVLA_VALIDATION.md](eval/SMOLVLA_VALIDATION.md) for the acceptance
+matrix, smoke protocol, build matrix, and parity methodology. The implementation
+and validation report is available at
+[eval/SMOLVLA_TECHNICAL_REPORT_ZH.md](eval/SMOLVLA_TECHNICAL_REPORT_ZH.md).
+
+**HY-VLA on RoboTwin:**
 
 Each checked-in YAML is a baseline evaluation configuration. Adjust its task
 selection, episode count, model paths, output location, and other

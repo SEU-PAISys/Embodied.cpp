@@ -30,6 +30,7 @@ to validate paths and tensor mappings before writing a large GGUF file.
 | HY-VLA | `convert_hy_vla_to_gguf.py` | `quantize_hy_vla_gguf.py` |
 | LingBot-VA | `convert_lingbot_va_to_gguf.py` | `quantize_lingbot_wan_gguf.py` |
 | Cosmos3-Nano | `convert_cosmos3_full_w8_to_gguf.py` | Use the upstream full_w8 bundle |
+| SmolVLA | `convert_smolvla_to_gguf.py`, `convert_smolvla_mmproj_to_gguf.py` | Output type selected during conversion |
 
 Place final artifacts under the `checkpoints/` layout shown in the top-level
 README, then use the matching build and evaluation configuration.
@@ -136,6 +137,26 @@ python scripts/convert_cosmos3_full_w8_to_gguf.py \
 ```
 
 Use the resulting GGUF with `eval/conf/robolab_cosmos3_eval.yaml`.
+
+## SmolVLA
+
+SmolVLA uses two GGUF files: the policy file containing the SmolLM2 backbone,
+flow-matching action expert, connector, and normalization statistics, plus a
+SigLIP projector file. Convert both files from the same LeRobot checkpoint:
+
+```bash
+python scripts/convert_smolvla_to_gguf.py \
+  --ckpt <SMOLVLA_CHECKPOINT> \
+  --out checkpoints/smolvla/smolvla.gguf
+
+python scripts/convert_smolvla_mmproj_to_gguf.py \
+  --ckpt <SMOLVLA_CHECKPOINT> \
+  --out checkpoints/smolvla/mmproj-smolvla.gguf
+```
+
+Run `--help` to inspect optional dtype and validation flags. The converter
+checks the VLM/action-expert layer topology and preserves the serialized
+processor metadata required by the LIBERO client.
 
 ## Verify Outputs
 
