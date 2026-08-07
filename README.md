@@ -55,8 +55,11 @@ https://github.com/user-attachments/assets/3f74a1cb-5536-43fb-87c6-8802dbda42f0
     - [HY-VLA](#hy-vla)
   - [Table of Contents](#table-of-contents)
   - [1. 🧭 Current Support and Roadmap](#1--current-support-and-roadmap)
-    - [1.1 Model Support Roadmap](#11-model-support-roadmap)
-    - [1.2 Runtime Roadmap](#12-runtime-roadmap)
+    - [1.1 Supported Models](#11-supported-models)
+      - [Vision-Language-Action Models](#vision-language-action-models)
+      - [World Models](#world-models)
+    - [1.2 Performance Acceleration](#12-performance-acceleration)
+    - [1.3 Runtime Roadmap](#13-runtime-roadmap)
   - [2. 🚀 Quick Start](#2--quick-start)
     - [2.1 Clone the Repo](#21-clone-the-repo)
     - [2.2 Get GGUF Weights](#22-get-gguf-weights)
@@ -77,39 +80,84 @@ https://github.com/user-attachments/assets/3f74a1cb-5536-43fb-87c6-8802dbda42f0
 
 ## 1. 🧭 Current Support and Roadmap
 
-### 1.1 Model Support Roadmap
-The table below summarizes the embodied AI model families that `Embodied.cpp` already supports and the ones we plan to support next. For a more detailed taxonomy and architectural discussion, please refer to our technical report.
+### 1.1 Supported Models
 
-<!-- Backup of the previous table before removing non-open-source models:
-| Family | Subtype | Implemented | Planned |
-|---|---|---|---|
-| VLA | AR-Token VLA | - | [OpenVLA](https://github.com/openvla/openvla), [RT-2$\dagger$](https://arxiv.org/abs/2307.15818)|
-| VLA | VLM-Backboned VLA | [pi0.5](https://github.com/Physical-Intelligence/openpi), [HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA) | [Octo](https://github.com/octo-models/octo), [MuseVLA$\dagger$](https://arxiv.org/abs/2606.17598) |
-| VLA | Hierarchical VLA | - | [Hi Robot](https://arxiv.org/abs/2502.19417), [GeneralVLA](https://github.com/AIGeeksGroup/GeneralVLA-2), [RT-H$\dagger$](https://arxiv.org/abs/2403.01823), [Gemini Robotics 1.5$\dagger$](https://arxiv.org/abs/2510.03342) |
-| VLA | Asynchronous VLA | - | [GR00T N1](https://developer.nvidia.com/isaac/gr00t), [Fast-in-Slow](https://github.com/CHEN-H01/Fast-in-Slow), [DAM-VLA$\dagger$](https://arxiv.org/abs/2606.12105) |
-| WAM | Predict-then-Act WAM | - | [UniPi](https://github.com/flow-diffusion/AVDC_experiments/) |
-| WAM | Unified AR-Modeling WAM | [LingBot-VA](https://github.com/robbyant/lingbot-va) | [WorldVLA](https://github.com/alibaba-damo-academy/RynnVLA-002) |
-| WAM | Shared-Backbone WAM | - | [DreamZero](https://github.com/dreamzero0/dreamzero), [FastWAM](https://github.com/yuantianyuan01/FastWAM), [Cosmos Policy](https://github.com/nvlabs/cosmos-policy), [UWM](https://github.com/ShuangLI59/unified_video_action) |
-| WAM | Latent-space WAM | - | [LaWAM$\dagger$](https://arxiv.org/abs/2606.15768), [Being-H0.7](https://github.com/BeingBeyond/Being-H) |
-$\dagger$ We plan to support this model once it is open sourcece :)
--->
+#### Vision-Language-Action Models
 
-| Family | Subtype | Support ✅ | Planned 🚧 |
-|---|---|---|---|
-| VLA | AR-Token VLA | - | [OpenVLA](https://github.com/openvla/openvla) |
-| VLA | VLM-Backboned VLA | [pi0.5](https://github.com/Physical-Intelligence/openpi), [SmolVLA](https://github.com/huggingface/lerobot), [HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA) | [Octo](https://github.com/octo-models/octo) |
-| VLA | Hierarchical VLA | - | [Hi Robot](https://arxiv.org/abs/2502.19417), [GeneralVLA](https://github.com/AIGeeksGroup/GeneralVLA-2) |
-| VLA | Asynchronous VLA | [GR00T N1.7](https://developer.nvidia.com/isaac/gr00t) | [Fast-in-Slow](https://github.com/CHEN-H01/Fast-in-Slow) |
-| WAM | Predict-then-Act WAM | - | [UniPi](https://github.com/flow-diffusion/AVDC_experiments/) |
-| WAM | Unified AR-Modeling WAM | [LingBot-VA](https://github.com/robbyant/lingbot-va) | [WorldVLA](https://github.com/alibaba-damo-academy/RynnVLA-002) |
-| WAM | Shared-Backbone WAM | [Cosmos3-Nano(full_w8 version)](https://github.com/nvidia/cosmos) | [DreamZero](https://github.com/dreamzero0/dreamzero), [FastWAM](https://github.com/yuantianyuan01/FastWAM), [UWM](https://github.com/ShuangLI59/unified_video_action) |
-| WAM | Latent-space WAM | - | [Being-H0.7](https://github.com/BeingBeyond/Being-H) |
+<table>
+  <tr>
+    <td align="center" width="25%">
+      <a href="https://github.com/Physical-Intelligence/openpi">
+        <img src="https://github.com/Physical-Intelligence.png?size=160" alt="Physical Intelligence" height="72"><br>
+        <strong>pi0.5</strong>
+      </a><br>
+    </td>
+    <td align="center" width="25%">
+      <a href="https://github.com/huggingface/lerobot">
+        <img src="https://github.com/huggingface.png?size=160" alt="Hugging Face" height="72"><br>
+        <strong>SmolVLA</strong>
+      </a><br>
+    </td>
+    <td align="center" width="25%">
+      <a href="https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA">
+        <img src="https://github.com/Tencent-Hunyuan.png?size=160" alt="Tencent Hunyuan" height="72"><br>
+        <strong>HY-VLA</strong>
+      </a><br>
+    </td>
+    <td align="center" width="25%">
+      <a href="https://developer.nvidia.com/isaac/gr00t">
+        <img src="https://github.com/NVIDIA.png?size=160" alt="NVIDIA" height="72"><br>
+        <strong>GR00T N1.7</strong>
+      </a><br>
+      <sub>Cross-embodiment VLA</sub>
+    </td>
+  </tr>
+</table>
 
-### 1.2 Runtime Roadmap
-- This part of the project is still under active construction 🚧
+#### World Models
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <a href="https://github.com/robbyant/lingbot-va">
+        <img src="https://github.com/robbyant.png?size=160" alt="LingBot" height="72"><br>
+        <strong>LingBot-VA</strong>
+      </a><br>
+    </td>
+    <td align="center" width="50%">
+      <a href="https://github.com/NVIDIA/Cosmos">
+        <img src="https://github.com/user-attachments/assets/28f2d612-bbd6-44a3-8795-833d05e9f05f" alt="NVIDIA Cosmos" height="72"><br>
+        <strong>Cosmos3-Nano (full-w8)</strong>
+      </a><br>
+    </td>
+  </tr>
+</table>
+
+We continuously track advances in embodied AI and adapt `Embodied.cpp` to the latest open models. Pull requests that add support for new models are always welcome.
+
+### 1.2 Performance Acceleration
+
+VLA results are normalized to each model's Python baseline (`1.00`), and each cell reports **Python → C++**. Lower inference latency and VRAM are better; higher success rate is better. `C++` denotes the BF16 implementation.
+
+| Model | Inference Latency ↓ | VRAM ↓ |
+|---|---:|---:|
+| **pi0.5** | 1.00 → 0.90 (**10% lower**) |  1.00 → 0.60 (**40% lower**) |
+| **GR00T N1.7** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
+| **HY-VLA** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
+
+For World Models, C++ substantially reduces VRAM while keeping the success rate close to the Python baseline.
+
+| Model | VRAM ↓ |
+|---|---:|
+| **Cosmos3** | 21.84 GB → 19.49 GB (**10.8% lower**) |
+| **LingBot-VA** | 24.75 GB → 16.44 GB (**33.6% lower**) |
+
+> **Highlights:** Compared with Python, C++ BF16 reduces VLA inference latency by up to **52%** and VRAM by up to **40%**. For World Models, it reduces VRAM by up to **33.6%**, with success-rate changes limited to **2 percentage points**.
+
+### 1.3 Runtime Roadmap
+- This project is still under active construction 🚧
 - [ ] A more modular and maintainable runtime architecture for `Embodied.cpp`
 - [ ] Additional inference optimizations, such as real-time chunking and VLA caching
-- [ ] More hardware backends, including Metal on macOS
 ---
 
 ## 2. 🚀 Quick Start
