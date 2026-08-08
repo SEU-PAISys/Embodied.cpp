@@ -109,7 +109,6 @@ https://github.com/user-attachments/assets/3f74a1cb-5536-43fb-87c6-8802dbda42f0
         <img src="https://github.com/NVIDIA.png?size=160" alt="NVIDIA" height="72"><br>
         <strong>GR00T N1.7</strong>
       </a><br>
-      <sub>Cross-embodiment VLA</sub>
     </td>
   </tr>
 </table>
@@ -127,7 +126,7 @@ https://github.com/user-attachments/assets/3f74a1cb-5536-43fb-87c6-8802dbda42f0
     <td align="center" width="50%">
       <a href="https://github.com/NVIDIA/Cosmos">
         <img src="https://github.com/user-attachments/assets/28f2d612-bbd6-44a3-8795-833d05e9f05f" alt="NVIDIA Cosmos" height="72"><br>
-        <strong>Cosmos3-Nano (full-w8)</strong>
+        <strong>Cosmos3-Nano</strong>
       </a><br>
     </td>
   </tr>
