@@ -20,7 +20,7 @@
 ---
 ## NEWS
 
-- **[2026.08]** 🔥🔥 Released Embodied.cpp v0.1.
+- **[2026.08]** 🔥🔥 Released Embodied.cpp v1.0.
 - **[2026.07]** Added support for **Cosmos3-Nano** and **GR00T N1.7**, the **RoboLab** benchmark, and Isaac Sim.
 - **[2026.06]** Released the initial version of Embodied.cpp with support for **pi0.5**, **HY-VLA**, and **LingBot-VA**, plus the **LIBERO** and **RoboTwin** benchmarks.
 
