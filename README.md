@@ -30,7 +30,7 @@
 
 ### GR00T N1.7
 
-https://github.com/user-attachments/assets/0a429ad6-d41a-4ea6-aaa7-30cd4bc48b23
+https://github.com/user-attachments/assets/d9cfa5fb-2145-4500-9257-6bd99a9406b3
 
 - Successful execution ✅
 - Cumulative inference time 2.5 s → 1.7 s (⬇32%).
@@ -38,7 +38,7 @@ https://github.com/user-attachments/assets/0a429ad6-d41a-4ea6-aaa7-30cd4bc48b23
 
 ### HY-VLA
 
-https://github.com/user-attachments/assets/3f74a1cb-5536-43fb-87c6-8802dbda42f0
+https://github.com/user-attachments/assets/586fc8fe-b87e-4d04-b896-88756cbbc0f4
 
 - Successful execution ✅
 - Cumulative inference time 9.4 s → 6.6 s (⬇30%).
