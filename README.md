@@ -238,9 +238,10 @@ sudo apt-get install -y \
   libgl1-mesa-dev ffmpeg iproute2
 ```
 
-CUDA runs additionally require an NVIDIA driver, a compatible CUDA toolkit,
-and `nvidia-smi`. Install `uv` separately if your distribution does not package
-it.
+CUDA builds additionally require a compatible NVIDIA driver and CUDA toolkit.
+Desktop systems may use `nvidia-smi` for device monitoring; Jetson systems
+provide `tegrastats` for resource monitoring. Install `uv` separately if your
+distribution does not package it.
 
 
 ### 2.4 Build by Model and Backend
@@ -251,14 +252,13 @@ Model switches default to `OFF`. Enable only the runtimes you need.
 
 ```bash
 CUDA_HOME="${CUDA_HOME:-$(dirname "$(dirname "$(command -v nvcc)")")}"
-CUDA_ARCH=${CUDA_ARCH:-native}
 
 cmake -S . -B <BUILD_DIR> \
   -DCMAKE_BUILD_TYPE=Release \
   -D<MODEL_BUILD_FLAG>=ON \
   -DGGML_CUDA=ON \
   -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
-  -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
+  -DCMAKE_CUDA_ARCHITECTURES=<CUDA_ARCH>
 cmake --build <BUILD_DIR> --target <SERVER_TARGET> -j$(nproc)
 ```
 
@@ -277,12 +277,35 @@ Replace the placeholders with the model you want to build:
 | LingBot-VA | `MODEL_BUILD_WAM_LINGBOT_VA` | `wam-lingbot-server` |
 | Cosmos3-Nano | `MODEL_BUILD_WAM_COSMOS3` | `wam-server` |
 
-`CUDA_ARCH` defaults to `native`, so CMake detects the GPU installed on the
-build machine. Override it with an explicit architecture when cross-compiling or
-when using CMake older than 3.24. Common explicit values include `75` (Turing),
-`80` or `86` (Ampere), `89` (Ada), `90` (Hopper), and `120` (Blackwell). The
-selected CUDA toolkit must support that architecture; for example, Blackwell
-`sm_120` requires CUDA 12.8 or newer.
+Set `<CUDA_ARCH>` to the compute capability of the target GPU. Common values
+include `75` (Turing), `80` or `86` (Ampere), `87` (Ampere, Jetson AGX Orin),
+`89` (Ada), `90` (Hopper), and `120` (Blackwell). The selected CUDA toolkit must
+support that architecture; for example, Blackwell `sm_120` requires CUDA 12.8
+or newer.
+
+**Jetson AGX Orin with JetPack 6:**
+
+JetPack 6 commonly provides CMake 3.22, so select Orin's compute capability
+explicitly instead of using the `native` value introduced in CMake 3.24:
+
+```bash
+CUDA_HOME=/usr/local/cuda
+
+cmake -S . -B build-pi05-jetson \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMODEL_BUILD_VLA_PI05=ON \
+  -DGGML_CUDA=ON \
+  -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
+  -DCMAKE_CUDA_ARCHITECTURES=87
+
+cmake --build build-pi05-jetson --target vla-server -j4
+```
+
+cuDNN is detected automatically and enables accelerated convolution paths for
+the LingBot-VA and Cosmos3 WAM CUDA builds. When cuDNN is unavailable, the
+existing CUDA fallback paths remain enabled. Discovery searches normal system
+and multiarch locations as well as the CUDA toolkit. Set `CUDNN_ROOT` for a
+non-system installation.
 
 ### 2.5 Start a Server
 

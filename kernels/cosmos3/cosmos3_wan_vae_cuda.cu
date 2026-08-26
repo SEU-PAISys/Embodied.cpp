@@ -7,7 +7,7 @@
 #include <cuda_bf16.h>
 #include <cublas_v2.h>
 #ifdef VLA_COSMOS3_USE_CUDNN
-#include "/usr/local/cuda-11.6/include/cudnn.h"
+#include <cudnn.h>
 #endif
 #include <cmath>
 #include <unordered_map>
