@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "name": "pi05-jetson-smoke-v1",
+  "description": "Deterministic transport and inference fixture; not a task-quality benchmark.",
+  "model_contract": {
+    "architecture": "pi05",
+    "image_width": 224,
+    "image_height": 224,
+    "image_count": 2,
+    "state_dim": 32,
+    "chunk_size": 50,
+    "action_dim": 32
+  },
+  "request": {
+    "images": [
+      {
+        "algorithm": "pi05_rgb_grid_u8_v1",
+        "view": 0,
+        "sha256": "153b93b5fbec65b0211ef51c7bc963ea3e283edacdb5346697946df8e64c94fa"
+      },
+      {
+        "algorithm": "pi05_rgb_grid_u8_v1",
+        "view": 1,
+        "sha256": "f0c97feeddf27bdc2d166570833974949cc476006ec059d202798610508f4d35"
+      }
+    ],
+    "language": {
+      "prompt": "pick up the red cube",
+      "preprocessing": "strip, replace underscores/newlines with spaces, encode with add_bos=true, append encoded newline, then pad",
+      "algorithm": "fixed_prefix_then_pad_i32_v1",
+      "prefix_token_ids": [2, 18075, 908, 573, 3118, 28660, 108],
+      "pad_token_id": 0,
+      "count": 200,
+      "sha256_le_i32": "d2891a66cc89fba6bb1058853d2026a20731eb7a37e66791e6524fab3deb2930",
+      "tokenizer_sha256": "8986bb4f423f07f8c7f70d0dbe3526fb2316056c17bae71b1ea975e77a168fc6",
+      "tokenizer_contract": {
+        "vocab_size": 257152,
+        "bos_token_id": 2,
+        "pad_token_id": 0,
+        "newline_token_id": 108
+      }
+    },
+    "state_f32": [
+      -0.484375,
+      -0.453125,
+      -0.421875,
+      -0.390625,
+      -0.359375,
+      -0.328125,
+      -0.296875,
+      -0.265625,
+      -0.234375,
+      -0.203125,
+      -0.171875,
+      -0.140625,
+      -0.109375,
+      -0.078125,
+      -0.046875,
+      -0.015625,
+      0.015625,
+      0.046875,
+      0.078125,
+      0.109375,
+      0.140625,
+      0.171875,
+      0.203125,
+      0.234375,
+      0.265625,
+      0.296875,
+      0.328125,
+      0.359375,
+      0.390625,
+      0.421875,
+      0.453125,
+      0.484375
+    ],
+    "state_sha256_le_f32": "6379f5c5b30dadae6a7bd592593fbb22c468ea2b4ab5a610ed6ccc99b12c3a61",
+    "noise": {
+      "algorithm": "splitmix64_irwin_hall_f32_v1",
+      "seed": 20260828,
+      "count": 1600,
+      "sha256_le_f32": "d17ba1e7884bc42b2a590fc7f210ef326c6d99bc31180e82f37d5d9b17270de7"
+    }
+  },
+  "protocols": {
+    "functional": {
+      "warmup_requests": 1,
+      "measured_requests": 3
+    },
+    "performance": {
+      "warmup_requests": 3,
+      "measured_requests": 20
+    }
+  }
+}

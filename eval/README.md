@@ -17,6 +17,9 @@ simulator / dataset observation
 Important paths:
 
 - `client/`: direct and server-backed evaluation clients.
+- `client/run_pi05_smoke.py`: simulator-independent deterministic pi0.5
+  validation client for Jetson and other CUDA hosts. Its checked fixture is
+  `fixtures/pi05_smoke.json`.
 - `client/run_robolab_eval.py`: native Cosmos3 RoboLab entry point. It launches
   the C++ `wam-server`, registers RoboLab DROID tasks, and sends observations to
   WAM over ZMQ/protobuf without calling `RoboLab/policies/cosmos3/run.py`.
@@ -42,6 +45,43 @@ Important paths:
   Cosmos3 PyTorch server and RoboLab rollout through its OpenPI WebSocket ABI.
 - `../adapter/sim/libero.py`: LIBERO typed I/O adapter.
 - `../adapter/sim/robotwin.py`: RoboTwin typed I/O adapter.
+
+## Deterministic pi0.5 smoke validation
+
+Validate the checked fixture without loading a model or importing inference
+frameworks:
+
+```bash
+python3 eval/client/run_pi05_smoke.py validate
+```
+
+For a functional run, start the pi0.5 server on the validation-only loopback
+port with phase timing enabled:
+
+```bash
+build/pi05-sm87/vla-server \
+  --bind tcp://127.0.0.1:15555 \
+  --timing-detail phase \
+  /path/to/pi05-mmproj.gguf \
+  /path/to/pi05.gguf
+```
+
+Then send one warm-up request followed by three identical measured requests:
+
+```bash
+python3 eval/client/run_pi05_smoke.py run \
+  --protocol functional \
+  --endpoint tcp://127.0.0.1:15555 \
+  --output /path/to/results/runtime/pi05-functional.json
+```
+
+The request uses two generated 224x224 RGB images, fixed tokens and state, and
+a complete deterministic 1600-value float32 noise payload. The client checks
+the response ID, `[50, 32]` action shape, finite values, and bit-identical
+outputs, and records client/server timing summaries. It needs only `pyzmq` at
+runtime and encodes the existing `serving/vla.proto` wire contract without a
+Python protobuf installation. Keep `pyzmq` in the isolated validation
+environment rather than changing system Python packages.
 
 Run the GR00T N1.7 LIBERO-object sample after starting
 `vla-server` on `tcp://127.0.0.1:5555`:
