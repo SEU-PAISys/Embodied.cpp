@@ -45,6 +45,16 @@ def _pack_i32(values: Sequence[int]) -> bytes:
     return struct.pack(f"<{len(values)}i", *values)
 
 
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
 def _splitmix64(state: int) -> tuple[int, int]:
     mask = (1 << 64) - 1
     state = (state + 0x9E3779B97F4A7C15) & mask
@@ -234,7 +244,7 @@ def load_fixture(path: Path) -> tuple[dict, dict]:
         raise SmokeValidationError("fixture requires functional and performance protocols")
 
     prepared = {
-        "fixture_sha256": _sha256(raw),
+        "fixture_sha256": _sha256(_canonical_json_bytes(fixture)),
         "width": width,
         "height": height,
         "images": images,
@@ -448,15 +458,19 @@ def _validate_response(response: dict, request_id: int, prepared: dict) -> None:
         raise SmokeValidationError(
             f"action_chunk has {len(actions)} values; expected {expected_chunk * expected_dim}"
         )
-    numeric = actions + [
+    if not all(math.isfinite(value) for value in actions):
+        raise SmokeValidationError("action output contains NaN or Inf")
+    timings = [
         response["latency_ms_total"],
         response["latency_ms_inference"],
         response["latency_ms_prefill"],
         response["latency_ms_denoise"],
         response["latency_ms_vision"],
     ]
-    if not all(math.isfinite(value) for value in numeric):
-        raise SmokeValidationError("response contains NaN or Inf")
+    if not all(math.isfinite(value) for value in timings):
+        raise SmokeValidationError("response timing contains NaN or Inf")
+    if any(value < 0.0 for value in timings):
+        raise SmokeValidationError("response timing contains a negative value")
 
 
 def _difference(reference: Sequence[float], current: Sequence[float]) -> tuple[float, float]:

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 from pathlib import Path
+import re
 import struct
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -12,6 +15,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "eval" / "client" / "run_pi05_smoke.py"
 FIXTURE = REPO / "eval" / "fixtures" / "pi05_smoke.json"
+PROTO = REPO / "serving" / "vla.proto"
 
 spec = importlib.util.spec_from_file_location("run_pi05_smoke", SCRIPT)
 smoke = importlib.util.module_from_spec(spec)
@@ -19,7 +23,79 @@ assert spec.loader is not None
 spec.loader.exec_module(smoke)
 
 
+def _proto_message_body(source: str, name: str) -> str:
+    match = re.search(rf"\bmessage\s+{re.escape(name)}\s*\{{", source)
+    if match is None:
+        raise AssertionError(f"message {name} not found in {PROTO}")
+    start = match.end()
+    depth = 1
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index]
+    raise AssertionError(f"message {name} is missing its closing brace")
+
+
+def _proto_fields(source: str, message: str) -> dict[str, tuple[str, str, int]]:
+    body = _proto_message_body(source, message)
+    fields: dict[str, tuple[str, str, int]] = {}
+    pattern = re.compile(
+        r"^\s*(?:(repeated)\s+)?([A-Za-z_]\w*)\s+([A-Za-z_]\w*)"
+        r"\s*=\s*(\d+)\s*;",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(body):
+        cardinality, field_type, name, number = match.groups()
+        fields[name] = (cardinality or "singular", field_type, int(number))
+    return fields
+
+
 class Pi05SmokeTests(unittest.TestCase):
+    def test_manual_codec_contract_matches_proto_schema(self) -> None:
+        source = PROTO.read_text(encoding="utf-8")
+        expected = {
+            "Image": {
+                "encoding": ("singular", "Encoding", 1),
+                "height": ("singular", "uint32", 2),
+                "width": ("singular", "uint32", 3),
+                "data": ("singular", "bytes", 4),
+            },
+            "PredictRequest": {
+                "images": ("repeated", "Image", 1),
+                "lang_tokens": ("repeated", "int32", 2),
+                "state": ("repeated", "float", 3),
+                "noise": ("repeated", "float", 4),
+                "request_id": ("singular", "uint64", 5),
+            },
+            "PredictResponse": {
+                "request_id": ("singular", "uint64", 1),
+                "action_chunk": ("repeated", "float", 2),
+                "chunk_size": ("singular", "uint32", 3),
+                "action_dim": ("singular", "uint32", 4),
+                "latency_ms_total": ("singular", "float", 5),
+                "latency_ms_inference": ("singular", "float", 6),
+                "error": ("singular", "string", 7),
+                "latency_ms_prefill": ("singular", "float", 8),
+                "latency_ms_denoise": ("singular", "float", 9),
+                "latency_ms_vision": ("singular", "float", 10),
+            },
+        }
+        for message, contract in expected.items():
+            fields = _proto_fields(source, message)
+            with self.subTest(message=message):
+                self.assertEqual(
+                    {name: fields.get(name) for name in contract},
+                    contract,
+                )
+        image_body = _proto_message_body(source, "Image")
+        rgb_u8 = re.search(r"\bRGB_U8\s*=\s*(\d+)\s*;", image_body)
+        self.assertIsNotNone(rgb_u8)
+        assert rgb_u8 is not None
+        self.assertEqual(int(rgb_u8.group(1)), smoke.RGB_U8)
+
     def test_fixture_is_complete_and_deterministic(self) -> None:
         fixture, prepared = smoke.load_fixture(FIXTURE)
         self.assertEqual(fixture["name"], "pi05-jetson-smoke-v1")
@@ -34,6 +110,23 @@ class Pi05SmokeTests(unittest.TestCase):
         self.assertEqual(len(prepared["state"]), 32)
         self.assertEqual(len(prepared["noise"]), 50 * 32)
         self.assertEqual(prepared["noise"], smoke.generate_noise(20260828, 1600))
+
+    def test_fixture_sha_is_independent_of_json_line_endings(self) -> None:
+        raw = FIXTURE.read_bytes()
+        lf = raw.replace(b"\r\n", b"\n")
+        crlf = lf.replace(b"\n", b"\r\n")
+        self.assertNotEqual(lf, crlf)
+        with tempfile.TemporaryDirectory() as directory:
+            lf_path = Path(directory) / "fixture-lf.json"
+            crlf_path = Path(directory) / "fixture-crlf.json"
+            lf_path.write_bytes(lf)
+            crlf_path.write_bytes(crlf)
+            _, lf_prepared = smoke.load_fixture(lf_path)
+            _, crlf_prepared = smoke.load_fixture(crlf_path)
+        self.assertEqual(
+            lf_prepared["fixture_sha256"],
+            crlf_prepared["fixture_sha256"],
+        )
 
     def test_request_contains_expected_top_level_fields(self) -> None:
         _, prepared = smoke.load_fixture(FIXTURE)
@@ -62,6 +155,14 @@ class Pi05SmokeTests(unittest.TestCase):
                 smoke._field_varint(4, 2),
                 smoke._encode_varint((5 << 3) | 5),
                 struct.pack("<f", 12.5),
+                smoke._encode_varint((6 << 3) | 5),
+                struct.pack("<f", 8.5),
+                smoke._encode_varint((8 << 3) | 5),
+                struct.pack("<f", 3.5),
+                smoke._encode_varint((9 << 3) | 5),
+                struct.pack("<f", 5.0),
+                smoke._encode_varint((10 << 3) | 5),
+                struct.pack("<f", 4.0),
                 smoke._field_bytes(99, b"ignored"),
             )
         )
@@ -71,6 +172,10 @@ class Pi05SmokeTests(unittest.TestCase):
         self.assertEqual(response["chunk_size"], 1)
         self.assertEqual(response["action_dim"], 2)
         self.assertEqual(response["latency_ms_total"], 12.5)
+        self.assertEqual(response["latency_ms_inference"], 8.5)
+        self.assertEqual(response["latency_ms_prefill"], 3.5)
+        self.assertEqual(response["latency_ms_denoise"], 5.0)
+        self.assertEqual(response["latency_ms_vision"], 4.0)
 
     def test_response_validation_rejects_shape_mismatch(self) -> None:
         response = {
@@ -92,6 +197,40 @@ class Pi05SmokeTests(unittest.TestCase):
                 {"chunk_size": 50, "action_dim": 32},
             )
 
+    def test_response_validation_rejects_nonfinite_or_negative_values(self) -> None:
+        baseline = {
+            "request_id": 5,
+            "error": "",
+            "chunk_size": 1,
+            "action_dim": 1,
+            "action_chunk": [0.0],
+            "latency_ms_total": 1.0,
+            "latency_ms_inference": 1.0,
+            "latency_ms_prefill": 0.0,
+            "latency_ms_denoise": 0.0,
+            "latency_ms_vision": 0.0,
+        }
+        invalid_values = (
+            ("action_chunk", math.nan),
+            ("latency_ms_total", math.nan),
+            ("latency_ms_inference", math.inf),
+            ("latency_ms_vision", -0.1),
+        )
+        for field, value in invalid_values:
+            with self.subTest(field=field, value=value):
+                response = baseline.copy()
+                response["action_chunk"] = list(baseline["action_chunk"])
+                if field == "action_chunk":
+                    response[field][0] = value
+                else:
+                    response[field] = value
+                with self.assertRaises(smoke.SmokeValidationError):
+                    smoke._validate_response(
+                        response,
+                        5,
+                        {"chunk_size": 1, "action_dim": 1},
+                    )
+
     def test_summary_uses_population_standard_deviation(self) -> None:
         summary = smoke.summarize_values([1.0, 2.0, 3.0])
         self.assertEqual(summary["count"], 3)
@@ -104,7 +243,7 @@ class Pi05SmokeTests(unittest.TestCase):
         smoke._validate_loopback_endpoint("tcp://localhost:25555")
         smoke._validate_loopback_endpoint("tcp://[::1]:35555")
         with self.assertRaises(smoke.SmokeValidationError):
-            smoke._validate_loopback_endpoint("tcp://30.78.54.119:15555")
+            smoke._validate_loopback_endpoint("tcp://192.0.2.1:15555")
         with self.assertRaises(smoke.SmokeValidationError):
             smoke._validate_loopback_endpoint("tcp://127.0.0.1:22")
 
@@ -175,6 +314,10 @@ class Pi05SmokeTests(unittest.TestCase):
         self.assertEqual(result["measured_requests"], 3)
         self.assertEqual(len(result["requests"]), 4)
         self.assertEqual(result["metrics_ms"]["server_total_ms"]["p50"], 10.0)
+        self.assertEqual(result["metrics_ms"]["server_inference_ms"]["p50"], 8.0)
+        self.assertEqual(result["metrics_ms"]["server_prefill_ms"]["p50"], 3.0)
+        self.assertEqual(result["metrics_ms"]["server_denoise_ms"]["p50"], 5.0)
+        self.assertEqual(result["metrics_ms"]["server_vision_ms"]["p50"], 2.0)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,8 @@ Important paths:
 - `client/`: direct and server-backed evaluation clients.
 - `client/run_pi05_smoke.py`: simulator-independent deterministic pi0.5
   validation client for Jetson and other CUDA hosts. Its checked fixture is
-  `fixtures/pi05_smoke.json`.
+  `fixtures/pi05_smoke.json`. See `JETSON_ORIN_PI05_VALIDATION.md` for the
+  Jetson AGX Orin build, functional, latency, and resource report.
 - `client/run_robolab_eval.py`: native Cosmos3 RoboLab entry point. It launches
   the C++ `wam-server`, registers RoboLab DROID tasks, and sends observations to
   WAM over ZMQ/protobuf without calling `RoboLab/policies/cosmos3/run.py`.
@@ -66,6 +67,9 @@ build/pi05-sm87/vla-server \
   /path/to/pi05.gguf
 ```
 
+Run the smoke client on the same Jetson host as `vla-server`; the validation
+endpoint is intentionally restricted to loopback addresses.
+
 Then send one warm-up request followed by three identical measured requests:
 
 ```bash
@@ -82,6 +86,11 @@ outputs, and records client/server timing summaries. It needs only `pyzmq` at
 runtime and encodes the existing `serving/vla.proto` wire contract without a
 Python protobuf installation. Keep `pyzmq` in the isolated validation
 environment rather than changing system Python packages.
+
+The current pi0.5 implementation reports aggregate inference timing but does
+not populate the prefill and denoise phase fields. See
+`JETSON_ORIN_PI05_VALIDATION.md` for how those fields are interpreted in the
+Jetson results.
 
 Run the GR00T N1.7 LIBERO-object sample after starting
 `vla-server` on `tcp://127.0.0.1:5555`:
