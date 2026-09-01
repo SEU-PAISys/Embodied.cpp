@@ -100,8 +100,9 @@ wandb/
 runs/
 eval/conf/*.local.yaml
 
-# Local development notes
-docs/
+# Local development notes (docs/results/ is tracked: evaluation reports)
+docs/*
+!docs/results/
 
 # Local evaluation launchers
 eval/run_*.sh
@@ -134,6 +135,13 @@ eval/sim/robotwin/robotwin_uv/
 # Local notes and accidental shell-redirection files
 CLAUDE.md
 =*
+
+# Scratch space for one-off debug scripts (never committed)
+_scratch/
+
+# Debugger session dumps
+/gdb.txt
+/gdb_cmds.txt
 
 #artifacts
 artifacts/

@@ -158,6 +158,62 @@ Run `--help` to inspect optional dtype and validation flags. The converter
 checks the VLM/action-expert layer topology and preserves the serialized
 processor metadata required by the LIBERO client.
 
+## Xiaomi-Robotics-0
+
+Xiaomi-Robotics-0 is a single self-contained GGUF (Qwen3-VL-4B backbone + DiT
+flow-matching action head) plus a llama.cpp Qwen3-VL mmproj file converted
+from the same checkpoint:
+
+```bash
+python scripts/convert_xr0_to_gguf.py \
+  --checkpoint <XIAOMI_ROBOTICS_0_HF_DIR> \
+  --output checkpoints/xr0/xr0.gguf \
+  --mmproj checkpoints/xr0/xr0-mmproj.gguf
+```
+
+K-quantize the big matmul weights (attention + FFN) while keeping norms,
+embeddings and the action head at high precision:
+
+```bash
+python scripts/quantize_xr0_gguf.py \
+  --input checkpoints/xr0/xr0.gguf \
+  --output checkpoints/xr0/xr0-q8_0.gguf \
+  --outtype q8_0        # q8_0 | q6_k | q5_k | q4_k
+```
+
+Parity tools: `tools/xr0_parity.cpp`, `scripts/parity_xr0_reference.py`,
+`scripts/parity_xr0_compare.py`.
+
+## TurboVLA
+
+TurboVLA converts to one self-contained GGUF (DINOv3 ViT + BERT +
+bidirectional cross-attn fusion + ACT decoder). The bundled WordPiece vocab
+is required so the server can tokenize raw instructions:
+
+```bash
+python scripts/convert_turbovla_to_gguf.py \
+  --ckpt <TURBOVLA_CHECKPOINT.pth> \
+  --vocab <TURBOVLA_VOCAB.TXT> \
+  --out checkpoints/turbovla/turbovla.gguf
+```
+
+Parity scripts: `scripts/parity_turbovla_reference.py`,
+`scripts/parity_turbovla_cpp.py` (final-action acceptance `atol=0.01`).
+
+## X-VLA
+
+X-VLA converts to a single policy GGUF (Florence-2 DaViT vision + BART
+encoder + domain-conditioned flow head):
+
+```bash
+python scripts/convert_xvla_to_gguf.py \
+  --hf-dir <XVLA_HF_SNAPSHOT> \
+  --output checkpoints/xvla/xvla-libero.gguf
+```
+
+Parity and rollout tooling: `tools/xvla_parity.cpp`,
+`scripts/parity_xvla_reference.py`, `scripts/rollout_xvla_reference.py`.
+
 ## Verify Outputs
 
 Confirm that the generated files are in the expected `checkpoints/` directory,

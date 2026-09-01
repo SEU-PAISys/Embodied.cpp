@@ -21,7 +21,9 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Set paths relative to script location
 LIBERO_REPO="$SCRIPT_DIR/LIBERO"
-LIBERO_UV_ENV="$SCRIPT_DIR/libero_uv"
+# Keep the default beside this script, but allow WSL users to place the venv
+# on the Linux filesystem instead of a slow Windows-mounted workspace.
+LIBERO_UV_ENV="${LIBERO_UV_ENV:-$SCRIPT_DIR/libero_uv}"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 GITMODULES_PATH="$REPO_ROOT/.gitmodules"
 LIBERO_GIT_URL="$(git config -f "$GITMODULES_PATH" --get submodule.external_dependencies/LIBERO.url 2>/dev/null || true)"

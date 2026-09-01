@@ -10,10 +10,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(MODEL_BUILD_VLA_PI05 "Build pi0.5 runtime support" OFF)
 option(MODEL_BUILD_VLA_HY_VLA "Build HY-VLA runtime support" OFF)
 option(MODEL_BUILD_VLA_GROOT_N1 "Build NVIDIA GR00T N1 runtime support" OFF)
-option(MODEL_BUILD_WAM_LINGBOT_VA "Build LingBot-VA runtime support" OFF)
 option(MODEL_BUILD_WAM_COSMOS3 "Build Cosmos3 WAM runtime support" OFF)
 option(MODEL_BUILD_VLA_SMOLVLA "Build SmolVLA runtime support" OFF)
-
+option(MODEL_BUILD_WAM_LINGBOT_VA "Build LingBot-VA runtime support" OFF)
+option(MODEL_BUILD_VLA_XR0 "Build Xiaomi-Robotics-0 runtime support" OFF)
+option(MODEL_BUILD_VLA_TURBOVLA "Build TurboVLA runtime support" OFF)
+option(MODEL_BUILD_VLA_XVLA "Build X-VLA runtime support" OFF)
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
@@ -38,14 +40,23 @@ endif()
 if(MODEL_BUILD_VLA_GROOT_N1)
     target_sources(vla_core PRIVATE models/groot_n1.cpp)
 endif()
-if(MODEL_BUILD_WAM_LINGBOT_VA)
-    target_sources(vla_core PRIVATE models/lingbot_va.cpp)
-endif()
 if(MODEL_BUILD_WAM_COSMOS3)
     target_sources(vla_core PRIVATE models/cosmos3.cpp)
 endif()
 if(MODEL_BUILD_VLA_SMOLVLA)
     target_sources(vla_core PRIVATE models/smolvla.cpp)
+endif()
+if(MODEL_BUILD_WAM_LINGBOT_VA)
+    target_sources(vla_core PRIVATE models/lingbot_va.cpp)
+endif()
+if(MODEL_BUILD_VLA_XR0)
+    target_sources(vla_core PRIVATE models/xr0.cpp)
+endif()
+if(MODEL_BUILD_VLA_TURBOVLA)
+    target_sources(vla_core PRIVATE models/turbovla.cpp)
+endif()
+if(MODEL_BUILD_VLA_XVLA)
+    target_sources(vla_core PRIVATE models/xvla.cpp)
 endif()
 target_include_directories(vla_core
     PUBLIC
@@ -58,10 +69,12 @@ target_compile_definitions(vla_core PUBLIC
     MODEL_BUILD_VLA_PI05=$<BOOL:${MODEL_BUILD_VLA_PI05}>
     MODEL_BUILD_VLA_HY_VLA=$<BOOL:${MODEL_BUILD_VLA_HY_VLA}>
     MODEL_BUILD_VLA_GROOT_N1=$<BOOL:${MODEL_BUILD_VLA_GROOT_N1}>
-    MODEL_BUILD_WAM_LINGBOT_VA=$<BOOL:${MODEL_BUILD_WAM_LINGBOT_VA}>
     MODEL_BUILD_WAM_COSMOS3=$<BOOL:${MODEL_BUILD_WAM_COSMOS3}>
     MODEL_BUILD_VLA_SMOLVLA=$<BOOL:${MODEL_BUILD_VLA_SMOLVLA}>
-)
+    MODEL_BUILD_WAM_LINGBOT_VA=$<BOOL:${MODEL_BUILD_WAM_LINGBOT_VA}>
+    MODEL_BUILD_VLA_XR0=$<BOOL:${MODEL_BUILD_VLA_XR0}>
+    MODEL_BUILD_VLA_TURBOVLA=$<BOOL:${MODEL_BUILD_VLA_TURBOVLA}>
+    MODEL_BUILD_VLA_XVLA=$<BOOL:${MODEL_BUILD_VLA_XVLA}>)
 target_link_libraries(vla_core PUBLIC llama ggml mtmd)
 
 set(EMBODIED_ENABLED_MODELS "")
@@ -74,14 +87,23 @@ endif()
 if(MODEL_BUILD_VLA_GROOT_N1)
     list(APPEND EMBODIED_ENABLED_MODELS "VLA/GR00T-N1")
 endif()
-if(MODEL_BUILD_WAM_LINGBOT_VA)
-    list(APPEND EMBODIED_ENABLED_MODELS "WAM/LingBot-VA")
-endif()
 if(MODEL_BUILD_WAM_COSMOS3)
     list(APPEND EMBODIED_ENABLED_MODELS "WAM/Cosmos3")
 endif()
 if(MODEL_BUILD_VLA_SMOLVLA)
     list(APPEND EMBODIED_ENABLED_MODELS "VLA/SmolVLA")
+endif()
+if(MODEL_BUILD_WAM_LINGBOT_VA)
+    list(APPEND EMBODIED_ENABLED_MODELS "WAM/LingBot-VA")
+endif()
+if(MODEL_BUILD_VLA_XR0)
+    list(APPEND EMBODIED_ENABLED_MODELS "VLA/Xiaomi-Robotics-0")
+endif()
+if(MODEL_BUILD_VLA_TURBOVLA)
+    list(APPEND EMBODIED_ENABLED_MODELS "VLA/TurboVLA")
+endif()
+if(MODEL_BUILD_VLA_XVLA)
+    list(APPEND EMBODIED_ENABLED_MODELS "VLA/X-VLA")
 endif()
 if(EMBODIED_ENABLED_MODELS)
     string(REPLACE ";" ", " EMBODIED_ENABLED_MODELS_STR "${EMBODIED_ENABLED_MODELS}")
@@ -107,56 +129,6 @@ if(GGML_CUDA)
 
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
-    if(MODEL_BUILD_WAM_LINGBOT_VA OR MODEL_BUILD_WAM_COSMOS3)
-        set(CUDNN_ROOT "" CACHE PATH "Optional cuDNN installation prefix")
-
-        set(_EMBODIED_CUDNN_INCLUDE_HINTS ${CUDAToolkit_INCLUDE_DIRS})
-        set(_EMBODIED_CUDNN_LIBRARY_HINTS ${CUDAToolkit_LIBRARY_DIR})
-
-        foreach(_EMBODIED_CUDNN_ROOT IN ITEMS "${CUDNN_ROOT}" "$ENV{CUDNN_ROOT}")
-            if(_EMBODIED_CUDNN_ROOT)
-                list(APPEND _EMBODIED_CUDNN_INCLUDE_HINTS
-                    "${_EMBODIED_CUDNN_ROOT}/include"
-                    "${_EMBODIED_CUDNN_ROOT}/include/${CMAKE_LIBRARY_ARCHITECTURE}"
-                )
-                list(APPEND _EMBODIED_CUDNN_LIBRARY_HINTS
-                    "${_EMBODIED_CUDNN_ROOT}/lib"
-                    "${_EMBODIED_CUDNN_ROOT}/lib64"
-                    "${_EMBODIED_CUDNN_ROOT}/lib/${CMAKE_LIBRARY_ARCHITECTURE}"
-                )
-            endif()
-        endforeach()
-
-        find_path(EMBODIED_CUDNN_INCLUDE_DIR
-            NAMES cudnn.h
-            HINTS ${_EMBODIED_CUDNN_INCLUDE_HINTS}
-        )
-        find_library(EMBODIED_CUDNN_LIBRARY
-            NAMES cudnn
-            HINTS ${_EMBODIED_CUDNN_LIBRARY_HINTS}
-        )
-
-        if(EMBODIED_CUDNN_INCLUDE_DIR AND EMBODIED_CUDNN_LIBRARY)
-            set(EMBODIED_CUDNN_FOUND ON)
-            add_library(embodied_cudnn INTERFACE)
-            add_library(Embodied::cuDNN ALIAS embodied_cudnn)
-            target_include_directories(embodied_cudnn INTERFACE
-                ${EMBODIED_CUDNN_INCLUDE_DIR}
-            )
-            target_link_libraries(embodied_cudnn INTERFACE
-                ${EMBODIED_CUDNN_LIBRARY}
-            )
-            message(STATUS
-                "cuDNN found: include=${EMBODIED_CUDNN_INCLUDE_DIR}, "
-                "library=${EMBODIED_CUDNN_LIBRARY}"
-            )
-        else()
-            set(EMBODIED_CUDNN_FOUND OFF)
-            message(STATUS
-                "cuDNN not found; WAM CUDA kernels will use fallback implementations"
-            )
-        endif()
-    endif()
     if(MODEL_BUILD_WAM_LINGBOT_VA)
         if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
             set(CMAKE_CUDA_ARCHITECTURES 80 86 87 89 90 100 120 CACHE STRING "" FORCE)
@@ -173,9 +145,23 @@ if(GGML_CUDA)
         target_compile_options(lingbot_cuda_kernels PRIVATE
             $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math -Xptxas=-O3>
         )
-        if(EMBODIED_CUDNN_FOUND)
+        find_library(LINGBOT_CUDNN_LIBRARY cudnn
+            PATHS
+                ${CUDAToolkit_LIBRARY_DIR}
+                /usr/local/cuda/lib64
+                /usr/local/cuda-11.6/targets/x86_64-linux/lib
+            NO_DEFAULT_PATH)
+        find_path(LINGBOT_CUDNN_INCLUDE_DIR cudnn.h
+            PATHS
+                ${CUDAToolkit_INCLUDE_DIRS}
+                /usr/local/cuda/include
+                /usr/local/cuda-11.6/include
+                /usr/local/cuda-11.6/targets/x86_64-linux/include
+            NO_DEFAULT_PATH)
+        if(LINGBOT_CUDNN_LIBRARY AND LINGBOT_CUDNN_INCLUDE_DIR)
             target_compile_definitions(lingbot_cuda_kernels PUBLIC VLA_LINGBOT_USE_CUDNN)
-            target_link_libraries(lingbot_cuda_kernels PUBLIC Embodied::cuDNN)
+            target_include_directories(lingbot_cuda_kernels PUBLIC ${LINGBOT_CUDNN_INCLUDE_DIR})
+            target_link_libraries(lingbot_cuda_kernels PUBLIC ${LINGBOT_CUDNN_LIBRARY})
         endif()
         target_link_libraries(lingbot_cuda_kernels PUBLIC CUDA::cublas CUDA::cudart)
         target_include_directories(lingbot_cuda_kernels PUBLIC
@@ -211,9 +197,15 @@ if(GGML_CUDA)
             ${CMAKE_CURRENT_SOURCE_DIR}/kernels/cosmos3
             ${CMAKE_CURRENT_SOURCE_DIR}/kernels/cosmos3/third_party/vllm_marlin
         )
-        if(EMBODIED_CUDNN_FOUND)
+        find_library(CUDNN_LIBRARY cudnn
+            PATHS
+                ${CUDAToolkit_LIBRARY_DIR}
+                /usr/local/cuda/lib64
+                /usr/local/cuda-11.6/targets/x86_64-linux/lib
+            NO_DEFAULT_PATH)
+        if(CUDNN_LIBRARY)
             target_compile_definitions(cosmos3_cuda_kernels PUBLIC VLA_COSMOS3_USE_CUDNN)
-            target_link_libraries(cosmos3_cuda_kernels PUBLIC Embodied::cuDNN)
+            target_link_libraries(cosmos3_cuda_kernels PUBLIC ${CUDNN_LIBRARY})
         endif()
         target_link_libraries(cosmos3_cuda_kernels PUBLIC CUDA::cublas CUDA::cudart)
         target_link_libraries(vla_core PRIVATE cosmos3_cuda_kernels)
@@ -306,8 +298,27 @@ function(add_vla_server_target target_name)
     )
 endfunction()
 
-if(MODEL_BUILD_VLA_PI05 OR MODEL_BUILD_VLA_HY_VLA OR MODEL_BUILD_VLA_GROOT_N1 OR MODEL_BUILD_VLA_SMOLVLA)
+if(MODEL_BUILD_VLA_PI05 OR MODEL_BUILD_VLA_HY_VLA OR MODEL_BUILD_VLA_GROOT_N1 OR MODEL_BUILD_VLA_SMOLVLA
+   OR MODEL_BUILD_VLA_XR0 OR MODEL_BUILD_VLA_TURBOVLA OR MODEL_BUILD_VLA_XVLA)
     add_vla_server_target(vla-server)
+endif()
+
+if(MODEL_BUILD_VLA_XR0)
+    add_executable(xr0-parity tools/xr0_parity.cpp)
+    target_include_directories(xr0-parity PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/runtime
+    )
+    target_link_libraries(xr0-parity PRIVATE vla_core)
+endif()
+
+if(MODEL_BUILD_VLA_XVLA)
+    add_executable(xvla-parity tools/xvla_parity.cpp)
+    target_include_directories(xvla-parity PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/runtime
+    )
+    target_link_libraries(xvla-parity PRIVATE vla_core)
 endif()
 
 if(MODEL_BUILD_WAM_LINGBOT_VA)

@@ -41,12 +41,21 @@ try:
 except ModuleNotFoundError:
     LiberoSuiteProfiler: Any = None
 from client.lingbot_world_client import LingBotWorldClient
-from client.inference_timeline import timeline_path_for_video, write_inference_timeline
+try:
+    from client.inference_timeline import timeline_path_for_video, write_inference_timeline
+except ImportError:
+    # Upstream ships this import without the module; degrade gracefully so the
+    # LIBERO direct client keeps working without inference timelines.
+    def timeline_path_for_video(video_path):
+        return None
+
+    def write_inference_timeline(*args, **kwargs):
+        return None
 from client.reproducibility import derive_episode_noise_seed
 from client.vla_cpp_client import ARCH_PRESETS as VLA_ARCH_PRESETS
 from client.vla_cpp_client import VlaCppClient
 
-ARCH_CHOICES = ["pi05", "groot_n1", "lingbot_va", "smolvla"]
+ARCH_CHOICES = ["pi05", "lingbot_va", "xr0", "turbovla", "xvla", "groot_n1", "smolvla"]
 LIBERO_SUITE_TASK_COUNTS = {
     "libero_spatial": 10,
     "libero_object": 10,
@@ -132,7 +141,11 @@ def resolve_task_ids(args) -> list[int]:
 
 
 def build_client(args):
-    if args.arch in VLA_ARCH_PRESETS:
+    if args.control_mode is None:
+        args.control_mode = "absolute" if args.arch == "xvla" else "relative"
+    if args.real_action_dim is None:
+        args.real_action_dim = 10 if args.arch == "xvla" else 7
+    if args.arch in ("pi05", "xr0", "turbovla", "xvla"):
         preset = VLA_ARCH_PRESETS[args.arch]
         args.max_length = (
             args.max_length if args.max_length is not None else preset.get("max_length", 48)
@@ -209,6 +222,7 @@ def run_one_task(
         "video_fps": args.fps,
         "output_video_dir": output_dir,
         "video_view_mode": args.view_mode,
+        "control_mode": args.control_mode,
         "observation_width": args.observation_width,
         "observation_height": args.observation_height,
     }
@@ -441,8 +455,9 @@ def run_one_task(
                         environment_steps=step_id,
                     )
                 video_path = output_dir / f"episode_{episode:06d}.mp4"
+                _timeline_out = timeline_path_for_video(video_path)
                 write_inference_timeline(
-                    timeline_path_for_video(video_path),
+                    _timeline_out,
                     implementation="cpp",
                     task=task,
                     task_id=task_id,
@@ -559,6 +574,13 @@ if __name__ == "__main__":
     parser.add_argument("--noise-seed", type=int, default=None,
         help="Deterministic SmolVLA action-noise seed. Each task/episode gets a stable derived seed.")
 
+    parser.add_argument("--observation-size", type=int, default=256,
+        help="Square LIBERO render size. 256 matches the Xiaomi-Robotics-0/TurboVLA training/eval protocol.")
+    parser.add_argument("--control-mode", choices=["relative", "absolute"],
+        default=None,
+        help="LIBERO controller mode (default: absolute for xvla, relative "
+             "otherwise). xvla emits absolute ee6d targets and needs 'absolute'.")
+
     parser.add_argument("--arch", choices=ARCH_CHOICES, default="lingbot_va",
         help="Model/client path. Also namespaces the output dir.")
     parser.add_argument("--vla-addr", type=str, default="tcp://localhost:5555",
@@ -570,12 +592,14 @@ if __name__ == "__main__":
     parser.add_argument("--max-state-dim", type=int, default=None,
         help="Override the state vector length sent to the VLA server "
              "(default: arch preset).")
-    parser.add_argument("--real-action-dim", type=int, default=7)
+    parser.add_argument("--real-action-dim", type=int, default=None,
+        help="Action dims consumed from each chunk row (default: 10 for xvla "
+             "absolute ee6d rows, 7 otherwise).")
     parser.add_argument("--image-keys", nargs="+",
         default=["observation.images.image", "observation.images.image2"])
     parser.add_argument("--max-length", type=int, default=None,
         help="Maximum language token count. Defaults to the selected arch preset "
-             "(pi05=200, lingbot_va=512).")
+             "(pi05=200, lingbot_va=512, xr0=512, turbovla=64).")
     parser.add_argument("--recv-timeout-ms", type=int, default=900_000,
         help="ZMQ receive timeout for the selected C++ inference server.")
     parser.add_argument("--lingbot-session-id", type=int, default=1,

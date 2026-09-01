@@ -59,18 +59,16 @@ AdapterStatus VlaModelInputAdapter::build(const Observation& observation,
     if (!out) {
         return AdapterStatus::error("ModelInputStorage must not be null");
     }
-    if (observation.language_tokens.empty() && observation.instruction.empty()) {
+    if (observation.language_tokens.empty() && observation.language_text.empty()) {
         return AdapterStatus::error(
-            "observation.language_tokens or observation.instruction must not be empty");
-    }
+            "observation must provide language_tokens or language_text");    }
     if (config_.state_dim < 0 || config_.action_dim < 0 || config_.action_steps < 0) {
         return AdapterStatus::error("adapter dimensions must be non-negative");
     }
 
     out->image_views.clear();
     out->language_tokens = observation.language_tokens;
-    out->instruction = observation.instruction;
-    out->state.clear();
+    out->language_text   = observation.language_text;    out->state.clear();
     out->noise.clear();
     out->inputs = {};
 
@@ -123,9 +121,9 @@ AdapterStatus VlaModelInputAdapter::build(const Observation& observation,
     out->inputs.n_images = static_cast<int>(out->image_views.size());
     out->inputs.lang_tokens = out->language_tokens.empty() ? nullptr : out->language_tokens.data();
     out->inputs.n_lang = static_cast<int>(out->language_tokens.size());
-    out->inputs.language_text = out->instruction.empty() ? nullptr : out->instruction.c_str();
-    out->inputs.state = out->state.empty() ? nullptr : out->state.data();
+    out->inputs.language_text = out->language_text.empty() ? nullptr : out->language_text.c_str();    out->inputs.state = out->state.empty() ? nullptr : out->state.data();
     out->inputs.noise = out->noise.empty() ? nullptr : out->noise.data();
+    out->inputs.domain_id = static_cast<int>(observation.domain_id);
 
     return AdapterStatus::success();
 }
