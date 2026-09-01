@@ -1,0 +1,919 @@
+{
+  "generated_utc": "2026-08-28T23:42:55Z",
+  "source": "outputs/ (gitignored raw episode logs)",
+  "models": {
+    "turbovla": {
+      "bf16": {
+        "suites": {
+          "spatial": {
+            "success": 99,
+            "episodes": 100,
+            "rate_pct": 99.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 16.65
+          },
+          "object": {
+            "success": 100,
+            "episodes": 100,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 14.84
+          },
+          "goal": {
+            "success": 97,
+            "episodes": 100,
+            "rate_pct": 97.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              90.0,
+              90.0,
+              100.0,
+              100.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 16.23
+          },
+          "10": {
+            "success": 89,
+            "episodes": 100,
+            "rate_pct": 89.0,
+            "per_task_rate_pct": [
+              60.0,
+              100.0,
+              100.0,
+              90.0,
+              90.0,
+              100.0,
+              80.0,
+              100.0,
+              80.0,
+              90.0
+            ],
+            "mean_latency_ms": 14.8
+          }
+        },
+        "overall_success": 385,
+        "overall_episodes": 400,
+        "overall_rate_pct": 96.25
+      },
+      "pre_fix": {
+        "suites": {
+          "spatial": {
+            "success": 79,
+            "episodes": 100,
+            "rate_pct": 79.0,
+            "per_task_rate_pct": [
+              0.0,
+              100.0,
+              100.0,
+              100.0,
+              0.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 9.59
+          },
+          "object": {
+            "success": 99,
+            "episodes": 100,
+            "rate_pct": 99.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 10.12
+          },
+          "goal": {
+            "success": 69,
+            "episodes": 100,
+            "rate_pct": 69.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              0.0,
+              0.0,
+              100.0,
+              0.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 8.32
+          },
+          "10": {
+            "success": 80,
+            "episodes": 100,
+            "rate_pct": 80.0,
+            "per_task_rate_pct": [
+              60.0,
+              100.0,
+              100.0,
+              90.0,
+              0.0,
+              100.0,
+              80.0,
+              100.0,
+              80.0,
+              90.0
+            ],
+            "mean_latency_ms": 9.15
+          }
+        },
+        "overall_success": 327,
+        "overall_episodes": 400,
+        "overall_rate_pct": 81.75
+      },
+      "q4_k": {
+        "suites": {
+          "spatial": {
+            "success": 95,
+            "episodes": 100,
+            "rate_pct": 95.0,
+            "per_task_rate_pct": [
+              100.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0,
+              70.0,
+              100.0,
+              100.0,
+              90.0,
+              100.0
+            ],
+            "mean_latency_ms": 14.67
+          },
+          "object": {
+            "success": 85,
+            "episodes": 100,
+            "rate_pct": 85.0,
+            "per_task_rate_pct": [
+              100.0,
+              70.0,
+              80.0,
+              70.0,
+              100.0,
+              70.0,
+              100.0,
+              100.0,
+              100.0,
+              60.0
+            ],
+            "mean_latency_ms": 13.95
+          },
+          "goal": {
+            "success": 82,
+            "episodes": 100,
+            "rate_pct": 82.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              80.0,
+              50.0,
+              100.0,
+              60.0,
+              70.0,
+              100.0,
+              100.0,
+              60.0
+            ],
+            "mean_latency_ms": 14.8
+          },
+          "10": {
+            "success": 82,
+            "episodes": 100,
+            "rate_pct": 82.0,
+            "per_task_rate_pct": [
+              50.0,
+              100.0,
+              90.0,
+              100.0,
+              100.0,
+              90.0,
+              80.0,
+              60.0,
+              60.0,
+              90.0
+            ],
+            "mean_latency_ms": 16.0
+          }
+        },
+        "overall_success": 344,
+        "overall_episodes": 400,
+        "overall_rate_pct": 86.0
+      },
+      "q8_0": {
+        "suites": {
+          "spatial": {
+            "success": 100,
+            "episodes": 100,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 17.85
+          },
+          "object": {
+            "success": 100,
+            "episodes": 100,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 14.06
+          },
+          "goal": {
+            "success": 99,
+            "episodes": 100,
+            "rate_pct": 99.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 13.73
+          },
+          "10": {
+            "success": 87,
+            "episodes": 100,
+            "rate_pct": 87.0,
+            "per_task_rate_pct": [
+              50.0,
+              100.0,
+              100.0,
+              80.0,
+              80.0,
+              100.0,
+              80.0,
+              100.0,
+              100.0,
+              80.0
+            ],
+            "mean_latency_ms": 13.58
+          }
+        },
+        "overall_success": 386,
+        "overall_episodes": 400,
+        "overall_rate_pct": 96.5
+      },
+      "smoke": {
+        "suites": {
+          "object": {
+            "success": 3,
+            "episodes": 5,
+            "rate_pct": 60.0,
+            "per_task_rate_pct": [
+              100.0,
+              0.0,
+              100.0,
+              100.0,
+              0.0
+            ],
+            "mean_latency_ms": 19.58
+          }
+        },
+        "overall_success": 3,
+        "overall_episodes": 5,
+        "overall_rate_pct": 60.0
+      }
+    },
+    "xr0": {
+      "bf16": {
+        "suites": {
+          "spatial": {
+            "success": 491,
+            "episodes": 500,
+            "rate_pct": 98.2,
+            "per_task_rate_pct": [
+              100.0,
+              98.0,
+              100.0,
+              100.0,
+              96.0,
+              94.0,
+              100.0,
+              98.0,
+              98.0,
+              98.0
+            ],
+            "mean_latency_ms": 26.04
+          },
+          "object": {
+            "success": 497,
+            "episodes": 500,
+            "rate_pct": 99.4,
+            "per_task_rate_pct": [
+              98.0,
+              100.0,
+              98.0,
+              98.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 38.2
+          },
+          "goal": {
+            "success": 492,
+            "episodes": 500,
+            "rate_pct": 98.4,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              96.0,
+              98.0,
+              100.0,
+              98.0,
+              98.0,
+              100.0,
+              100.0,
+              94.0
+            ],
+            "mean_latency_ms": 29.18
+          },
+          "10": {
+            "success": 489,
+            "episodes": 500,
+            "rate_pct": 97.8,
+            "per_task_rate_pct": [
+              98.0,
+              98.0,
+              100.0,
+              96.0,
+              100.0,
+              100.0,
+              90.0,
+              100.0,
+              98.0,
+              98.0
+            ],
+            "mean_latency_ms": 34.82
+          }
+        },
+        "overall_success": 1969,
+        "overall_episodes": 2000,
+        "overall_rate_pct": 98.45
+      },
+      "f32": {
+        "suites": {
+          "spatial": {
+            "success": 494,
+            "episodes": 500,
+            "rate_pct": 98.8,
+            "per_task_rate_pct": [
+              100.0,
+              98.0,
+              100.0,
+              100.0,
+              96.0,
+              98.0,
+              98.0,
+              98.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 33.26
+          },
+          "object": {
+            "success": 496,
+            "episodes": 500,
+            "rate_pct": 99.2,
+            "per_task_rate_pct": [
+              98.0,
+              100.0,
+              98.0,
+              96.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 42.01
+          },
+          "goal": {
+            "success": 489,
+            "episodes": 500,
+            "rate_pct": 97.8,
+            "per_task_rate_pct": [
+              100.0,
+              98.0,
+              92.0,
+              94.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              94.0
+            ],
+            "mean_latency_ms": 31.9
+          },
+          "10": {
+            "success": 484,
+            "episodes": 500,
+            "rate_pct": 96.8,
+            "per_task_rate_pct": [
+              96.0,
+              96.0,
+              100.0,
+              94.0,
+              100.0,
+              100.0,
+              86.0,
+              100.0,
+              96.0,
+              100.0
+            ],
+            "mean_latency_ms": 43.62
+          }
+        },
+        "overall_success": 1963,
+        "overall_episodes": 2000,
+        "overall_rate_pct": 98.15
+      },
+      "q4k": {
+        "suites": {
+          "spatial": {
+            "success": 494,
+            "episodes": 500,
+            "rate_pct": 98.8,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              96.0,
+              98.0,
+              98.0,
+              96.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 25.29
+          },
+          "object": {
+            "success": 500,
+            "episodes": 500,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 29.86
+          },
+          "goal": {
+            "success": 490,
+            "episodes": 500,
+            "rate_pct": 98.0,
+            "per_task_rate_pct": [
+              100.0,
+              98.0,
+              94.0,
+              98.0,
+              100.0,
+              98.0,
+              100.0,
+              100.0,
+              98.0,
+              94.0
+            ],
+            "mean_latency_ms": 26.29
+          },
+          "10": {
+            "success": 487,
+            "episodes": 500,
+            "rate_pct": 97.4,
+            "per_task_rate_pct": [
+              100.0,
+              96.0,
+              100.0,
+              94.0,
+              100.0,
+              100.0,
+              88.0,
+              100.0,
+              98.0,
+              98.0
+            ],
+            "mean_latency_ms": 31.34
+          }
+        },
+        "overall_success": 1971,
+        "overall_episodes": 2000,
+        "overall_rate_pct": 98.55
+      },
+      "q8": {
+        "suites": {
+          "spatial": {
+            "success": 493,
+            "episodes": 500,
+            "rate_pct": 98.6,
+            "per_task_rate_pct": [
+              98.0,
+              100.0,
+              100.0,
+              100.0,
+              94.0,
+              98.0,
+              100.0,
+              98.0,
+              100.0,
+              98.0
+            ],
+            "mean_latency_ms": 26.62
+          },
+          "object": {
+            "success": 497,
+            "episodes": 500,
+            "rate_pct": 99.4,
+            "per_task_rate_pct": [
+              98.0,
+              100.0,
+              98.0,
+              98.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 33.83
+          },
+          "goal": {
+            "success": 492,
+            "episodes": 500,
+            "rate_pct": 98.4,
+            "per_task_rate_pct": [
+              100.0,
+              98.0,
+              96.0,
+              98.0,
+              100.0,
+              98.0,
+              100.0,
+              100.0,
+              100.0,
+              94.0
+            ],
+            "mean_latency_ms": 28.82
+          },
+          "10": {
+            "success": 481,
+            "episodes": 500,
+            "rate_pct": 96.2,
+            "per_task_rate_pct": [
+              96.0,
+              96.0,
+              100.0,
+              96.0,
+              100.0,
+              100.0,
+              88.0,
+              100.0,
+              92.0,
+              94.0
+            ],
+            "mean_latency_ms": 32.73
+          }
+        },
+        "overall_success": 1963,
+        "overall_episodes": 2000,
+        "overall_rate_pct": 98.15
+      },
+      "smoke": {
+        "suites": {
+          "object": {
+            "success": 3,
+            "episodes": 3,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 302.01
+          }
+        },
+        "overall_success": 3,
+        "overall_episodes": 3,
+        "overall_rate_pct": 100.0
+      }
+    },
+    "xvla": {
+      "Q4_K": {
+        "suites": {
+          "spatial": {
+            "success": 100,
+            "episodes": 100,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 22.94
+          },
+          "object": {
+            "success": 97,
+            "episodes": 100,
+            "rate_pct": 97.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0,
+              80.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 23.4
+          },
+          "goal": {
+            "success": 100,
+            "episodes": 100,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 21.47
+          },
+          "10": {
+            "success": 98,
+            "episodes": 100,
+            "rate_pct": 98.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              90.0,
+              100.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 19.74
+          }
+        },
+        "overall_success": 395,
+        "overall_episodes": 400,
+        "overall_rate_pct": 98.75
+      },
+      "Q8_0": {
+        "suites": {
+          "spatial": {
+            "success": 100,
+            "episodes": 100,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 54.1
+          },
+          "object": {
+            "success": 100,
+            "episodes": 100,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 20.04
+          },
+          "goal": {
+            "success": 99,
+            "episodes": 100,
+            "rate_pct": 99.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 18.89
+          },
+          "10": {
+            "success": 100,
+            "episodes": 100,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 17.93
+          }
+        },
+        "overall_success": 399,
+        "overall_episodes": 400,
+        "overall_rate_pct": 99.75
+      },
+      "bf16": {
+        "suites": {
+          "spatial": {
+            "success": 99,
+            "episodes": 100,
+            "rate_pct": 99.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 92.47
+          },
+          "object": {
+            "success": 100,
+            "episodes": 100,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 25.59
+          },
+          "goal": {
+            "success": 98,
+            "episodes": 100,
+            "rate_pct": 98.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              90.0,
+              90.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 44.07
+          },
+          "10": {
+            "success": 100,
+            "episodes": 100,
+            "rate_pct": 100.0,
+            "per_task_rate_pct": [
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0,
+              100.0
+            ],
+            "mean_latency_ms": 22.71
+          }
+        },
+        "overall_success": 397,
+        "overall_episodes": 400,
+        "overall_rate_pct": 99.25
+      }
+    }
+  }
+}
