@@ -166,16 +166,19 @@ VLA results are normalized to each model's Python baseline (`1.00`), and each ce
 | **pi0.5** | 1.00 → 0.90 (**10% lower**) |  1.00 → 0.60 (**40% lower**) |
 | **GR00T N1.7** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
 | **HY-VLA** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
-| **Xiaomi-Robotics-0** | 1.00 → 0.99 (**≈1% lower**; see note) | 7.29 GiB resident |
-| **TurboVLA** | 1.00 → 0.41 (**59% lower**) | 0.36 GiB resident |
-| **X-VLA** | 1.00 → 0.58 (**42% lower**) | — |
+| **Xiaomi-Robotics-0** | 1.00 → 0.99 (**≈1% lower**; see note) | 7.29 GiB (C++) |
+| **TurboVLA** | 1.00 → 0.41 (**59% lower**) | 0.36 GiB (C++) |
+| **X-VLA** | 1.00 → 0.58 (**42% lower**) | 1.70 GiB (C++) |
 
+For the three integrated models the VRAM column reports the C++ resident
+weights (not a Python-relative reduction, which is unmeasured for them).
 Measured on RTX 4060 Laptop (CUDA) from the committed LIBERO evaluation
-reports: TurboVLA 150.6 → 62.0 ms, Xiaomi-Robotics-0 2200.8 → 2170.4 ms
-per model call, and X-VLA 841 → 490 ms on the same-machine fixed-input
-benchmark (`docs/results/*_libero.md`). The Xiaomi-Robotics-0 figure was
-captured while its CLIP vision tower still ran on CPU; the subsequent
-`VLA_XR0_CLIP_GPU` fix is expected to improve the C++ number further.
+reports: TurboVLA 150.6 → 62.0 ms per model call
+(`docs/results/turbovla_libero.md`), Xiaomi-Robotics-0 2200.8 → 2170.4 ms
+per model call (`docs/results/xr0_libero.md`, captured while its CLIP
+vision tower still ran on CPU; the subsequent `VLA_XR0_CLIP_GPU` fix is
+expected to improve the C++ number further), and X-VLA 841 → 490 ms on the
+same-machine fixed-input benchmark (`docs/results/xvla_libero.md`).
 
 For World Models, C++ substantially reduces VRAM while keeping the success rate close to the Python baseline.
 
@@ -184,7 +187,7 @@ For World Models, C++ substantially reduces VRAM while keeping the success rate 
 | **Cosmos3** | 21.84 GB → 19.49 GB (**10.8% lower**) |
 | **LingBot-VA** | 24.75 GB → 16.44 GB (**33.6% lower**) |
 
-> **Highlights:** Compared with Python, C++ BF16 reduces VLA inference latency by up to **52%** and VRAM by up to **40%**. For World Models, it reduces VRAM by up to **33.6%**, with success-rate changes limited to **2 percentage points**.
+> **Highlights:** Compared with Python, C++ BF16 reduces VLA inference latency by up to **59%** and VRAM by up to **40%**. For World Models, it reduces VRAM by up to **33.6%**, with success-rate changes limited to **2 percentage points**.
 
 ### 1.3 Runtime Roadmap
 - This project is still under active construction 🚧

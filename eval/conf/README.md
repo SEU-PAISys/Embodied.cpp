@@ -39,6 +39,26 @@ eval/sim/libero/libero_uv/.venv/bin/python \
   --conf libero_groot_n1_profile_eval.yaml
 ```
 
+The three integrated runtimes ship equivalent LIBERO configurations:
+
+```bash
+# Xiaomi-Robotics-0 (start vla-server with xr0-mmproj.gguf + xr0.gguf first)
+eval/sim/libero/libero_uv/.venv/bin/python \
+  eval/client/run_sim_client_direct.py --conf libero_xr0_eval.yaml
+
+# TurboVLA (single-GGUF checkpoint)
+eval/sim/libero/libero_uv/.venv/bin/python \
+  eval/client/run_sim_client_direct.py --conf libero_turbovla_eval.yaml
+
+# X-VLA (single-GGUF checkpoint; --tokenizer points at a BartTokenizerFast snapshot)
+eval/sim/libero/libero_uv/.venv/bin/python \
+  eval/client/run_sim_client_direct.py --conf libero_xvla_eval.yaml
+```
+
+These are per-model defaults rather than full-suite reproductions of the
+committed reports; see the `docs/results/*_libero.md` for the exact
+suites, episode budgets and seeds used there.
+
 LingBot-VA on LIBERO uses the dedicated `wam-lingbot-server` protocol. Start
 the CUDA server separately with the transformer, text encoder, and VAE encoder
 GGUFs, then run:

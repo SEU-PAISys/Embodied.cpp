@@ -31,6 +31,9 @@ to validate paths and tensor mappings before writing a large GGUF file.
 | LingBot-VA | `convert_lingbot_va_to_gguf.py` | `quantize_lingbot_wan_gguf.py` |
 | Cosmos3-Nano | `convert_cosmos3_full_w8_to_gguf.py` | Use the upstream full_w8 bundle |
 | SmolVLA | `convert_smolvla_to_gguf.py`, `convert_smolvla_mmproj_to_gguf.py` | Output type selected during conversion |
+| Xiaomi-Robotics-0 | `convert_xr0_to_gguf.py` | `quantize_xr0_gguf.py` (q8_0/q6_k/q5_k/q4_k) |
+| TurboVLA | `convert_turbovla_to_gguf.py` | — |
+| X-VLA | `convert_xvla_to_gguf.py` | — |
 
 Place final artifacts under the `checkpoints/` layout shown in the top-level
 README, then use the matching build and evaluation configuration.
