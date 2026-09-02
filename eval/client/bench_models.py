@@ -1,4 +1,4 @@
-"""Measure per-chunk inference latency for pi05 / hy_vla / xr0 / turbovla.
+"""Measure per-chunk inference latency for pi05 / hy_vla / xr0 / turbovla / xvla.
 
 Each model runs one predict round-trip per iteration using the same synthetic
 LIBERO-style observation (2x 256x256 views + state + task). Warmup first, then
@@ -44,7 +44,8 @@ ARCHES = {
         state_dim=8, task="pick up the black bowl and place it on the plate",
     ),
     "xvla": dict(
-        arch="xvla", tokenizer=None, image_size=224, max_state_dim=20,
+        arch="xvla", tokenizer=str(REPO_ROOT / "checkpoints" / "xvla" / "hf"),
+        image_size=224, max_state_dim=20,
         max_length=50, n_action_steps=30,
         image_keys=("observation.images.image", "observation.images.image2"),
         state_dim=20, task="pick up the black bowl and place it on the plate",
