@@ -125,10 +125,13 @@ void usage(const char * prog) {
         "usage: %s [--bind ADDR] [--timing-detail none|phase] [--config PATH] "
         "[--backbone PATH] "
         "[<mmproj.gguf>] <ckpt>\n"
-        "  <mmproj.gguf>           pi0.5 vision-tower mmproj GGUF. Omit for HY-VLA\n"
-        "                          and LingBot-VA combined GGUF checkpoints.\n"
-        "  <ckpt>                  pi0.5, HY-VLA, or LingBot-VA GGUF checkpoint; the\n"
-        "                          architecture is auto-detected from metadata.\n"
+        "  <mmproj.gguf>           Vision-tower mmproj GGUF for pi0.5, GR00T N1.7\n"
+        "                          SmolVLA and Xiaomi-Robotics-0. Omit for HY-VLA,\n"
+        "                          LingBot-VA, TurboVLA and X-VLA, whose checkpoints are\n"
+        "                          single self-contained GGUFs.\n"
+        "  <ckpt>                  Model GGUF checkpoint; the architecture is\n"
+        "                          auto-detected from metadata. See README 2.5 for the\n"
+        "                          exact (mmproj, ckpt) pairs per model.\n"
         "  --bind ADDR             ZMQ bind address (default: tcp://*:5555)\n"
         "  --timing-detail LEVEL   per-request timing breakdown (default: none)\n"
         "                          'none'  : single ms_inference\n"
@@ -422,6 +425,8 @@ int main(int argc, char ** argv) {
 
         embodied::adapter::Observation observation;
         observation.instruction = req.language_text();
+        observation.language_text = req.language_text();
+        observation.domain_id = req.domain_id();
         observation.language_tokens.assign(req.lang_tokens().begin(), req.lang_tokens().end());
         observation.proprioception.assign(req.state().begin(), req.state().end());
         observation.images = std::move(img_views);

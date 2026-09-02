@@ -86,9 +86,17 @@ struct Observation {
 
     std::vector<ImageView> images;
     std::vector<int32_t>   language_tokens;
+    /// Raw instruction for architectures with an integrated tokenizer
+    /// (e.g. TurboVLA's bundled WordPiece vocab). Mutually exclusive with
+    /// @ref language_tokens: provide one or the other.
+    std::string            language_text;
     std::vector<float>     proprioception;
     std::vector<float>     action_history;
     std::vector<float>     noise;
+
+    /// Embodiment/domain index for architectures with domain-conditioned
+    /// heads (e.g. X-VLA). Ignored otherwise.
+    uint32_t               domain_id = 0;
 
     std::vector<NamedTensorView> extra_inputs;
 };

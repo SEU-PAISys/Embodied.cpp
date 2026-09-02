@@ -208,11 +208,16 @@ struct Inputs {
 
     const int32_t*   lang_tokens;     ///< Tokenised language instruction.
     int              n_lang;          ///< Length of @ref lang_tokens.
-    const char*      language_text = nullptr; ///< Optional raw instruction for
-                                              ///< integrated tokenizers.
-
+    /// Optional raw instruction for architectures with an integrated
+    /// tokenizer (e.g. TurboVLA's bundled WordPiece vocab). Either this or
+    /// @ref lang_tokens must be provided, never both.
+    const char*      language_text = nullptr;
     const float*     state;           ///< Proprioception, length @c real_state_dim.
     const float*     noise;           ///< Initial noise for the action expert.
+
+    /// Soft-prompt domain index for domain-conditioned policies (X-VLA).
+    /// Ignored by every other architecture; defaults to domain 0.
+    int              domain_id        = 0;
 
     /// Optional LingBot-VA previous action condition in C,F,H layout.
     /// For LIBERO this is unnormalised 7,4,4 action history and is converted

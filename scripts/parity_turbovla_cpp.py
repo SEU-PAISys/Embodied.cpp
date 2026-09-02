@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Replay the TurboVLA PyTorch parity fixture through the C++ server.
+
+The acceptance check is the final action chunk against the PyTorch
+reference. Intermediate stage dumps are optional: the stock C++ runtime
+does not emit them, so they are only compared when --stages is passed and
+the matching turbovla_cpp_<stage>.f32 files exist.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "eval"))
+
+from client.vla_cpp_client import VlaCppClient  # noqa: E402
+
+
+def check_parity(
+    actual: np.ndarray,
+    parity_dir: Path,
+    atol: float,
+    compare_stages: bool = False,
+) -> bool:
+    """Compare the C++ chunk against the PyTorch reference.
+
+    The final-action comparison is the default acceptance check and works
+    without any intermediate dumps. Stage-level files are only read when
+    compare_stages is set. Returns True on PASS, raises SystemExit on
+    mismatch, non-finite values or missing stage files.
+    """
+    reference = np.load(parity_dir / "turbovla_parity_ref_env.npy")
+    if actual.shape != reference.shape:
+        raise SystemExit(f"shape mismatch: C++ {actual.shape}, PyTorch {reference.shape}")
+    # NaN comparisons return False, so a non-finite reference or tolerance
+    # would silently slip past the delta check below; reject them up front.
+    if not np.isfinite(reference).all():
+        raise SystemExit("FAIL: reference contains non-finite values")
+    if not np.isfinite(atol) or atol < 0:
+        raise SystemExit(f"FAIL: atol must be finite and non-negative (got {atol!r})")
+    delta = np.abs(actual - reference)
+    worst = np.unravel_index(int(delta.argmax()), delta.shape)
+    np.save(parity_dir / "turbovla_parity_cpp_env.npy", actual)
+    print(f"shape={actual.shape}")
+    print(f"max_abs={delta.max():.8f} mean_abs={delta.mean():.8f} worst={worst}")
+    print(f"pytorch[0]={reference[0].tolist()}")
+    print(f"cpp[0]={actual[0].tolist()}")
+
+    if compare_stages:
+        stages_path = parity_dir / "turbovla_parity_ref_stages.npz"
+        if not stages_path.exists():
+            raise SystemExit(
+                f"stage reference {stages_path} not found. Generate it with "
+                "scripts/parity_turbovla_reference.py (stage-dump run); the "
+                "stock C++ runtime does not dump intermediate tensors."
+            )
+        stage_reference = np.load(stages_path)
+        for name in (
+            "dino",
+            "vision_projected",
+            "bert",
+            "text_projected",
+            "vision_fused",
+            "text_fused",
+            "state_tokens",
+        ):
+            expected = stage_reference[name].reshape(-1)
+            stage_path = parity_dir / f"turbovla_cpp_{name}.f32"
+            if not stage_path.exists():
+                raise SystemExit(
+                    f"stage {name}: {stage_path} not found. The stock C++ runtime "
+                    "does not dump intermediate tensors; generate these files with "
+                    "the stage-dump build used to create the reference fixture "
+                    "(see scripts/parity_turbovla_reference.py)."
+                )
+            observed = np.fromfile(stage_path, dtype="<f4")
+            if observed.size != expected.size:
+                raise SystemExit(f"stage {name}: size mismatch {observed.size} != {expected.size}")
+            stage_delta = np.abs(observed - expected)
+            norm = np.linalg.norm(observed) * np.linalg.norm(expected)
+            cosine = float(np.dot(observed, expected) / norm) if norm > 0 else float("nan")
+            print(
+                f"stage={name:<18} max_abs={stage_delta.max():.8f} "
+                f"mean_abs={stage_delta.mean():.8f} cosine={cosine:.8f}"
+            )
+            if name == "vision_projected":
+                shaped = stage_reference[name].reshape(2, 256, 256)
+                interleaved = shaped.transpose(1, 0, 2).reshape(-1)
+                interleaved_norm = np.linalg.norm(observed) * np.linalg.norm(interleaved)
+                interleaved_cosine = (
+                    float(np.dot(observed, interleaved) / interleaved_norm)
+                    if interleaved_norm > 0 else float("nan")
+                )
+                print(f"stage={'vision_interleaved':<18} cosine={interleaved_cosine:.8f}")
+                print(f"vision_projected pytorch[:8]={expected[:8].tolist()}")
+                print(f"vision_projected cpp[:8]={observed[:8].tolist()}")
+
+    if not np.isfinite(actual).all() or float(delta.max()) > atol:
+        raise SystemExit(f"FAIL: expected max_abs <= {atol}")
+    print(f"PASS: max_abs <= {atol}")
+    return True
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--parity-dir", required=True, type=Path)
+    parser.add_argument("--address", default="tcp://127.0.0.1:5555")
+    parser.add_argument("--atol", type=float, default=0.01)
+    parser.add_argument(
+        "--stages", action="store_true",
+        help="Also compare intermediate stage dumps (turbovla_cpp_*.f32). The stock "
+             "runtime does not emit them; only pass this when the files exist "
+             "(generated by the stage-dump build used for the reference fixture).",
+    )
+    args = parser.parse_args()
+
+    fixture = np.load(args.parity_dir / "turbovla_parity_inputs.npz")
+    images = fixture["images_chw"]
+    observation = {
+        "observation.images.image": images[0],
+        "observation.images.image2": images[1],
+        "observation.state": fixture["state"],
+        "task": str(fixture["instruction"]),
+    }
+    client = VlaCppClient(args.address, arch="turbovla")
+    try:
+        actual = client._predict_chunk(observation)
+    finally:
+        client.close()
+    check_parity(actual, args.parity_dir, args.atol, compare_stages=args.stages)
+
+
+if __name__ == "__main__":
+    main()

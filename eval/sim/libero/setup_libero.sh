@@ -21,7 +21,25 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Set paths relative to script location
 LIBERO_REPO="$SCRIPT_DIR/LIBERO"
-LIBERO_UV_ENV="$SCRIPT_DIR/libero_uv"
+# Keep the default beside this script, but allow WSL users to place the venv
+# on the Linux filesystem instead of a slow Windows-mounted workspace.
+LIBERO_UV_ENV="${LIBERO_UV_ENV:-$SCRIPT_DIR/libero_uv}"
+# This is an environment container, not a disposable directory. Never remove
+# a user-selected path or let uv replace an existing, unrecognized .venv.
+mkdir -p "$LIBERO_UV_ENV"
+LIBERO_UV_ENV="$(cd "$LIBERO_UV_ENV" && pwd -P)"
+if [ "$LIBERO_UV_ENV" = / ] || [ "$LIBERO_UV_ENV" = "$HOME" ]; then
+    echo "Choose a dedicated LIBERO environment directory, not / or HOME." >&2
+    exit 1
+fi
+if [ -e "$LIBERO_UV_ENV/.venv" ] || [ -L "$LIBERO_UV_ENV/.venv" ]; then
+    if [ -L "$LIBERO_UV_ENV/.venv" ] || \
+       [ ! -f "$LIBERO_UV_ENV/.venv/pyvenv.cfg" ] || \
+       [ ! -f "$LIBERO_UV_ENV/.venv/bin/activate" ]; then
+        echo "Refusing to overwrite unrecognized environment: $LIBERO_UV_ENV/.venv" >&2
+        exit 1
+    fi
+fi
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 GITMODULES_PATH="$REPO_ROOT/.gitmodules"
 LIBERO_GIT_URL="$(git config -f "$GITMODULES_PATH" --get submodule.external_dependencies/LIBERO.url 2>/dev/null || true)"
@@ -40,9 +58,11 @@ else
 	git clone "$LIBERO_GIT_URL" "$LIBERO_REPO"
 fi
 
-rm -rf "$LIBERO_UV_ENV"
-mkdir -p "$LIBERO_UV_ENV"
-uv venv "$LIBERO_UV_ENV/.venv" --python 3.10
+if [ ! -f "$LIBERO_UV_ENV/.venv/pyvenv.cfg" ]; then
+    uv venv "$LIBERO_UV_ENV/.venv" --python 3.10
+else
+    echo "Reusing $LIBERO_UV_ENV/.venv (no files removed)."
+fi
 source "$LIBERO_UV_ENV/.venv/bin/activate"
 uv pip install --requirements "$LIBERO_REPO/requirements.txt"
 uv pip install -e "$LIBERO_REPO" --config-settings editable_mode=compat

@@ -17,6 +17,20 @@ import threading
 from pathlib import Path
 from typing import Any
 
+# inf_ms carries two different quantities for a fused-graph architecture such
+# as TurboVLA: mean is the whole server call (PredictResponse.latency_ms_total,
+# i.e. the full request including I/O), while action_inference_mean is the
+# fused-graph execution window (latency_ms_inference), which still includes
+# output read-back and graph resource teardown, so it is not a pure
+# graph-compute or action-head-only figure. No per-phase breakdown exists.
+TURBOVLA_INFERENCE_DEFINITION = (
+    "mean = full server call (latency_ms_total); action_inference_mean = "
+    "fused-graph execution window (latency_ms_inference: vision tower + BERT "
+    "+ fusion + ACT head, plus output read-back and resource teardown; not an "
+    "action-head-only or pure graph-compute figure). Per-phase breakdown "
+    "unavailable for this architecture."
+)
+
 
 def find_server_pid(address: str) -> int | None:
     match = re.search(r"tcp://[^:]+:(\d+)$", address)

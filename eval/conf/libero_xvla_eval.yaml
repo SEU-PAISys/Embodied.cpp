@@ -1,0 +1,59 @@
+# X-VLA C++ server on LIBERO-object.
+# Override with --task-id from CLI for single-task smoke tests.
+#
+# Start the server first (from the repo root):
+#   ./build/vla-server checkpoints/xvla/xvla-libero.gguf --bind tcp://*:5555
+#
+# Then:
+#   python eval/client/run_sim_client_direct.py --conf libero_xvla_eval.yaml
+
+arch: xvla
+libero_suite: object
+task_ids:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+n_episodes: 20
+max_steps: 0
+seed: 42
+
+# BART tokenizer snapshot used by the client-side text encoder. The runtime
+# does not tokenize for X-VLA, so this must point at a directory containing
+# the BartTokenizerFast files (tokenizer.json / vocab.json / merges.txt).
+# Point --tokenizer at the upstream HF snapshot used for conversion;
+# the GGUF converter does not create this example directory.
+tokenizer: checkpoints/xvla/hf
+vla_addr: tcp://127.0.0.1:5555
+
+output_dir: outputs/xvla_libero_object
+view_mode: multi-view
+fps: 30
+
+observation_width: 256
+observation_height: 256
+image_size: 224
+max_state_dim: 20
+# X-VLA's ee6d action space exposes 10 dims per chunk row.
+real_action_dim: 10
+# X-VLA is evaluated with the absolute controller.
+control_mode: absolute
+image_keys:
+  - observation.images.image
+  - observation.images.image2
+max_length: 50
+# The official evaluator replays the whole 30-step chunk before re-querying.
+n_action_steps: 30
+recv_timeout_ms: 900000
+
+profile_output: outputs/profiles/xvla_libero_object.json
+profile_model_label: X-VLA
+profile_backbone_label: Florence-2 DaViT + BART
+profile_vram_interval_s: 0.25
+profile_warmup_requests: 5

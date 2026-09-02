@@ -31,13 +31,41 @@ eval/sim/libero/libero_uv/.venv/bin/python \
   --conf libero_groot_n1_eval.yaml
 ```
 
-For the full 200-episode `libero_object` run and automatic table metrics, use:
+For a 200-episode `libero_object` run and automatic table metrics, use the
+tracked config and explicit overrides:
 
 ```bash
 eval/sim/libero/libero_uv/.venv/bin/python \
   eval/client/run_sim_client_direct.py \
-  --conf libero_groot_n1_profile_eval.yaml
+  --conf libero_groot_n1_eval.yaml \
+  --task-ids 0 1 2 3 4 5 6 7 8 9 --n-episodes 20 \
+  --profile-output outputs/profiles/groot_n1_libero_object.json
 ```
+
+The three integrated runtimes ship equivalent LIBERO configurations:
+
+```bash
+# Xiaomi-Robotics-0 (start vla-server with xr0-mmproj.gguf + xr0.gguf first)
+eval/sim/libero/libero_uv/.venv/bin/python \
+  eval/client/run_sim_client_direct.py --conf libero_xr0_eval.yaml
+
+# TurboVLA (single-GGUF checkpoint)
+eval/sim/libero/libero_uv/.venv/bin/python \
+  eval/client/run_sim_client_direct.py --conf libero_turbovla_eval.yaml
+
+# X-VLA (single-GGUF checkpoint; --tokenizer points at a BartTokenizerFast snapshot)
+eval/sim/libero/libero_uv/.venv/bin/python \
+  eval/client/run_sim_client_direct.py --conf libero_xvla_eval.yaml
+```
+
+These are per-model defaults rather than full-suite reproductions of the
+committed reports: each selects 10 object tasks, 20 episodes per task and
+seed 42. All three render at 256x256; `image_size` is a separate model-side
+resize (X-VLA: 224). See the shared
+[run and aggregation instructions](../../docs/results/README.md#running-and-aggregating)
+for multi-suite runs and historical protocol differences. XR0 and X-VLA
+also require `--tokenizer` to point to an existing matching HF snapshot;
+the GGUF converter does not create the example tokenizer directories.
 
 LingBot-VA on LIBERO uses the dedicated `wam-lingbot-server` protocol. Start
 the CUDA server separately with the transformer, text encoder, and VAE encoder

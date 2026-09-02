@@ -366,7 +366,6 @@ class LiberoEnv(gym.Env):
                 "is_success": bool(is_success),
             }
             self._finalize_episode_video()
-            self.reset(_record_video=False)
         self._step_id += 1
         truncated = (self._step_id >= self._max_episode_steps)
         return observation, reward, terminated, truncated, info
