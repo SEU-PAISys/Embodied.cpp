@@ -166,15 +166,16 @@ VLA results are normalized to each model's Python baseline (`1.00`), and each ce
 | **pi0.5** | 1.00 → 0.90 (**10% lower**) |  1.00 → 0.60 (**40% lower**) |
 | **GR00T N1.7** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
 | **HY-VLA** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
-| **Xiaomi-Robotics-0** | Python baseline TBD · C++ ≈ 2.17 s / 30-step chunk | 2.06 GiB (q4_k) |
-| **TurboVLA** | Python baseline TBD · C++ ≈ 11.9 ms / episode | 0.36 GiB |
-| **X-VLA** | Python baseline TBD · C++ ≈ 0.89 s / 30-step chunk | 1.70 GiB |
+| **Xiaomi-Robotics-0** | 1.00 → 0.99 (**≈1% lower**; see note) | 7.29 GiB resident |
+| **TurboVLA** | 1.00 → 0.41 (**59% lower**) | 0.36 GiB resident |
+| **X-VLA** | 1.00 → 0.58 (**42% lower**) | — |
 
-The three integrated models were measured on an RTX 4090 (CUDA 12.8,
-BF16 implementation) from the committed parity harnesses and server load
-outputs; their Python baselines still require a PyTorch environment to
-benchmark side-by-side, so the `Python → C++` ratio is reported once
-measured.
+Measured on RTX 4060 Laptop (CUDA) from the committed LIBERO evaluation
+reports: TurboVLA 150.6 → 62.0 ms, Xiaomi-Robotics-0 2200.8 → 2170.4 ms
+per model call, and X-VLA 841 → 490 ms on the same-machine fixed-input
+benchmark (`docs/results/*_libero.md`). The Xiaomi-Robotics-0 figure was
+captured while its CLIP vision tower still ran on CPU; the subsequent
+`VLA_XR0_CLIP_GPU` fix is expected to improve the C++ number further.
 
 For World Models, C++ substantially reduces VRAM while keeping the success rate close to the Python baseline.
 
