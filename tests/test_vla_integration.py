@@ -99,14 +99,20 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(runner.parse_args(["--arch", "pi05"]).observation_width, 360)
         args = runner.parse_args(["--conf", "libero_xr0_eval.yaml", "--observation-size", "320"])
         self.assertEqual((args.observation_width, args.observation_height), (320, 320))
-        args = runner.parse_args(["--conf", "libero_xr0_eval.yaml", "--observation-width", "320"])
-        self.assertEqual((args.observation_width, args.observation_height), (320, 256))
+        # XR0 requires a square camera; a one-sided override that makes the
+        # frame rectangular is rejected at the CLI (its runtime grid derives
+        # from img_w alone and would overflow on rectangular input).
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            runner.parse_args(["--conf", "libero_xr0_eval.yaml", "--observation-width", "320"])
+        # One-sided overrides still apply to models that allow rectangular renders.
         with tempfile.TemporaryDirectory() as tmp:
-            config = Path(tmp) / "square.yaml"
-            config.write_text("arch: xr0\nobservation_size: 256\n", encoding="utf-8")
+            config = Path(tmp) / "rect.yaml"
+            config.write_text("arch: pi05\nlibero_suite: object\ntask_ids: [0]\n"
+                              "observation_size: 256\n", encoding="utf-8")
             args = runner.parse_args(["--conf", str(config), "--observation-width", "320"])
             self.assertEqual((args.observation_width, args.observation_height), (320, 256))
         for flags in (["--arch", "xr0", "--observation-size", "360"],
+                      ["--conf", "libero_xr0_eval.yaml", "--observation-width", "320"],
                       ["--observation-size", "256", "--observation-width", "320"]):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 runner.parse_args(flags)
@@ -123,6 +129,34 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(args.num_steps_wait, 7)
         self.assertEqual(args.vla_addr, "tcp://127.0.0.1:5556")
         self.assertEqual(args.observation_width, 256)
+
+    def test_cli_task_overrides_yaml_suite(self):
+        # Explicit --task / --libero-suite on the CLI must override the YAML
+        # libero_suite; without them the YAML default applies.
+        args = runner.parse_args(["--conf", "libero_xr0_eval.yaml", "--task", "goal", "--task-id", "0"])
+        self.assertEqual(args.task, "libero_goal")
+        args = runner.parse_args(["--conf", "libero_xr0_eval.yaml", "--libero-suite", "goal", "--task-id", "0"])
+        self.assertEqual(args.task, "libero_goal")
+        args = runner.parse_args(["--conf", "libero_xr0_eval.yaml", "--task-id", "0"])
+        self.assertEqual(args.task, "libero_object")
+
+    def test_no_yaml_defaults_come_from_presets(self):
+        # Every arch that has a preset must fall back to its own preset when
+        # launched without a YAML config (regression: SmolVLA/GR00T used to
+        # fall into a 512/1 catch-all and diverge from their presets).
+        for arch, want_length, want_replay, extra in (
+            ("pi05", 200, 10, []), ("smolvla", 48, 1, []), ("groot_n1", 1024, 8, []),
+            ("xr0", 512, 10, ["--observation-size", "256"]),  # xr0 needs an explicit square camera
+            ("turbovla", 64, 12, []), ("xvla", 50, 30, []),
+        ):
+            with self.subTest(arch=arch):
+                args = runner.parse_args(
+                    ["--arch", arch, "--task", "object", "--task-id", "0"] + extra)
+                with patch.object(runner, "VlaCppClient") as vc, \
+                     patch.object(runner, "LIBEROSimAdapter", return_value=MagicMock()):
+                    runner.build_client(args)
+                self.assertEqual(vc.call_args.kwargs["max_length"], want_length)
+                self.assertEqual(vc.call_args.kwargs["n_action_steps"], want_replay)
 
     def test_standalone_tools_import_without_pythonpath(self):
         # Each child gets a clean import path; tests in this process otherwise

@@ -151,7 +151,7 @@ def build_client(args):
         args.control_mode = "absolute" if args.arch == "xvla" else "relative"
     if args.real_action_dim is None:
         args.real_action_dim = 10 if args.arch == "xvla" else 7
-    if args.arch in ("pi05", "xr0", "turbovla", "xvla"):
+    if args.arch in VLA_ARCH_PRESETS:
         preset = VLA_ARCH_PRESETS[args.arch]
         args.max_length = (
             args.max_length if args.max_length is not None else preset.get("max_length", 48)
@@ -436,7 +436,7 @@ def run_one_task(
                     truncated = True
 
             if done or truncated or episode_aborted:
-                avg_t = sum(run_times) / len(run_times)
+                avg_t = (sum(run_times) / len(run_times)) if run_times else 0.0
                 inference_times.append(avg_t)
                 success_count += info.get("is_success", 0.0)
 
@@ -491,7 +491,13 @@ def run_one_task(
             skipped += 1
 
     env.close()
-    counted = max(1, args.n_episodes - skipped)
+    # effective is the number of episodes that produced a result (completed
+    # or aborted); counted guards against division by zero in the rates. The
+    # summary/rate denominator must report the effective count so an
+    # all-aborted task reads 0/0 (not 0/1) and stays consistent with the
+    # episodes_counted field in result.json.
+    effective = args.n_episodes - skipped
+    counted = max(1, effective)
     avg_inf_ms = (round(1000 * sum(inference_times) / len(inference_times), 2)
                   if inference_times else 0.0)
     result = {
@@ -499,7 +505,7 @@ def run_one_task(
         "suite": task,
         "task_id": task_id,
         "episodes_requested": args.n_episodes,
-        "episodes_counted": args.n_episodes - skipped,
+        "episodes_counted": effective,
         "successes": int(success_count),
         "skipped": skipped,
         "success_rate": success_count / counted,
@@ -521,7 +527,7 @@ def run_one_task(
         f.write(f"Arch: {args.arch}\n")
         f.write(f"Task: {task}/task_{task_id}\n")
         f.write(f"n_action_steps: {args.n_action_steps}\n")
-        f.write(f"Success rate: {success_count / counted:.2%}  ({int(success_count)}/{counted})\n")
+        f.write(f"Success rate: {success_count / counted:.2%}  ({int(success_count)}/{effective})\n")
         f.write(f"Skipped (terminated mid-step): {skipped}/{args.n_episodes}\n")
         f.write(f"Average inference time per step: {avg_inf_ms} ms\n")
         if args.arch == "lingbot_va" and args.lingbot_print_timing:
@@ -533,7 +539,7 @@ def run_one_task(
             f.write(f"LingBot cache server ms avg: {_avg(lingbot_cache_server_ms):.2f}\n")
 
     print(f"*** {task}/task_{task_id} completed.")
-    print(f"- Success rate: {success_count / counted:.2%}  ({int(success_count)}/{counted})")
+    print(f"- Success rate: {success_count / counted:.2%}  ({int(success_count)}/{effective})")
     print(f"- Skipped (terminated mid-step): {skipped}/{args.n_episodes}")
     print(f"- Saved videos to: {output_dir.resolve()}")
     return result
@@ -690,11 +696,24 @@ def parse_args(argv=None):
             args.observation_width = args.observation_height = args.observation_size
     if args.observation_width <= 0 or args.observation_height <= 0:
         parser.error("--observation-width and --observation-height must be positive")
-    if args.arch == "xr0" and (args.observation_width % 32 or args.observation_height % 32):
-        parser.error("xr0 camera dimensions must be divisible by 32; use --observation-size 256")
+    if args.arch == "xr0" and (
+        args.observation_width % 32
+        or args.observation_height % 32
+        or args.observation_width != args.observation_height
+    ):
+        parser.error("xr0 camera must be square and divisible by 32; use --observation-size 256")
     if args.n_episodes <= 0 or args.num_steps_wait < 0:
         parser.error("--n-episodes must be positive and --num-steps-wait non-negative")
-    requested_suite = args.libero_suite or args.task
+    # Suite precedence: an explicitly spelled CLI --libero-suite/--task wins
+    # over a YAML default; with neither on the command line, the YAML
+    # libero_suite (or the --task fallback default) applies.
+    cli_flags = {arg.split("=", 1)[0] for arg in cli}
+    if "--libero-suite" in cli_flags:
+        requested_suite = args.libero_suite
+    elif "--task" in cli_flags:
+        requested_suite = args.task
+    else:
+        requested_suite = args.libero_suite or args.task
     args.task = normalize_libero_suite(requested_suite)
     if args.task not in LIBERO_SUITE_TASK_COUNTS:
         raise ValueError(

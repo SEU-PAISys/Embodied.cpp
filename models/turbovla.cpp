@@ -472,9 +472,13 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
     std::vector<int32_t> ids;           // raw wordpiece ids (no specials)
     if (in.lang_tokens && in.n_lang > 0) {
         // Client-side tokenization: strip [CLS]/[SEP] framing if present so we
-        // can re-frame deterministically to our fixed padding layout.
+        // can re-frame deterministically to our fixed padding layout. Padding
+        // (if any) is assumed to be trailing, as standard: trim trailing pads
+        // first, then a trailing [SEP], then a leading [CLS]. Interleaved pads
+        // are not supported by this runtime and are treated as ordinary tokens.
         ids.assign(in.lang_tokens, in.lang_tokens + in.n_lang);
         if (!ids.empty() && ids.front() == tokenizer.id_cls) ids.erase(ids.begin());
+        while (!ids.empty() && ids.back() == tokenizer.id_pad) ids.pop_back();
         if (!ids.empty() && ids.back() == tokenizer.id_sep)  ids.pop_back();
     } else if (in.language_text && in.language_text[0] != '\0') {
         ids = tokenizer.encode(in.language_text);
@@ -911,7 +915,13 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
     ggml_backend_tensor_set(t_enh_mask, enh_mask.data(), 0, ggml_nbytes(t_enh_mask));
     ggml_backend_tensor_set(t_fuse_mask, fuse_mask.data(), 0, ggml_nbytes(t_fuse_mask));
 
+    // The vision tower, BERT and the ACT head share one graph, so their
+    // phases cannot be timed independently. ms_vision is therefore the
+    // host-side vision preprocessing up to the graph launch, and the graph
+    // execution itself is reported once as ms_inference; do not read either
+    // as a per-phase breakdown.
     const auto ti0 = clk::now();
+    stats.ms_vision = std::chrono::duration<float, std::milli>(ti0 - tv0).count();
     const ggml_status stt = ggml_backend_graph_compute(backend, gf);
     if (stt != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "vla(turbovla): ggml_backend_graph_compute failed (%d)\n", (int) stt);
@@ -919,7 +929,6 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
         ggml_free(C);
         return {};
     }
-    stats.ms_vision = std::chrono::duration<float, std::milli>(clk::now() - tv0).count();
 
     // [action_dim, horizon] row-major get == [step, dim] flatten
     std::vector<float> out((size_t) horizon * action_dim);

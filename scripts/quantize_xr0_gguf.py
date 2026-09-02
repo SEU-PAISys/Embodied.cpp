@@ -37,6 +37,14 @@ QTYPES = {
     "q5_k": gguf.GGMLQuantizationType.Q5_K,
     "q4_k": gguf.GGMLQuantizationType.Q4_K,
 }
+# Keep in sync with scripts/gguf_quantize.py FILE_TYPE_BY_OUTTYPE; inlined
+# here so this script does not import gguf_quantize (which pulls in torch).
+FILE_TYPE_BY_QTYPE = {
+    "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0,
+    "q6_k": gguf.LlamaFileType.MOSTLY_Q6_K,
+    "q5_k": gguf.LlamaFileType.MOSTLY_Q5_K_M,
+    "q4_k": gguf.LlamaFileType.MOSTLY_Q4_K_M,
+}
 
 VLM_SUFFIXES = (
     ".attn_q.weight", ".attn_k.weight", ".attn_v.weight", ".attn_o.weight",
@@ -122,7 +130,7 @@ def main() -> None:
         }:
             continue
         writer.add_key_value(key, f.contents(), f.types[0])
-    writer.add_file_type(gguf.LlamaFileType.MOSTLY_Q8_0)
+    writer.add_file_type(FILE_TYPE_BY_QTYPE[args.outtype])
     writer.add_string("xr0.weight_dtype", qtype.name)
 
     quantized_count = 0

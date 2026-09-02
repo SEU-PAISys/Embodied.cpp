@@ -783,10 +783,10 @@ class VlaCppClient:
             if img.ndim != 3 or img.shape[0] != 3:
                 raise ValueError(f"{key}: expected CHW [3, H, W], got {img.shape}")
             h, w = img.shape[1], img.shape[2]
-            if h % 32 != 0 or w % 32 != 0:
+            if h % 32 != 0 or w % 32 != 0 or h != w:
                 raise ValueError(
-                    f"{key}: Xiaomi-Robotics-0 needs image sides divisible by 32 (patch 16 x "
-                    f"merge 2); got {w}x{h}. Resize to e.g. 256x256."
+                    f"{key}: Xiaomi-Robotics-0 needs square image sides divisible by 32 "
+                    f"(patch 16 x merge 2); got {w}x{h}. Resize to e.g. 256x256."
                 )
             img = np.asarray(img)
             if np.issubdtype(img.dtype, np.floating):

@@ -599,8 +599,13 @@ std::vector<float> XiaomiRobotics0ModelArch::predict(const Inputs& in) {
     }
     const int n_views = in.n_images;
     const int img_w = in.images[0].w, img_h = in.images[0].h;
-    if (img_w % 32 != 0 || img_h % 32 != 0) {
-        std::fprintf(stderr, "vla(xr0): image %dx%d is not a multiple of 32\n", img_w, img_h);
+    if (img_w % 32 != 0 || img_h % 32 != 0 || img_w != img_h) {
+        // The grid (and therefore the vision buffer, the <|image_pad|> count
+        // and the MRoPE indices) is derived from img_w alone and assumes a
+        // square input; a rectangular image would overflow the per-view
+        // buffer, so reject it outright instead of resizing.
+        std::fprintf(stderr, "vla(xr0): image %dx%d must be square and a multiple of 32\n",
+                     img_w, img_h);
         return {};
     }
     for (int v = 1; v < n_views; ++v) {
