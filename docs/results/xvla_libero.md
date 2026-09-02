@@ -31,6 +31,9 @@ PyTorch implementation.
 3. Reference latency (fixed-input benchmark): official PyTorch fp32 CUDA
    query ≈ 841 ms mean vs the C++ direct path at ≈ 490 ms wall RT on the
    same machine (`outputs/xvla_py_signal`, `outputs/compare_20260818`).
+   These historical values have different timing boundaries; the C++ dtype,
+   sample count and full machine metadata are not archived here. They are
+   not a controlled BF16 speedup and are excluded from README's ratio table.
 
 ## Upstream note
 

@@ -163,7 +163,7 @@ processor metadata required by the LIBERO client.
 
 ## Xiaomi-Robotics-0
 
-Xiaomi-Robotics-0 is a single self-contained GGUF (Qwen3-VL-4B backbone + DiT
+Xiaomi-Robotics-0 uses a policy GGUF (Qwen3-VL-4B backbone + DiT
 flow-matching action head) plus a llama.cpp Qwen3-VL mmproj file converted
 from the same checkpoint:
 
@@ -174,8 +174,12 @@ python scripts/convert_xr0_to_gguf.py \
   --mmproj checkpoints/xr0/xr0-mmproj.gguf
 ```
 
-K-quantize the big matmul weights (attention + FFN) while keeping norms,
-embeddings and the action head at high precision:
+Keep the source HF snapshot for client-side tokenization and pass
+`--tokenizer <XIAOMI_ROBOTICS_0_HF_DIR>` to the eval client. The converter
+writes GGUFs, not `checkpoints/xr0/hf`; that YAML path is only an example.
+
+K-quantize selected big matmul weights in the backbone and DiT action head
+while keeping norms, embeddings and other unselected tensors at source precision:
 
 ```bash
 python scripts/quantize_xr0_gguf.py \
@@ -216,6 +220,12 @@ python scripts/convert_xvla_to_gguf.py \
 
 Parity and rollout tooling: `tools/xvla_parity.cpp`,
 `scripts/parity_xvla_reference.py`, `scripts/rollout_xvla_reference.py`.
+
+Pass `--tokenizer <XVLA_HF_SNAPSHOT>` to the eval client. It must contain the
+matching BART tokenizer assets (`vocab.json`, `merges.txt` and tokenizer
+configuration, or a compatible fast-tokenizer snapshot). Conversion does
+not create the example `checkpoints/xvla/hf` directory. TurboVLA instead
+uses the WordPiece vocabulary embedded in its GGUF; it needs no client tokenizer.
 
 ## Verify Outputs
 
