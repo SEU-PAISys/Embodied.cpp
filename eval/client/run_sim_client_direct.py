@@ -256,6 +256,69 @@ def run_one_task(
     episode_results: list[dict[str, Any]] = []
     skipped = 0
     lingbot_noise_gen = None
+
+    def _finalize_episode(aborted: bool, info: dict[str, Any], reward: float, steps: int) -> None:
+        """Record one episode exactly once, whether it completed or aborted.
+
+        Aborted episodes are kept in the per-episode details and in the
+        profiler (skipped=True) but never contribute to the success count,
+        since they never reached a terminal observation.
+        """
+        nonlocal success_count
+        avg_t = (sum(run_times) / len(run_times)) if run_times else 0.0
+        inference_times.append(avg_t)
+        success = (not aborted) and bool(info.get("is_success", 0.0))
+        if not aborted:
+            success_count += info.get("is_success", 0.0)
+        if aborted:
+            print(f"- Episode aborted after {steps} steps (terminated mid-step).")
+        else:
+            print(f"- Episode finished after {steps} steps.")
+            print(f"- Final reward: {reward:.2f}")
+            print(f"- Episode Information:\n{info}")
+        print(f"- Average inference time per step: {round(1000 * avg_t, 2)} ms")
+        if args.arch == "lingbot_va" and args.lingbot_print_timing:
+            def _avg(values: list[float]) -> float:
+                return sum(values) / len(values) if values else 0.0
+            print(
+                "- LingBot timing summary: "
+                f"predict_wall_ms_avg={_avg(lingbot_predict_wall_ms):.2f} "
+                f"predict_server_ms_avg={_avg(lingbot_predict_server_ms):.2f} "
+                f"cache_wall_ms_avg={_avg(lingbot_cache_wall_ms):.2f} "
+                f"cache_server_ms_avg={_avg(lingbot_cache_server_ms):.2f}",
+                flush=True,
+            )
+        if profiler is not None:
+            profiler.record_episode(
+                task=task,
+                task_id=task_id,
+                episode=episode,
+                success=success,
+                skipped=aborted,
+                environment_steps=steps,
+            )
+        video_path = output_dir / f"episode_{episode:06d}.mp4"
+        _timeline_out = timeline_path_for_video(video_path)
+        write_inference_timeline(
+            _timeline_out,
+            implementation="cpp",
+            task=task,
+            task_id=task_id,
+            episode=episode,
+            n_action_steps=args.n_action_steps,
+            environment_steps=steps,
+            video_has_initial_frame=True,
+            requests=inference_requests,
+        )
+        episode_results.append({
+            "episode": episode,
+            "noise_seed": episode_noise_seed,
+            "success": success,
+            "skipped": aborted,
+            "environment_steps": steps,
+            "average_step_ms": round(1000 * avg_t, 2),
+        })
+
     if args.arch == "lingbot_va" and args.lingbot_noise_mode == "torch_cuda_seed":
         if torch is None or not torch.cuda.is_available():
             raise RuntimeError("--lingbot-noise-mode torch_cuda_seed requires CUDA torch")
@@ -429,62 +492,19 @@ def run_one_task(
                     if "terminated episode" not in str(e):
                         raise
                     print(f"- Episode aborted (env reported terminated mid-step): {e}")
+                    # An aborted episode is still one episode: record it once
+                    # (skipped=True) so result details, profiler episodes and
+                    # the summary stay consistent. It only drops out of the
+                    # success-rate denominator.
+                    _finalize_episode(True, info, reward, step_id)
                     episode_aborted = True
                     break
                 step_id += 1
                 if args.max_steps > 0 and step_id >= args.max_steps:
                     truncated = True
 
-            if done or truncated or episode_aborted:
-                avg_t = (sum(run_times) / len(run_times)) if run_times else 0.0
-                inference_times.append(avg_t)
-                success_count += info.get("is_success", 0.0)
-
-                print(f"- Episode finished after {step_id} steps.")
-                print(f"- Final reward: {reward:.2f}")
-                print(f"- Episode Information:\n{info}")
-                print(f"- Average inference time per step: {round(1000 * avg_t, 2)} ms")
-                if args.arch == "lingbot_va" and args.lingbot_print_timing:
-                    def _avg(values: list[float]) -> float:
-                        return sum(values) / len(values) if values else 0.0
-                    print(
-                        "- LingBot timing summary: "
-                        f"predict_wall_ms_avg={_avg(lingbot_predict_wall_ms):.2f} "
-                        f"predict_server_ms_avg={_avg(lingbot_predict_server_ms):.2f} "
-                        f"cache_wall_ms_avg={_avg(lingbot_cache_wall_ms):.2f} "
-                        f"cache_server_ms_avg={_avg(lingbot_cache_server_ms):.2f}",
-                        flush=True,
-                    )
-                if profiler is not None:
-                    profiler.record_episode(
-                        task=task,
-                        task_id=task_id,
-                        episode=episode,
-                        success=bool(info.get("is_success", 0.0)),
-                        skipped=episode_aborted,
-                        environment_steps=step_id,
-                    )
-                video_path = output_dir / f"episode_{episode:06d}.mp4"
-                _timeline_out = timeline_path_for_video(video_path)
-                write_inference_timeline(
-                    _timeline_out,
-                    implementation="cpp",
-                    task=task,
-                    task_id=task_id,
-                    episode=episode,
-                    n_action_steps=args.n_action_steps,
-                    environment_steps=step_id,
-                    video_has_initial_frame=True,
-                    requests=inference_requests,
-                )
-                episode_results.append({
-                    "episode": episode,
-                    "noise_seed": episode_noise_seed,
-                    "success": bool(info.get("is_success", 0.0)),
-                    "skipped": episode_aborted,
-                    "environment_steps": step_id,
-                    "average_step_ms": round(1000 * avg_t, 2),
-                })
+            if done or truncated:
+                _finalize_episode(False, info, reward, step_id)
                 break
 
         if episode_aborted:

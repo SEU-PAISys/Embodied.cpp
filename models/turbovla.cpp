@@ -471,12 +471,39 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
     // ---------------- 0) language tokens ----------------
     std::vector<int32_t> ids;           // raw wordpiece ids (no specials)
     if (in.lang_tokens && in.n_lang > 0) {
-        // Client-side tokenization: strip [CLS]/[SEP] framing if present so we
-        // can re-frame deterministically to our fixed padding layout. Padding
-        // (if any) is assumed to be trailing, as standard: trim trailing pads
-        // first, then a trailing [SEP], then a leading [CLS]. Interleaved pads
-        // are not supported by this runtime and are treated as ordinary tokens.
-        ids.assign(in.lang_tokens, in.lang_tokens + in.n_lang);
+        // Honour an explicit attention mask when the caller provides one:
+        // it must match the token length and only mark a trailing pad
+        // region, so the valid prefix is well defined. Anything else is
+        // rejected instead of being silently treated as ordinary tokens.
+        int64_t n_valid = in.n_lang;
+        if (in.attention_mask && in.attention_mask_n > 0) {
+            if (in.attention_mask_n != in.n_lang) {
+                std::fprintf(stderr,
+                    "vla(turbovla): attention_mask length %d != lang_tokens %lld\n",
+                    in.attention_mask_n, (long long) in.n_lang);
+                return {};
+            }
+            n_valid = 0;
+            while (n_valid < in.n_lang && in.attention_mask[n_valid] != 0) ++n_valid;
+            for (int64_t i = n_valid; i < in.n_lang; ++i) {
+                if (in.attention_mask[i] != 0) {
+                    std::fprintf(stderr,
+                        "vla(turbovla): non-contiguous attention_mask is unsupported "
+                        "(real token at %lld after a masked one)\n", (long long) i);
+                    return {};
+                }
+                if (in.lang_tokens[i] != tokenizer.id_pad) {
+                    std::fprintf(stderr,
+                        "vla(turbovla): attention_mask drops a non-pad token at %lld "
+                        "(id %d); only trailing padding may be masked\n",
+                        (long long) i, (int) in.lang_tokens[i]);
+                    return {};
+                }
+            }
+        }
+        // Strip [CLS]/[SEP] framing inside the valid region so we can
+        // re-frame deterministically to our fixed padding layout.
+        ids.assign(in.lang_tokens, in.lang_tokens + n_valid);
         if (!ids.empty() && ids.front() == tokenizer.id_cls) ids.erase(ids.begin());
         while (!ids.empty() && ids.back() == tokenizer.id_pad) ids.pop_back();
         if (!ids.empty() && ids.back() == tokenizer.id_sep)  ids.pop_back();
@@ -748,7 +775,6 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
                                         x->nb[1], x->nb[2], n_prefix_tok * x->nb[1]));
         vis_dino = vis;
     }
-    const auto tv0 = clk::now();
 
     // ---- 2b) vision projection + view embedding ----
     {
@@ -915,13 +941,12 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
     ggml_backend_tensor_set(t_enh_mask, enh_mask.data(), 0, ggml_nbytes(t_enh_mask));
     ggml_backend_tensor_set(t_fuse_mask, fuse_mask.data(), 0, ggml_nbytes(t_fuse_mask));
 
-    // The vision tower, BERT and the ACT head share one graph, so their
-    // phases cannot be timed independently. ms_vision is therefore the
-    // host-side vision preprocessing up to the graph launch, and the graph
-    // execution itself is reported once as ms_inference; do not read either
-    // as a per-phase breakdown.
+    // The vision tower, BERT, fusion and the ACT head share one graph, so the
+    // vision-tower forward pass cannot be timed separately. Per the shared
+    // Stats contract (runtime/model.h) unmeasured phase fields stay zero, so
+    // ms_vision is left at 0 rather than filled with a differently-scoped
+    // value; ms_inference is the graph execution and ms_total the whole call.
     const auto ti0 = clk::now();
-    stats.ms_vision = std::chrono::duration<float, std::milli>(ti0 - tv0).count();
     const ggml_status stt = ggml_backend_graph_compute(backend, gf);
     if (stt != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "vla(turbovla): ggml_backend_graph_compute failed (%d)\n", (int) stt);

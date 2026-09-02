@@ -10,9 +10,11 @@ import contextlib
 import io
 from pathlib import Path
 import runpy
+import shutil
 import subprocess
 import sys
 import tempfile
+import types
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
@@ -168,6 +170,108 @@ class ConfigTests(unittest.TestCase):
                 result = subprocess.run([sys.executable, "-I", "-c", code, str(REPO / name)],
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class _RecordingProfiler:
+    """Records the profiler contract without computing a report.
+
+    The real LiberoSuiteProfiler.result() uses zip(strict=True) and needs
+    Python 3.10+; these cases run on the 3.9 + torch CPU host as well, so
+    they assert the call contract (one record_episode per episode) here.
+    test_eval_results.py covers the real profiler's numbers on 3.10+.
+    """
+
+    def __init__(self):
+        self.episodes = []
+
+    def capture_inference(self, client):
+        pass
+
+    def record_step(self, ms):
+        pass
+
+    def record_episode(self, **kwargs):
+        self.episodes.append(kwargs)
+
+
+class EpisodeAccountingTests(unittest.TestCase):
+    """Aborted (terminated mid-step) episodes must be recorded exactly once."""
+
+    def _run_task(self, abort_flags, arch="xvla", real_profiler=False):
+        """Run the real run_one_task against a fake env; flags say which abort."""
+        client, _obs = fake_client(arch)
+        workdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, workdir, True)
+        argv = ["--arch", arch, "--task", "object", "--task-id", "0",
+                "--n-episodes", str(len(abort_flags)), "--output-dir", workdir]
+        if arch == "xr0":
+            argv += ["--observation-size", "256"]
+        args = runner.parse_args(argv)
+        if real_profiler:
+            profiler = LiberoSuiteProfiler(
+                output_path=Path(workdir) / "profile.json", model_label=arch,
+                backbone_label="test", arch=arch, suite="libero_object",
+                replay_chunk_size=client.n_action_steps,
+                expected_episodes=len(abort_flags),
+                server_address="tcp://localhost:5555", server_pid=1,
+                vram_interval_s=0.25, warmup_requests=0,
+            )
+        else:
+            profiler = _RecordingProfiler()
+        state = {"episode": -1}
+
+        class FakeEnv:
+            def reset(self, **kwargs):
+                state["episode"] += 1
+                return _obs, {"is_success": False}
+
+            def step(self, action):
+                if abort_flags[state["episode"]]:
+                    raise ValueError("terminated episode: reset() before step()")
+                return _obs, 1.0, True, False, {"is_success": True}
+
+            def close(self):
+                pass
+
+        fake_gym = types.ModuleType("gymnasium")
+        fake_gym.make = lambda name, **kwargs: FakeEnv()
+        fake_sim = types.ModuleType("sim")
+        fake_libero = types.ModuleType("sim.libero")
+        fake_sim.libero = fake_libero
+        with patch.dict(sys.modules, {"gymnasium": fake_gym, "sim": fake_sim,
+                                      "sim.libero": fake_libero}), \
+             contextlib.redirect_stdout(io.StringIO()):
+            result = runner.run_one_task(args, client, "libero_object", 0, profiler)
+        summary = (Path(workdir) / arch / "libero_object" / "task_0" / "summary.txt").read_text(
+            encoding="utf-8")
+        return result, profiler, summary
+
+    def test_all_episodes_aborted(self):
+        result, profiler, summary = self._run_task([True, True])
+        n = 2
+        self.assertEqual(len(result["episodes"]), n, "every episode needs a detail record")
+        self.assertEqual(len(profiler.episodes), n)
+        self.assertEqual(result["skipped"], 2)
+        self.assertEqual(result["episodes_counted"], 0)
+        self.assertIn("(0/0)", summary)
+        self.assertTrue(all(e["skipped"] for e in result["episodes"]))
+
+    def test_success_then_aborted(self):
+        result, profiler, summary = self._run_task([False, True])
+        self.assertEqual(len(result["episodes"]), 2)
+        self.assertEqual(len(profiler.episodes), 2)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(result["episodes_counted"], 1)
+        self.assertEqual(result["successes"], 1)
+        self.assertIn("(1/1)", summary)
+        self.assertEqual([e["skipped"] for e in result["episodes"]], [False, True])
+
+    @unittest.skipUnless(sys.version_info >= (3, 10),
+                         "LiberoSuiteProfiler.result() needs Python 3.10+ (zip strict)")
+    def test_aborted_episodes_reach_the_real_profiler(self):
+        _, profiler, _summary = self._run_task([False, True], real_profiler=True)
+        self.assertEqual(len(profiler.episodes), 2)
+        self.assertEqual([e["skipped"] for e in profiler.episodes], [False, True])
 
 
 class ClientTests(unittest.TestCase):
