@@ -82,16 +82,24 @@ timings and resident-memory values do not have supporting measurements in
 these reports. X-VLA's historical timing note is retained in its report but
 mixes Python FP32 query time and C++ round-trip time; it is not a BF16 speedup.
 
-Historical per-call measurements for TurboVLA (C++ 62.0 ms vs Python/ZMQ
-round-trip 150.6 ms, whole-card VRAM ~1303 MiB) and Xiaomi-Robotics-0
-(C++ 2170.4 ms vs Python 2200.8 ms, whole-card VRAM ~7629 MiB) were recorded
-on an RTX 4060 Laptop in `outputs/eval_20260818_corrected/EVALUATION_REPORT.md`.
-That file is a workspace artifact (not committed), its C++ side used the CPU
-vision tower (`VLA_XR0_CLIP_GPU` unset), and the Python and C++ timings have
-different measurement boundaries, so they cannot be turned into the unified
-`Python → C++ BF16` ratio the README table requires. Re-running a controlled
-benchmark (same machine/dtype/inputs, `bench_models.py` phases, p50/p95/p99,
-and process VRAM for both sides) is the path to filling the Pending cells.
+Historical per-call measurements were recorded on 2026-08-18 in the
+workspace artifact `outputs/eval_20260818_corrected/EVALUATION_REPORT.md`
+(raw logs stay out of git). Environment: NVIDIA GeForce RTX 4060 Laptop
+(8188 MiB), driver 610.62, WSL2 Ubuntu, Python 3.10.20, PyTorch
+2.5.1+cu124, working commit `a548ccb`, seed 7. Measured values:
+TurboVLA C++ server-phase 62.0 ms (mean, std 16.4, p50 57.6 / p95 100.0 /
+p99 111.9) vs Python/ZMQ round-trip 150.6 ms (std 49.4), whole-card VRAM
+~1303 MiB, resident weights 0.36 GiB (XR0/TurboVLA checkpoint hashes are
+listed in that report); Xiaomi-Robotics-0 C++ 2170.4 ms vs Python 2200.8 ms
+(std ~44-46), whole-card VRAM ~7629 MiB, resident weights 7.29 GiB.
+These numbers cannot be turned into the unified `Python → C++ BF16` ratio
+the README table requires: the Python timings are ZMQ wall round-trips
+while the C++ values are server-phase only, XR0's C++ side ran its vision
+tower on the CPU (`VLA_XR0_CLIP_GPU` was unusable due to a CUDA
+`ggml_im2col` crash), and no Python-side VRAM baseline exists. Re-running a
+controlled benchmark (same machine/dtype/inputs, `bench_models.py` phases,
+p50/p95/p99, and process VRAM for both sides) is the path to filling the
+Pending cells.
 
 A comparable result must record:
 
