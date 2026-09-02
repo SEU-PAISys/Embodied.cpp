@@ -459,21 +459,70 @@ class ParityCliTests(unittest.TestCase):
 
 
 class SafetyScriptTests(unittest.TestCase):
+    @staticmethod
+    def _find_git_bash():
+        """Return a real (Git Bash/MSYS) bash or None.
+
+        Plain ``bash`` can resolve to the Windows-Subsystem-for-Linux
+        launcher (C:\\Windows\\System32\\bash.exe), which is not a usable
+        shell for this script. Candidates are smoke-tested so a WSL launcher
+        or missing host shell never masquerades as a passing run.
+        """
+        import shutil
+
+        candidates = []
+        found = shutil.which("bash")
+        if found:
+            candidates.append(found)
+        candidates.extend([
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+            r"D:\Git\bin\bash.exe",
+            "/usr/bin/bash",
+        ])
+        seen = set()
+        for cand in candidates:
+            if not cand or cand.lower() in seen:
+                continue
+            seen.add(cand.lower())
+            path = Path(cand)
+            low = str(path).lower()
+            if not path.exists() or "system32" in low or "windowsapps" in low \
+                    or "microsoft" in low:
+                continue
+            try:
+                probe = subprocess.run(
+                    [str(path), "-c", "echo ok"],
+                    capture_output=True, timeout=15)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if probe.returncode == 0 and b"ok" in probe.stdout:
+                return str(path)
+        return None
+
     def test_aborts_when_temp_dir_cannot_be_created(self):
-        # Point TMPDIR at an unusable path so mktemp -d fails: the script
-        # must exit non-zero with a clear message and must not fall through
-        # to file operations under an empty SAFE_TMP (which would otherwise
-        # write/delete under the filesystem root).
+        bash = self._find_git_bash()
+        if bash is None:
+            self.skipTest("no usable Git Bash (MSYS) shell on this host")
+        # Point TMPDIR at an unusable path so mktemp -d fails. The script must
+        # abort at its first guard line: exit code 1, its guard message on
+        # stderr, and NONE of the scenario output on stdout (a mid-script or
+        # end-of-script failure would also be non-zero, so the empty stdout is
+        # the evidence that no scenario file operations ran).
         env = dict(os.environ, TMPDIR=os.path.join(tempfile.gettempdir(), "wb_nonexistent_xyz"))
         proc = subprocess.run(
-            ["bash", str(REPO / "tests" / "check_setup_libero_safety.sh")],
+            [bash, str(REPO / "tests" / "check_setup_libero_safety.sh")],
             capture_output=True, env=env)
-        # rc == 1 (not 0) proves the script aborted before running any of its
-        # scenarios under an empty SAFE_TMP; a stderr message must be emitted.
-        # (Message bytes are transcoded by MSYS on Windows pipes, so we only
-        # assert non-empty rather than the exact text here.)
-        self.assertNotEqual(proc.returncode, 0)
-        self.assertTrue(proc.stderr.strip())
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertFalse(proc.stdout.strip(), "scenarios must not run")
+        message = b"cannot create a temporary directory"
+        if message not in proc.stderr:
+            # MSYS can transcode stderr on some pipe setups; try UTF-16LE too.
+            try:
+                decoded = proc.stderr.decode("utf-16-le", errors="replace")
+            except Exception:
+                decoded = ""
+            self.assertIn("cannot create a temporary directory", decoded)
 
 
 class ClientTests(unittest.TestCase):
