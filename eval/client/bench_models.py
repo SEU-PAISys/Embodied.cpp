@@ -16,6 +16,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "eval"))
 
+from client.vla_cpp_client import ARCH_PRESETS  # noqa: E402
 from client.vla_cpp_client import VlaCppClient  # noqa: E402
 
 ARCHES = {

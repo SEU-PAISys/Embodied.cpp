@@ -190,6 +190,14 @@ class GrootN1LIBEROParser:
             raw=obs,
         )
 
+    def parse_action(self, action: np.ndarray) -> np.ndarray:
+        # GR00T N1.7 emits a 7-D end-effector delta action; the last channel
+        # is an open/close logit that LIBERO stores as +1/-1, so map it to
+        # the sign convention the simulator expects.
+        result = np.asarray(action[:7], dtype=np.float32).copy()
+        result[-1] = -np.sign(2.0 * result[-1] - 1.0)
+        return result
+
 
 LIBERO_PARSER_REGISTRY = {
     "pi05": Pi05LIBEROParser,

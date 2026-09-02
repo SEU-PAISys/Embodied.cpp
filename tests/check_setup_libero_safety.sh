@@ -5,9 +5,17 @@
 set -u
 cd "$(dirname "$0")/.."
 
+# Everything this script touches lives under one unique temp dir (guard
+# fragment, symlink probe and scenario envs), so parallel runs never collide
+# and the exit cleanup only removes our own directory.
+TMP=$(mktemp -d)
+GUARD="$TMP/guards.sh"
+PROBE="$TMP/symlink_probe"
+trap 'rm -rf "$TMP"' EXIT
+
 # Extract the pure guard block (default resolution + / HOME + .venv checks),
 # which ends right before the first side-effecting command (REPO_ROOT=...).
-python3 - eval/sim/libero/setup_libero.sh > /tmp/_libero_guards.sh <<'PY'
+python3 - eval/sim/libero/setup_libero.sh > "$GUARD" <<'PY'
 import sys
 src = open(sys.argv[1], encoding="utf-8").read()
 start = src.index('mkdir -p "$LIBERO_UV_ENV"')
@@ -19,11 +27,11 @@ PASS=0; FAIL=0; SKIP=0
 # Symlink creation needs privilege on Windows Git Bash, and MSYS ln -s can
 # silently "succeed" without creating anything. Detect real support by
 # checking the link actually exists.
-rm -f /tmp/_wb_symlink_probe
-if ln -s . /tmp/_wb_symlink_probe 2>/dev/null && [ -L /tmp/_wb_symlink_probe ]; then
-  SYMLINK_SUPPORT=1; rm -f /tmp/_wb_symlink_probe
+rm -f "$PROBE"
+if ln -s . "$PROBE" 2>/dev/null && [ -L "$PROBE" ]; then
+  SYMLINK_SUPPORT=1; rm -f "$PROBE"
 else
-  SYMLINK_SUPPORT=0; rm -f /tmp/_wb_symlink_probe
+  SYMLINK_SUPPORT=0; rm -f "$PROBE"
 fi
 
 # scenario <label> <expected: accept|refuse> <setup> <env>
@@ -36,7 +44,7 @@ scenario() {
     SKIP=$((SKIP+1)); echo "  skip  $label (setup failed rc=$setup_rc)"
     return
   fi
-  LIBERO_UV_ENV="$env_path" bash /tmp/_libero_guards.sh >/dev/null 2>&1
+  LIBERO_UV_ENV="$env_path" bash "$GUARD" >/dev/null 2>&1
   local rc=$?
   if { [ "$expected" = refuse ] && [ "$rc" -eq 1 ]; } || \
      { [ "$expected" = accept ] && [ "$rc" -eq 0 ]; }; then
@@ -46,8 +54,10 @@ scenario() {
   fi
 }
 
-B=$(mktemp -d)
-trap 'rm -rf "$B" /tmp/_libero_guards.sh' EXIT
+# Scenario envs live under the same unique temp dir; the single EXIT trap
+# cleans everything this script created.
+B="$TMP/scenarios"
+mkdir -p "$B"
 
 # 1. Dedicated dir with a valid existing .venv  -> accepted (will be reused)
 scenario "valid .venv is accepted (reuse)" accept \
@@ -62,7 +72,7 @@ if [ "$SYMLINK_SUPPORT" -eq 1 ]; then
   env3="$B/env3"; mkdir -p "$env3" "$B/realvenv"
   ( cd "$env3" && ln -s ../realvenv .venv )
   if [ -L "$env3/.venv" ]; then
-    LIBERO_UV_ENV="$env3" bash /tmp/_libero_guards.sh >/dev/null 2>&1
+    LIBERO_UV_ENV="$env3" bash "$GUARD" >/dev/null 2>&1
     if [ $? -eq 1 ]; then
       PASS=$((PASS+1)); echo "  ok    symlinked .venv refused (rc=1)"
     else
@@ -84,10 +94,10 @@ else
   FAIL=$((FAIL+1)); echo "  FAIL  sibling files were deleted or modified"
 fi
 # 5. "/" as LIBERO_UV_ENV -> refused
-LIBERO_UV_ENV=/ bash /tmp/_libero_guards.sh >/dev/null 2>&1
+LIBERO_UV_ENV=/ bash "$GUARD" >/dev/null 2>&1
 [ $? -eq 1 ] && { PASS=$((PASS+1)); echo "  ok    / is refused"; } || { FAIL=$((FAIL+1)); echo "  FAIL  / is refused"; }
 # 6. HOME as LIBERO_UV_ENV -> refused
-LIBERO_UV_ENV="$HOME" bash /tmp/_libero_guards.sh >/dev/null 2>&1
+LIBERO_UV_ENV="$HOME" bash "$GUARD" >/dev/null 2>&1
 [ $? -eq 1 ] && { PASS=$((PASS+1)); echo "  ok    \$HOME is refused"; } || { FAIL=$((FAIL+1)); echo "  FAIL  \$HOME is refused"; }
 
 echo

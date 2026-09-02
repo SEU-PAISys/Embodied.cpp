@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import deque
 import contextlib
+import importlib.util
 import io
 from pathlib import Path
 import runpy
@@ -26,6 +27,7 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "eval"))
 
 from adapter.sim.libero import LIBERO_PARSER_REGISTRY
+from adapter.sim.libero import LIBEROSimAdapter
 from client import run_sim_client_direct as runner
 from client.libero_profile import LiberoSuiteProfiler
 from client.run_libero_eval_xr0 import shared_arguments
@@ -194,6 +196,43 @@ class _RecordingProfiler:
         self.episodes.append(kwargs)
 
 
+class AdapterCompatibilityTests(unittest.TestCase):
+    """Every LIBERO parser registered by the shared adapter must keep the
+    action interface the public rollout path calls (regression: GR00T's
+    parse_action was dropped during the three-model integration)."""
+
+    def test_all_registered_parsers_implement_parse_action(self):
+        missing = [name for name, cls in LIBERO_PARSER_REGISTRY.items()
+                   if not callable(getattr(cls, "parse_action", None))]
+        self.assertEqual(missing, [])
+
+    def test_groot_parse_action_first_action_and_queue_replay(self):
+        client = MagicMock()
+        client.get_arch.return_value = "groot_n1"
+        client.has_queued_action.return_value = False
+        # 7-D delta action; gripper channel is an open/close value.
+        raw = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8], dtype=np.float32)
+        client.get_action.return_value = raw
+        adapter = LIBEROSimAdapter(client)
+        obs = {"pixels": {"image": np.zeros((8, 8, 3), dtype=np.uint8),
+                          "image2": np.zeros((8, 8, 3), dtype=np.uint8)},
+               "robot_state": {"eef": {"pos": [0, 0, 0], "quat": [0, 0, 0, 1]},
+                               "gripper": {"qpos": [0.0, 0.0]}},
+               "task_description": "pick up the bowl"}
+        action = adapter.get_action(obs)          # first action: full path
+        self.assertEqual(action.shape, (7,))
+        np.testing.assert_allclose(action[:6], raw[:6], atol=1e-6)
+        self.assertEqual(action[6], -1.0)         # -sign(2*0.8 - 1) = -1
+        client.get_action.assert_called_once()
+        # Queue replay path must apply the same action conversion.
+        client.has_queued_action.return_value = True
+        client.get_action_from_queue.return_value = np.array(
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.9], dtype=np.float32)
+        replayed = adapter.get_action(obs)
+        self.assertEqual(replayed[6], 1.0)        # -sign(2*(-0.9) - 1) = 1
+        self.assertEqual(client.get_action.call_count, 1)  # queue: no new inference
+
+
 class EpisodeAccountingTests(unittest.TestCase):
     """Aborted (terminated mid-step) episodes must be recorded exactly once."""
 
@@ -325,6 +364,75 @@ class EpisodeAccountingTests(unittest.TestCase):
         self.assertTrue(all(e["skipped"] for e in profiler.episodes))
         self.assertEqual(result["skipped"], 2)
         self.assertEqual(result["episodes_counted"], 0)
+
+
+class BenchCliTests(unittest.TestCase):
+    def test_bench_models_reports_total_and_unmeasured_n_a(self):
+        # Run bench_models.main() against a fake client: output must include
+        # the total latency and n/a for phases turbovla cannot measure (the
+        # NameError regression: ARCH_PRESETS was used but not imported).
+        spec = importlib.util.spec_from_file_location(
+            "bench_models", str(REPO / "eval" / "client" / "bench_models.py"))
+        bm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bm)
+        fake = MagicMock()
+        fake.preset_chunk, fake.max_state_dim = 12, 8
+        fake._predict_chunk.return_value = np.zeros((12, 7), dtype=np.float32)
+        fake._last_response = SimpleNamespace(
+            latency_ms_total=10.0, latency_ms_inference=8.0,
+            latency_ms_prefill=0.0, latency_ms_denoise=0.0, latency_ms_vision=0.0)
+        out = io.StringIO()
+        with patch.object(bm, "VlaCppClient", return_value=fake), \
+             patch.object(sys, "argv", ["bench", "turbovla", "1"]), \
+             contextlib.redirect_stdout(out):
+            bm.main()
+        text = out.getvalue()
+        self.assertIn("ARCH=turbovla", text)
+        self.assertIn("total", text)
+        self.assertIn("mean=", text)                 # measured phases printed
+        self.assertIn("n/a", text)                   # vision/prefill/denoise
+
+
+class ParityCliTests(unittest.TestCase):
+    """parity_turbovla_cpp must accept the final action without intermediate
+    stage dumps (the stock runtime emits none), keep the over-tolerance
+    failure, and only require stage files in explicit --stages mode."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location(
+            "parity_turbovla_cpp", str(REPO / "scripts" / "parity_turbovla_cpp.py"))
+        cls.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.mod)
+
+    def _make_fixture(self, reference_delta: float):
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        ref = np.linspace(0.0, 1.0, 12 * 7, dtype=np.float32).reshape(12, 7)
+        np.save(tmp / "turbovla_parity_ref_env.npy", ref)
+        actual = ref + reference_delta
+        return tmp, ref, actual
+
+    def test_passes_without_stage_dumps(self):
+        tmp, ref, actual = self._make_fixture(1e-4)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            result = self.mod.check_parity(actual, tmp, atol=0.01)
+        self.assertTrue(result)
+        self.assertIn("PASS", out.getvalue())
+        self.assertFalse((tmp / "turbovla_parity_ref_stages.npz").exists())
+
+    def test_over_tolerance_fails(self):
+        tmp, ref, actual = self._make_fixture(0.5)
+        with contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaisesRegex(SystemExit, "FAIL"):
+            self.mod.check_parity(actual, tmp, atol=0.01)
+
+    def test_stages_requested_but_missing_fails_explicitly(self):
+        tmp, ref, actual = self._make_fixture(1e-4)
+        with contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaisesRegex(SystemExit, "not found"):
+            self.mod.check_parity(actual, tmp, atol=0.01, compare_stages=True)
 
 
 class ClientTests(unittest.TestCase):
