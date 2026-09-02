@@ -2,7 +2,7 @@
 # Override with --task-id from CLI for single-task smoke tests.
 #
 # Start the server first (from the repo root):
-#   ./build/vla-server checkpoints/turbovla/turbovla_all4.gguf \
+#   ./build/vla-server checkpoints/turbovla/turbovla.gguf \
 #                      --bind tcp://*:5555
 #
 # Then:
@@ -33,6 +33,8 @@ output_dir: outputs/turbovla_libero_object
 view_mode: multi-view
 fps: 30
 
+observation_width: 256
+observation_height: 256
 image_size: 256
 max_state_dim: 8
 real_action_dim: 7

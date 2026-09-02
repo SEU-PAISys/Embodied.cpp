@@ -50,6 +50,7 @@ class Pi05LIBEROParser:
         return model_inputs
 
     def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
+        model_inputs = self.parse_observation(obs)
         pixels = obs.get("pixels", {})
         images = []
         for key in ("image", "image2"):
@@ -58,8 +59,10 @@ class Pi05LIBEROParser:
         return EmbodiedObservation(
             instruction=str(obs.get("task_description", "")),
             images=images,
-            proprioception=TensorStream("libero_state", _extract_pi05_libero_state(obs)),
-            model_inputs=self.parse_observation(obs),
+            # Keep the typed state identical to the model compatibility view:
+            # Pi05/XR0/TurboVLA use 8 float32 values; X-VLA uses 20 (ee6d).
+            proprioception=TensorStream("libero_state", model_inputs["observation.state"]),
+            model_inputs=model_inputs,
             raw=obs,
         )
 

@@ -21,8 +21,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-import sentencepiece
-from transformers import AutoTokenizer
 import zmq
 
 from client.reproducibility import generate_action_noise
@@ -151,6 +149,8 @@ def _load_pb():
 
 
 def _load_paligemma_sentencepiece(tokenizer_name: str) -> sentencepiece.SentencePieceProcessor:
+    import sentencepiece
+
     candidates = []
     tok_path = Path(tokenizer_name)
     if tok_path.is_file():
@@ -426,6 +426,8 @@ class VlaCppClient:
             assert tokenizer_name is not None
             self.tok = BartTokenizerFast.from_pretrained(tokenizer_name)
         elif not use_server_tokenizer:
+            from transformers import AutoTokenizer
+
             assert tokenizer_name is not None
             tokenizer_kwargs = {}
             chat_template_path = Path(tokenizer_name) / "chat_template.jinja"
@@ -469,7 +471,6 @@ class VlaCppClient:
         self._noise_rng: np.random.Generator | None = None
         self.preset_chunk = int(preset.get("chunk", 30))
         self.use_server_tokenizer = bool(preset.get("use_server_tokenizer", False))
-        self
         self._last_response = None
         self._inference_sequence = 0
         self._last_inference_profile: dict[str, float | int] | None = None
@@ -651,12 +652,23 @@ class VlaCppClient:
             noise = np.ascontiguousarray(action_noise, dtype=np.float32).reshape(-1)
             req.noise.extend(noise.tolist())
 
+        return self._request_chunk(req)
+
+    def _request_chunk(self, req) -> np.ndarray:
+        """Shared transport, response validation and profiling for every VLA.
+
+        Returns a float32 [chunk_size, action_dim] array owned by the caller.
+        Server phase timings exclude client preprocessing and ZMQ round-trip.
+        """
         self.sock.send(req.SerializeToString())
         body = self.sock.recv()
         resp = self.pb.PredictResponse()
         resp.ParseFromString(body)
         if resp.error:
             raise RuntimeError(f"VLA server error: {resp.error}")
+        chunk = np.array(resp.action_chunk, dtype=np.float32).reshape(
+            resp.chunk_size, resp.action_dim,
+        )
         self._last_response = resp
         self._inference_sequence += 1
         self._last_inference_profile = {
@@ -671,10 +683,7 @@ class VlaCppClient:
             "model_action_dim": int(resp.action_dim),
             "replay_chunk_size": int(self.n_action_steps),
         }
-        return np.array(resp.action_chunk, dtype=np.float32).reshape(
-            resp.chunk_size,
-            resp.action_dim,
-        )
+        return chunk
 
     def _predict_chunk_xvla(self, observations: dict[str, Any]) -> np.ndarray:
         """X-VLA path: bicubic 224x224 U8 views + BartTokenizer ids padded to
@@ -758,17 +767,7 @@ class VlaCppClient:
             noise = torch.randn(1, self.preset_chunk, self.max_state_dim).numpy().reshape(-1)
         req.noise.extend(noise.tolist())
 
-        self.sock.send(req.SerializeToString())
-        body = self.sock.recv()
-        resp = self.pb.PredictResponse()
-        resp.ParseFromString(body)
-        if resp.error:
-            raise RuntimeError(f"VLA server error: {resp.error}")
-        self._last_response = resp
-        return np.array(resp.action_chunk, dtype=np.float32).reshape(
-            resp.chunk_size,
-            resp.action_dim,
-        )
+        return self._request_chunk(req)
 
     def _predict_chunk_xr0(self, observations: dict[str, Any]) -> np.ndarray:
         """Xiaomi-Robotics-0 path: raw-resolution U8 images + Qwen chat
@@ -845,17 +844,7 @@ class VlaCppClient:
             noise = torch.randn(1, self.preset_chunk, self.max_state_dim).numpy().reshape(-1)
         req.noise.extend(noise.tolist())
 
-        self.sock.send(req.SerializeToString())
-        body = self.sock.recv()
-        resp = self.pb.PredictResponse()
-        resp.ParseFromString(body)
-        if resp.error:
-            raise RuntimeError(f"VLA server error: {resp.error}")
-        self._last_response = resp
-        return np.array(resp.action_chunk, dtype=np.float32).reshape(
-            resp.chunk_size,
-            resp.action_dim,
-        )
+        return self._request_chunk(req)
 
     def close(self):
         try:

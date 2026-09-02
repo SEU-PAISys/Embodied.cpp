@@ -25,7 +25,9 @@ n_episodes: 20
 max_steps: 0
 seed: 42
 
-# Qwen3-VL tokenizer snapshot produced alongside the GGUF conversion.
+# Example tokenizer location: populate from the same upstream HF snapshot
+# used for conversion, or pass --tokenizer /path/to/that/snapshot.
+# The GGUF converter does not create this directory (see scripts/README.md).
 tokenizer: checkpoints/xr0/hf
 vla_addr: tcp://127.0.0.1:5555
 
@@ -34,7 +36,9 @@ view_mode: multi-view
 fps: 30
 
 # No image_size: Xiaomi-Robotics-0 consumes LIBERO frames at their native
-# resolution (sides must be a multiple of 32; LIBERO renders 256x256).
+# resolution (sides must be a multiple of 32).
+observation_width: 256
+observation_height: 256
 max_state_dim: 32
 real_action_dim: 7
 image_keys:

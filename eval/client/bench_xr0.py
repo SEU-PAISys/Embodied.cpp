@@ -1,9 +1,9 @@
 """Measure Xiaomi-Robotics-0 end-to-end latency against a running vla-server.
 
-Loads the same synthetic LIBERO-like observation as smoke_xr0.py and issues
+Loads a synthetic LIBERO-like observation and issues
 N repeat requests, printing per-phase latency read from the server response
 (latency_ms_total / _inference / _prefill / _denoise / _vision) plus the
-round-trip wall time. Reuses the tokenizer/arch from smoke_xr0.
+round-trip wall time. Use bench_models.py for the multi-model benchmark.
 """
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ from pathlib import Path
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT / "eval" / "client"))
+sys.path.insert(0, str(REPO_ROOT / "eval"))
 
-from vla_cpp_client import VlaCppClient  # noqa: E402
+from client.vla_cpp_client import VlaCppClient  # noqa: E402
 
 
 def main() -> None:

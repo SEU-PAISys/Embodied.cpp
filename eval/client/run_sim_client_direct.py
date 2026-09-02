@@ -27,20 +27,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(1, str(ROOT))
 
-import gymnasium as gym
 import numpy as np
 try:
     import torch
 except ModuleNotFoundError:
     torch = None
 
-import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
 from adapter.sim.libero import LIBEROSimAdapter
 try:
     from client.libero_profile import LiberoSuiteProfiler
 except ModuleNotFoundError:
     LiberoSuiteProfiler: Any = None
-from client.lingbot_world_client import LingBotWorldClient
 try:
     from client.inference_timeline import timeline_path_for_video, write_inference_timeline
 except ImportError:
@@ -56,6 +53,15 @@ from client.vla_cpp_client import ARCH_PRESETS as VLA_ARCH_PRESETS
 from client.vla_cpp_client import VlaCppClient
 
 ARCH_CHOICES = ["pi05", "lingbot_va", "xr0", "turbovla", "xvla", "groot_n1", "smolvla"]
+PROFILE_LABELS = {
+    "groot_n1": ("GR00T N1.7", "Qwen3-VL-16L"),
+    "pi05": ("pi0.5", "PaliGemma"),
+    "lingbot_va": ("LingBot-VA", "LingBot-VLM"),
+    "smolvla": ("SmolVLA", "SmolVLM2-500M"),
+    "xr0": ("Xiaomi-Robotics-0", "Qwen3-VL-4B"),
+    "turbovla": ("TurboVLA", "DINOv3 + BERT"),
+    "xvla": ("X-VLA", "Florence-2 DaViT + BART"),
+}
 LIBERO_SUITE_TASK_COUNTS = {
     "libero_spatial": 10,
     "libero_object": 10,
@@ -214,6 +220,9 @@ def run_one_task(
     task_id: int,
     profiler: Any = None,
 ) -> dict[str, Any]:
+    import gymnasium as gym
+    import sim.libero  # noqa: F401  registers gymnasium envs
+
     output_dir = Path(args.output_dir) / args.arch / task / f"task_{task_id}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -225,6 +234,7 @@ def run_one_task(
         "control_mode": args.control_mode,
         "observation_width": args.observation_width,
         "observation_height": args.observation_height,
+        "num_steps_wait": args.num_steps_wait,
     }
     if args.arch == "lingbot_va":
         # Match robbyant/lingbot-va's official LIBERO client: 128px cameras,
@@ -498,6 +508,11 @@ def run_one_task(
         "noise_seed": args.noise_seed,
         "n_action_steps": args.n_action_steps,
         "episodes": episode_results,
+        "observation_width": args.observation_width,
+        "observation_height": args.observation_height,
+        "image_size": args.image_size,
+        "control_mode": args.control_mode,
+        "num_steps_wait": args.num_steps_wait,
     }
     with (output_dir / "result.json").open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
@@ -523,7 +538,7 @@ def run_one_task(
     print(f"- Saved videos to: {output_dir.resolve()}")
     return result
 
-if __name__ == "__main__":
+def parse_args(argv=None):
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument(
         "--conf", "--config",
@@ -531,7 +546,7 @@ if __name__ == "__main__":
         default=None,
         help="YAML benchmark config. Relative names are resolved under eval/conf/.",
     )
-    conf_args, _ = pre_parser.parse_known_args()
+    conf_args, _ = pre_parser.parse_known_args(argv)
     conf_defaults = _load_yaml_config(conf_args.conf)
 
     parser = argparse.ArgumentParser(
@@ -555,6 +570,8 @@ if __name__ == "__main__":
     parser.add_argument("--task-ids", nargs="+", type=int, default=None,
         help="Task variation ids to run. YAML configs may also set task_ids: all.")
     parser.add_argument("--n-episodes", type=int, default=30)
+    parser.add_argument("--num-steps-wait", type=int, default=10,
+        help="Settling steps performed by the environment after reset.")
     parser.add_argument("--max-steps", type=int, default=0,
         help="Stop each episode after this many env steps for smoke tests. "
              "0 means run until done/truncated.")
@@ -574,8 +591,9 @@ if __name__ == "__main__":
     parser.add_argument("--noise-seed", type=int, default=None,
         help="Deterministic SmolVLA action-noise seed. Each task/episode gets a stable derived seed.")
 
-    parser.add_argument("--observation-size", type=int, default=256,
-        help="Square LIBERO render size. 256 matches the Xiaomi-Robotics-0/TurboVLA training/eval protocol.")
+    parser.add_argument("--observation-size", type=int, default=None,
+        help="Set both raw camera dimensions; cannot be combined with explicit "
+             "--observation-width/height. Model resize is controlled by --image-size.")
     parser.add_argument("--control-mode", choices=["relative", "absolute"],
         default=None,
         help="LIBERO controller mode (default: absolute for xvla, relative "
@@ -655,9 +673,27 @@ if __name__ == "__main__":
             )
         parser.set_defaults(**conf_defaults)
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    cli = sys.argv[1:] if argv is None else argv
+    dimensions = ("--observation-width", "--observation-height")
+    explicit_dimensions = {arg.split("=", 1)[0] for arg in cli} & set(dimensions)
+    if args.observation_size is not None:
+        if explicit_dimensions:
+            if any(arg.split("=", 1)[0] == "--observation-size" for arg in cli):
+                parser.error("use --observation-size or --observation-width/height, not both")
+            # Explicit CLI dimensions override the YAML square-size default.
+            if "--observation-width" not in explicit_dimensions:
+                args.observation_width = args.observation_size
+            if "--observation-height" not in explicit_dimensions:
+                args.observation_height = args.observation_size
+        else:
+            args.observation_width = args.observation_height = args.observation_size
     if args.observation_width <= 0 or args.observation_height <= 0:
         parser.error("--observation-width and --observation-height must be positive")
+    if args.arch == "xr0" and (args.observation_width % 32 or args.observation_height % 32):
+        parser.error("xr0 camera dimensions must be divisible by 32; use --observation-size 256")
+    if args.n_episodes <= 0 or args.num_steps_wait < 0:
+        parser.error("--n-episodes must be positive and --num-steps-wait non-negative")
     requested_suite = args.libero_suite or args.task
     args.task = normalize_libero_suite(requested_suite)
     if args.task not in LIBERO_SUITE_TASK_COUNTS:
@@ -666,6 +702,12 @@ if __name__ == "__main__":
             "spatial, object, goal, 10, long, libero_spatial, libero_object, "
             "libero_goal, libero_10, libero_90."
         )
+    resolve_task_ids(args)
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
     task_ids = resolve_task_ids(args)
 
     client = build_client(args)
@@ -675,13 +717,7 @@ if __name__ == "__main__":
             raise RuntimeError(
                 "client.libero_profile is required when --profile-output is set"
             )
-        default_labels = {
-            "groot_n1": ("GR00T N1.7", "Qwen3-VL-16L"),
-            "pi05": ("pi0.5", "PaliGemma"),
-            "lingbot_va": ("LingBot-VA", "LingBot-VLM"),
-            "smolvla": ("SmolVLA", "SmolVLM2-500M"),
-        }
-        model_default, backbone_default = default_labels[args.arch]
+        model_default, backbone_default = PROFILE_LABELS[args.arch]
         profiler = LiberoSuiteProfiler(
             output_path=Path(args.profile_output),
             model_label=args.profile_model_label or model_default,
@@ -710,3 +746,7 @@ if __name__ == "__main__":
             if complete:
                 print(f"- Profile table: {profiler.output_path.with_suffix('.md').resolve()}")
                 print(f"- Table ready: {result['table_ready']}")
+
+
+if __name__ == "__main__":
+    main()

@@ -9,6 +9,7 @@
 #include "adapter/adapter.h"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 namespace embodied::adapter {
@@ -58,6 +59,9 @@ AdapterStatus VlaModelInputAdapter::build(const Observation& observation,
                                           ModelInputStorage* out) const {
     if (!out) {
         return AdapterStatus::error("ModelInputStorage must not be null");
+    }
+    if (observation.domain_id > static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+        return AdapterStatus::error("domain_id exceeds runtime integer range");
     }
     if (observation.language_tokens.empty() && observation.language_text.empty() &&
         observation.instruction.empty()) {

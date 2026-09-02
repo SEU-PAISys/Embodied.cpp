@@ -27,6 +27,8 @@ seed: 42
 # BART tokenizer snapshot used by the client-side text encoder. The runtime
 # does not tokenize for X-VLA, so this must point at a directory containing
 # the BartTokenizerFast files (tokenizer.json / vocab.json / merges.txt).
+# Point --tokenizer at the upstream HF snapshot used for conversion;
+# the GGUF converter does not create this example directory.
 tokenizer: checkpoints/xvla/hf
 vla_addr: tcp://127.0.0.1:5555
 
@@ -34,6 +36,8 @@ output_dir: outputs/xvla_libero_object
 view_mode: multi-view
 fps: 30
 
+observation_width: 256
+observation_height: 256
 image_size: 224
 max_state_dim: 20
 # X-VLA's ee6d action space exposes 10 dims per chunk row.

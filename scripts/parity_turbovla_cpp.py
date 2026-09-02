@@ -10,9 +10,9 @@ from pathlib import Path
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "eval" / "client"))
+sys.path.insert(0, str(REPO_ROOT / "eval"))
 
-from vla_cpp_client import VlaCppClient  # noqa: E402
+from client.vla_cpp_client import VlaCppClient  # noqa: E402
 
 
 def main() -> None:

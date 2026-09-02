@@ -409,6 +409,11 @@ std::vector<float> XVLAModelArch::predict(const Inputs& in) {
     const int64_t V = in.n_images;
 
     // ---------------- 0) input validation ----------------
+    if (in.domain_id < 0 || in.domain_id >= num_domains) {
+        std::fprintf(stderr, "vla(xvla): domain_id %d out of range [0, %lld)\n",
+                     in.domain_id, (long long) num_domains);
+        return {};
+    }
     if (V < 1 || V > 3 || !in.images) {
         std::fprintf(stderr, "vla(xvla): predict needs 1..3 images (got %lld)\n", (long long) V);
         return {};
