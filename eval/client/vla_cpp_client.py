@@ -101,6 +101,12 @@ ARCH_PRESETS = {
         "n_action_steps": 12,
         "use_fast_tokenizer": True,
         "use_server_tokenizer": True,
+        # Vision tower, BERT, fusion and the ACT head run as one fused graph,
+        # so per-phase times do not exist; the runtime leaves those Stats
+        # fields at 0. Declare them unmeasured so clients report None/N-A
+        # instead of treating the zeros as real timings. server_inference_ms
+        # is the whole fused-graph execution, not an action-head-only figure.
+        "unmeasured_phases": ("vision", "prefill", "denoise"),
     },
     "xvla": {
         # X-VLA: Florence-2 DaViT vision + BART text encoder + domain-
@@ -671,14 +677,22 @@ class VlaCppClient:
         )
         self._last_response = resp
         self._inference_sequence += 1
+        # Phases declared unmeasured by the arch preset are reported as None
+        # (absent) rather than 0, so aggregators do not mistake them for
+        # genuine zero-cost stages.
+        unmeasured = ARCH_PRESETS.get(self.arch, {}).get("unmeasured_phases", ())
+
+        def _phase(value: float, key: str) -> float | None:
+            return None if key in unmeasured else float(value)
+
         self._last_inference_profile = {
             "sequence": self._inference_sequence,
             "request_id": int(resp.request_id),
             "server_total_ms": float(resp.latency_ms_total),
-            "server_vision_ms": float(resp.latency_ms_vision),
-            "server_inference_ms": float(resp.latency_ms_inference),
-            "server_prefill_ms": float(resp.latency_ms_prefill),
-            "server_denoise_ms": float(resp.latency_ms_denoise),
+            "server_vision_ms": _phase(resp.latency_ms_vision, "vision"),
+            "server_inference_ms": _phase(resp.latency_ms_inference, "inference"),
+            "server_prefill_ms": _phase(resp.latency_ms_prefill, "prefill"),
+            "server_denoise_ms": _phase(resp.latency_ms_denoise, "denoise"),
             "model_chunk_size": int(resp.chunk_size),
             "model_action_dim": int(resp.action_dim),
             "replay_chunk_size": int(self.n_action_steps),

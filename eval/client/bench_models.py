@@ -105,9 +105,17 @@ def main() -> None:
 
     a = np.asarray(rows, dtype=np.float64)
     name = ["wall_rt", "total", "inference", "prefill", "denoise", "vision"]
+    # Phases the arch declares unmeasured (fused single-graph runtimes) are
+    # reported as n/a instead of a misleading 0.00ms statistic.
+    unmeasured = set(ARCH_PRESETS.get(arch, {}).get("unmeasured_phases", ()))
+    for nm in unmeasured & set(name):
+        a[:, name.index(nm)] = np.nan
     print(f"ARCH={arch}  n_reqs={n}  chunk={client.preset_chunk}x{client.max_state_dim}")
     for j, nm in enumerate(name):
         col = a[:, j]
+        if np.isnan(col).all():
+            print(f"  {nm:<10} n/a (not measured separately for this architecture)")
+            continue
         print(f"  {nm:<10} mean={col.mean():8.2f}ms  std={col.std():8.2f}ms  "
               f"p50={np.percentile(col, 50):8.2f}ms  p95={np.percentile(col, 95):8.2f}ms  "
               f"p99={np.percentile(col, 99):8.2f}ms")

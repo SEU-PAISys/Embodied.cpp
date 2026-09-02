@@ -488,23 +488,23 @@ def run_one_task(
 
                 try:
                     obs, reward, done, truncated, info = env.step(action)
+                    step_id += 1
+                    if args.max_steps > 0 and step_id >= args.max_steps:
+                        truncated = True
                 except ValueError as e:
                     if "terminated episode" not in str(e):
                         raise
                     print(f"- Episode aborted (env reported terminated mid-step): {e}")
-                    # An aborted episode is still one episode: record it once
-                    # (skipped=True) so result details, profiler episodes and
-                    # the summary stay consistent. It only drops out of the
-                    # success-rate denominator.
-                    _finalize_episode(True, info, reward, step_id)
+                    # Set the flag and fall through to the shared finalize
+                    # point at the bottom of the loop; do not break here or
+                    # the episode would be recorded zero times.
                     episode_aborted = True
-                    break
-                step_id += 1
-                if args.max_steps > 0 and step_id >= args.max_steps:
-                    truncated = True
 
-            if done or truncated:
-                _finalize_episode(False, info, reward, step_id)
+            # Single finalize point for both branches (LingBot and generic):
+            # an aborted episode sets the flag, lands here, and is recorded
+            # exactly once with skipped=True before moving to the next episode.
+            if done or truncated or episode_aborted:
+                _finalize_episode(episode_aborted, info, reward, step_id)
                 break
 
         if episode_aborted:
@@ -757,6 +757,15 @@ def main(argv=None):
                 "client.libero_profile is required when --profile-output is set"
             )
         model_default, backbone_default = PROFILE_LABELS[args.arch]
+        # TurboVLA runs vision + text + fusion + action head as one fused
+        # graph, so its "inference" figure is the whole graph execution, not
+        # an action-head-only phase; say so where the number is published.
+        inference_definition = None
+        if args.arch == "turbovla":
+            inference_definition = (
+                "single fused graph execution (vision tower + BERT + fusion + "
+                "ACT head); per-phase breakdown unavailable for this architecture"
+            )
         profiler = LiberoSuiteProfiler(
             output_path=Path(args.profile_output),
             model_label=args.profile_model_label or model_default,
@@ -769,6 +778,7 @@ def main(argv=None):
             server_pid=args.profile_server_pid,
             vram_interval_s=args.profile_vram_interval_s,
             warmup_requests=args.profile_warmup_requests,
+            **({"inference_definition": inference_definition} if inference_definition else {}),
         )
         profiler.start()
 

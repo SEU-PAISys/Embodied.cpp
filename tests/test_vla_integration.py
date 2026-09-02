@@ -273,6 +273,59 @@ class EpisodeAccountingTests(unittest.TestCase):
         self.assertEqual(len(profiler.episodes), 2)
         self.assertEqual([e["skipped"] for e in profiler.episodes], [False, True])
 
+    def test_lingbot_aborted_stops_inference(self):
+        # Regression: the LingBot branch used to only break out of its inner
+        # frame loop on 'terminated episode', so the episode never finalized
+        # and inference kept being requested. Each episode must request at
+        # most one chunk and be recorded exactly once with skipped=True.
+        client = MagicMock()
+        client.image_keys = ["image", "image2"]
+        client._last_response = SimpleNamespace(latency_ms_inference=0.0)
+        client.predict_chunk.return_value = np.zeros((16, 7), dtype=np.float32)
+        workdir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, workdir, True)
+        args = runner.parse_args([
+            "--arch", "lingbot_va", "--task", "object", "--task-id", "0",
+            "--n-episodes", "2", "--output-dir", workdir,
+            "--lingbot-noise-mode", "zero",
+        ])
+        profiler = _RecordingProfiler()
+        state = {"episode": -1, "aborts": 0}
+
+        class FakeEnv:
+            def reset(self, **kwargs):
+                state["episode"] += 1
+                return {"pixels": {}, "task_description": "pick"}, {"is_success": False}
+
+            def step(self, action):
+                # Both episodes abort on their first env step; a runaway loop
+                # would keep hitting this, so fail fast past a sane bound.
+                state["aborts"] += 1
+                if state["aborts"] > 8:
+                    raise RuntimeError("runaway episode loop after abort")
+                raise ValueError("terminated episode: reset() before step()")
+
+            def close(self):
+                pass
+
+        fake_gym = types.ModuleType("gymnasium")
+        fake_gym.make = lambda name, **kwargs: FakeEnv()
+        fake_sim = types.ModuleType("sim")
+        fake_libero = types.ModuleType("sim.libero")
+        fake_sim.libero = fake_libero
+        with patch.dict(sys.modules, {"gymnasium": fake_gym, "sim": fake_sim,
+                                      "sim.libero": fake_libero}), \
+             contextlib.redirect_stdout(io.StringIO()):
+            result = runner.run_one_task(args, client, "libero_object", 0, profiler)
+        self.assertEqual(client.predict_chunk.call_count, 2,
+                         "one chunk per episode; no inference after an abort")
+        self.assertEqual(len(result["episodes"]), 2)
+        self.assertTrue(all(e["skipped"] for e in result["episodes"]))
+        self.assertEqual(len(profiler.episodes), 2)
+        self.assertTrue(all(e["skipped"] for e in profiler.episodes))
+        self.assertEqual(result["skipped"], 2)
+        self.assertEqual(result["episodes_counted"], 0)
+
 
 class ClientTests(unittest.TestCase):
     def test_success_profiles_and_queue_replay_for_all_three_models(self):
@@ -304,6 +357,22 @@ class ClientTests(unittest.TestCase):
                 self.assertEqual(client.get_last_inference_profile()["sequence"], 2)
                 client.reset()
                 self.assertIsNone(client.get_last_inference_profile())
+
+    def test_unmeasured_phases_report_none_others_keep_values(self):
+        # TurboVLA declares vision/prefill/denoise unmeasured (fused single
+        # graph): its profile must carry None so aggregators show N/A. Other
+        # architectures keep their measured values untouched (even a real 0).
+        for arch, field, want in (
+            ("turbovla", "server_vision_ms", None),
+            ("turbovla", "server_prefill_ms", None),
+            ("turbovla", "server_inference_ms", 8.0),   # fused-graph execution
+            ("xr0", "server_vision_ms", 2.0),
+        ):
+            with self.subTest(arch=arch, field=field):
+                client, obs = fake_client(arch)
+                client._predict_chunk(obs)
+                profile = client.get_last_inference_profile()
+                self.assertEqual(profile[field], want)
 
     def test_failed_responses_are_not_counted(self):
         client, obs = fake_client("xr0")
