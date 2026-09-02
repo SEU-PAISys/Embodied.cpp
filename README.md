@@ -20,7 +20,7 @@
 ---
 ## NEWS
 
-- **[2026.08]** Added support for **Xiaomi-Robotics-0**, **TurboVLA**, and **X-VLA** runtimes with full LIBERO evaluations (`docs/results/`).
+- **[2026.09]** Added support for **Xiaomi-Robotics-0**, **TurboVLA**, and **X-VLA** runtimes with full LIBERO evaluations (`docs/results/`).
 - **[2026.08]** 🔥🔥 Released Embodied.cpp v1.0.
 - **[2026.07]** Added support for **Cosmos3-Nano** and **GR00T N1.7**, the **RoboLab** benchmark, and Isaac Sim.
 - **[2026.06]** Released the initial version of Embodied.cpp with support for **pi0.5**, **HY-VLA**, and **LingBot-VA**, plus the **LIBERO** and **RoboTwin** benchmarks.
@@ -73,9 +73,10 @@ https://github.com/user-attachments/assets/586fc8fe-b87e-4d04-b896-88756cbbc0f4
     - [3.3 RoboLab (Cosmos3-Nano)](#33-robolab-cosmos3-nano)
   - [4. 🔧 Convert and Quantize Models](#4--convert-and-quantize-models)
   - [5. 🗂️ Project Structure](#5-️-project-structure)
-  - [6. 📄 Citation](#6--citation)
-  - [7. ⚖️ License](#7-️-license)
-  - [8. 🙏 Acknowledgements](#8--acknowledgements)
+  - [6. 🚧 Known Limitations & Future Work](#6--known-limitations--future-work)
+  - [7. 📄 Citation](#7--citation)
+  - [8. ⚖️ License](#8-️-license)
+  - [9. 🙏 Acknowledgements](#9--acknowledgements)
 
 ---
 
@@ -112,9 +113,6 @@ https://github.com/user-attachments/assets/586fc8fe-b87e-4d04-b896-88756cbbc0f4
       </a><br>
     </td>
   </tr>
-</table>
-
-<table>
   <tr>
     <td align="center" width="25%">
       <a href="https://github.com/XiaomiRobotics/Xiaomi-Robotics-0">
@@ -134,6 +132,7 @@ https://github.com/user-attachments/assets/586fc8fe-b87e-4d04-b896-88756cbbc0f4
         <strong>X-VLA</strong>
       </a><br>
     </td>
+    <td align="center" width="25%"></td>
   </tr>
 </table>
 
@@ -167,6 +166,15 @@ VLA results are normalized to each model's Python baseline (`1.00`), and each ce
 | **pi0.5** | 1.00 → 0.90 (**10% lower**) |  1.00 → 0.60 (**40% lower**) |
 | **GR00T N1.7** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
 | **HY-VLA** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
+| **Xiaomi-Robotics-0** | Python baseline TBD · C++ ≈ 2.17 s / 30-step chunk | 2.06 GiB (q4_k) |
+| **TurboVLA** | Python baseline TBD · C++ ≈ 11.9 ms / episode | 0.36 GiB |
+| **X-VLA** | Python baseline TBD · C++ ≈ 0.89 s / 30-step chunk | 1.70 GiB |
+
+The three integrated models were measured on an RTX 4090 (CUDA 12.8,
+BF16 implementation) from the committed parity harnesses and server load
+outputs; their Python baselines still require a PyTorch environment to
+benchmark side-by-side, so the `Python → C++` ratio is reported once
+measured.
 
 For World Models, C++ substantially reduces VRAM while keeping the success rate close to the Python baseline.
 
@@ -198,18 +206,23 @@ see [`patches/PATCH.md`](patches/PATCH.md).
 
 ### 2.2 Get GGUF Weights
 
-Pre-converted GGUF releases for `Embodied.cpp` are available on Hugging Face:
+Pre-converted GGUF releases for the original models are available on
+Hugging Face:
 
 - https://huggingface.co/SEU-PAISys/Embodied.cpp
 
-The repository currently hosts GGUF artifacts prepared for the current
-`Embodied.cpp` runtime, including:
+The repository currently hosts GGUF artifacts for the original runtime
+models:
 
 - `pi0.5`: main policy GGUF plus multimodal projector GGUF
 - `GR00T N1.7`: truncated Qwen3-VL text GGUF, vision projector GGUF, and action-head GGUF
 - `HY-VLA-0.5`: combined VLA GGUF for RoboTwin and related runtime paths
 - `LingBot-VA`: transformer GGUF and companion artifacts used by the LingBot path
-- `Cosmos3-Nano`: RoboLab WAM GGUF with the Wan VAE encoder
+
+The remaining models are **converted locally** from their upstream
+checkpoints with the scripts in [`scripts/`](scripts/README.md):
+
+- `Cosmos3-Nano`: [RoboLab WAM GGUF with the Wan VAE encoder](scripts/README.md#cosmos3-nano)
 - `SmolVLA`: LeRobot policy GGUF plus SigLIP mmproj GGUF
 - `Xiaomi-Robotics-0`: Qwen3-VL-4B backbone + DiT flow-matching action head, converted with `scripts/convert_xr0_to_gguf.py`; quantize with `scripts/quantize_xr0_gguf.py` (q8_0/q6_k/q5_k/q4_k)
 - `TurboVLA`: DINOv3 ViT + BERT + bidirectional cross-attn fusion + ACT decoder, converted with `scripts/convert_turbovla_to_gguf.py`
@@ -272,9 +285,10 @@ sudo apt-get install -y \
   libgl1-mesa-dev ffmpeg iproute2
 ```
 
-CUDA runs additionally require an NVIDIA driver, a compatible CUDA toolkit,
-and `nvidia-smi`. Install `uv` separately if your distribution does not package
-it.
+CUDA builds additionally require a compatible NVIDIA driver and CUDA toolkit.
+Desktop systems may use `nvidia-smi` for device monitoring; Jetson systems
+provide `tegrastats` for resource monitoring. Install `uv` separately if your
+distribution does not package it.
 
 
 ### 2.4 Build by Model and Backend
@@ -317,9 +331,30 @@ Replace the placeholders with the model you want to build:
 `CUDA_ARCH` defaults to `native`, so CMake detects the GPU installed on the
 build machine. Override it with an explicit architecture when cross-compiling or
 when using CMake older than 3.24. Common explicit values include `75` (Turing),
-`80` or `86` (Ampere), `89` (Ada), `90` (Hopper), and `120` (Blackwell). The
-selected CUDA toolkit must support that architecture; for example, Blackwell
-`sm_120` requires CUDA 12.8 or newer.
+`80` or `86` (Ampere), `87` (Ampere, Jetson AGX Orin), `89` (Ada), `90`
+(Hopper), and `120` (Blackwell). The selected CUDA toolkit must support that
+architecture; for example, Blackwell `sm_120` requires CUDA 12.8 or newer.
+
+**Jetson AGX Orin with JetPack 6:**
+JetPack 6 commonly provides CMake 3.22, so select Orin's compute capability
+explicitly instead of using the `native` value introduced in CMake 3.24:
+
+```bash
+CUDA_HOME=/usr/local/cuda
+cmake -S . -B build-pi05-jetson \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DMODEL_BUILD_VLA_PI05=ON \
+  -DGGML_CUDA=ON \
+  -DCMAKE_CUDA_COMPILER="${CUDA_HOME}/bin/nvcc" \
+  -DCMAKE_CUDA_ARCHITECTURES=87
+cmake --build build-pi05-jetson --target vla-server -j4
+```
+
+cuDNN is detected automatically and enables accelerated convolution paths for
+the LingBot-VA and Cosmos3 WAM CUDA builds. When cuDNN is unavailable, the
+existing CUDA fallback paths remain enabled. Discovery searches normal system
+and multiarch locations as well as the CUDA toolkit. Set `CUDNN_ROOT` for a
+non-system installation.
 
 ### 2.5 Start a Server
 
@@ -351,21 +386,39 @@ listening address or port.
 Start the required server as described in section 2.5, then select the
 configuration and runner for the model and benchmark you want to evaluate.
 
-| Model | Benchmark | Configuration | Server |
-|---|---|---|---|
-| pi0.5 | LIBERO | [pi0.5](eval/conf/libero_pi05_eval.yaml) | Manual |
-| SmolVLA | LIBERO | [SmolVLA](eval/conf/libero_smolvla_eval.yaml) | Manual |
-| GR00T N1.7 | LIBERO | [GR00T](eval/conf/libero_groot_n1_eval.yaml) | Manual |
-| LingBot-VA | LIBERO | [LingBot](eval/conf/libero_lingbot_va_eval.yaml) | Manual |
-| HY-VLA | RoboTwin | [HY-VLA](eval/conf/robotwin_hy_vla_eval.yaml) | Managed |
-| Cosmos3-Nano | RoboLab | [Cosmos3](eval/conf/robolab_cosmos3_eval.yaml) | Managed |
-| Xiaomi-Robotics-0 | LIBERO | [Xiaomi-Robotics-0 report](docs/results/xr0_libero.md) | Manual |
-| TurboVLA | LIBERO | [TurboVLA report](docs/results/turbovla_libero.md) | Manual |
-| X-VLA | LIBERO | [X-VLA report](docs/results/xvla_libero.md) | Manual |
+| Model | Benchmark | Configuration | Results | Server |
+|---|---|---|---|---|
+| pi0.5 | LIBERO | [pi0.5](eval/conf/libero_pi05_eval.yaml) | - | Manual |
+| SmolVLA | LIBERO | [SmolVLA](eval/conf/libero_smolvla_eval.yaml) | - | Manual |
+| GR00T N1.7 | LIBERO | [GR00T](eval/conf/libero_groot_n1_eval.yaml) | - | Manual |
+| LingBot-VA | LIBERO | [LingBot](eval/conf/libero_lingbot_va_eval.yaml) | - | Manual |
+| HY-VLA | RoboTwin | [HY-VLA](eval/conf/robotwin_hy_vla_eval.yaml) | - | Managed |
+| Cosmos3-Nano | RoboLab | [Cosmos3](eval/conf/robolab_cosmos3_eval.yaml) | - | Managed |
+| Xiaomi-Robotics-0 | LIBERO | [Xiaomi-Robotics-0](eval/conf/libero_xr0_eval.yaml) | [report](docs/results/xr0_libero.md) | Manual |
+| TurboVLA | LIBERO | [TurboVLA](eval/conf/libero_turbovla_eval.yaml) | [report](docs/results/turbovla_libero.md) | Manual |
+| X-VLA | LIBERO | [X-VLA](eval/conf/libero_xvla_eval.yaml) | [report](docs/results/xvla_libero.md) | Manual |
 
 LIBERO uses `eval/client/run_sim_client_direct.py`; start its matching server
 separately. RoboTwin and RoboLab runners start their servers from the selected
 configuration and stop them when the evaluation finishes.
+
+**LIBERO with a manual server** (all VLA models follow the same two-step flow):
+
+```bash
+# 1. Start the server for the model you built (see section 2.5).
+./build/vla-server checkpoints/xr0/xr0-mmproj.gguf \
+                   checkpoints/xr0/xr0.gguf --bind tcp://*:5555
+
+# 2. Run the matching configuration in a second shell.
+MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \
+eval/sim/libero/libero_uv/.venv/bin/python \
+  eval/client/run_sim_client_direct.py \
+  --conf eval/conf/libero_xr0_eval.yaml
+```
+
+Swap the checkpoint and configuration for the model under test; TurboVLA
+(`libero_turbovla_eval.yaml`) and X-VLA (`libero_xvla_eval.yaml`) take a single
+GGUF, while Xiaomi-Robotics-0 takes the mmproj GGUF first.
 
 **SmolVLA on LIBERO:**
 
@@ -428,6 +481,18 @@ eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py 
 # LingBot-VA
 eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
   --conf eval/conf/libero_lingbot_va_eval.yaml
+
+# Xiaomi-Robotics-0
+eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
+  --conf eval/conf/libero_xr0_eval.yaml
+
+# TurboVLA
+eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
+  --conf eval/conf/libero_turbovla_eval.yaml
+
+# X-VLA
+eval/sim/libero/libero_uv/.venv/bin/python eval/client/run_sim_client_direct.py \
+  --conf eval/conf/libero_xvla_eval.yaml
 ```
 
 See [`eval/sim/libero/README.md`](eval/sim/libero/README.md) for LIBERO suite
@@ -473,10 +538,11 @@ details, the transport-only smoke test, and the PyTorch-reference path.
 
 ## 4. 🔧 Convert and Quantize Models
 
-Pre-converted GGUF releases are available on
-[Hugging Face](https://huggingface.co/SEU-PAISys/Embodied.cpp). Use the
-conversion tools only when preparing a compatible upstream checkpoint or a
-custom quantization.
+Pre-converted GGUF releases for the original runtime models are available on
+[Hugging Face](https://huggingface.co/SEU-PAISys/Embodied.cpp); the newer
+models are converted locally from their upstream checkpoints (see section
+2.2). Use the conversion tools when preparing a compatible upstream
+checkpoint or a custom quantization.
 
 | Model | Workflow |
 |---|---|
@@ -540,6 +606,10 @@ This project is released under the [Apache License 2.0](LICENSE.md). Third-party
 - [HY-VLA](https://github.com/Tencent-Hunyuan/Hy-Embodied-0.5-VLA)
 - [LingBot-VA](https://github.com/robbyant/lingbot-vla)
 - [NVIDIA Cosmos / Cosmos3-Nano](https://github.com/nvidia/cosmos)
+- [SmolVLA](https://github.com/huggingface/lerobot)
+- [Xiaomi-Robotics-0](https://github.com/XiaomiRobotics/Xiaomi-Robotics-0)
+- [TurboVLA](https://github.com/H-EmbodVis/TurboVLA)
+- [X-VLA](https://github.com/2toinf/X-VLA)
 
 **Foundational projects this build depends on:**
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) (LLM inference engine)

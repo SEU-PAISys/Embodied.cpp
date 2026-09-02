@@ -213,7 +213,9 @@ Model* model_load(const std::string& mmproj_path, const std::string& ckpt_path,
                          "(reconfigure with -DMODEL_BUILD_VLA_SMOLVLA=ON)\n");
 #endif
             break;
-    }    if (!impl) return nullptr;
+    }
+
+    if (!impl) return nullptr;
 
     auto* m = new Model();
     m->impl = std::move(impl);

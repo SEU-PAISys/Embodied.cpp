@@ -15,7 +15,7 @@ Upstream snapshot at time of writing:
 
 | Upstream | Status |
 |---|---|
-| SEU-PAISys/Embodied.cpp `main@c5a96a2` | no new upstream commits since 2026-08-12 |
+| SEU-PAISys/Embodied.cpp `main@1dad33f` | base for this integration PR; no later upstream commits at submission time |
 | XiaomiRobotics/Xiaomi-Robotics-0 | latest: post-training code open-sourced 2026-04-27 |
 | H-EmbodVis/TurboVLA | latest: checkpoints released 2026-07-31 (LIBERO avg 97.7%) |
 | 2toinf/X-VLA | accepted to ICLR 2026; natively integrated into LeRobot |
