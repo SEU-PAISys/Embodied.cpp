@@ -9,6 +9,7 @@ from collections import deque
 import contextlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 import runpy
 import shutil
@@ -433,6 +434,46 @@ class ParityCliTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), \
              self.assertRaisesRegex(SystemExit, "not found"):
             self.mod.check_parity(actual, tmp, atol=0.01, compare_stages=True)
+
+    def test_reference_with_nan_fails(self):
+        tmp, ref, actual = self._make_fixture(0.0)
+        ref = ref.copy()
+        ref[0, 0] = np.nan
+        np.save(tmp / "turbovla_parity_ref_env.npy", ref)
+        with contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaisesRegex(SystemExit, "reference contains non-finite"):
+            self.mod.check_parity(actual, tmp, atol=0.01)
+
+    def test_nan_atol_fails(self):
+        tmp, ref, actual = self._make_fixture(0.0)
+        with contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaisesRegex(SystemExit, "atol must be finite"):
+            self.mod.check_parity(actual, tmp, atol=float("nan"))
+
+    def test_actual_with_nan_fails(self):
+        tmp, ref, actual = self._make_fixture(0.0)
+        actual[0, 0] = np.nan
+        with contextlib.redirect_stdout(io.StringIO()), \
+             self.assertRaisesRegex(SystemExit, "FAIL"):
+            self.mod.check_parity(actual, tmp, atol=0.01)
+
+
+class SafetyScriptTests(unittest.TestCase):
+    def test_aborts_when_temp_dir_cannot_be_created(self):
+        # Point TMPDIR at an unusable path so mktemp -d fails: the script
+        # must exit non-zero with a clear message and must not fall through
+        # to file operations under an empty SAFE_TMP (which would otherwise
+        # write/delete under the filesystem root).
+        env = dict(os.environ, TMPDIR=os.path.join(tempfile.gettempdir(), "wb_nonexistent_xyz"))
+        proc = subprocess.run(
+            ["bash", str(REPO / "tests" / "check_setup_libero_safety.sh")],
+            capture_output=True, env=env)
+        # rc == 1 (not 0) proves the script aborted before running any of its
+        # scenarios under an empty SAFE_TMP; a stderr message must be emitted.
+        # (Message bytes are transcoded by MSYS on Windows pipes, so we only
+        # assert non-empty rather than the exact text here.)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertTrue(proc.stderr.strip())
 
 
 class ClientTests(unittest.TestCase):

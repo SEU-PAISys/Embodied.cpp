@@ -37,6 +37,12 @@ def check_parity(
     reference = np.load(parity_dir / "turbovla_parity_ref_env.npy")
     if actual.shape != reference.shape:
         raise SystemExit(f"shape mismatch: C++ {actual.shape}, PyTorch {reference.shape}")
+    # NaN comparisons return False, so a non-finite reference or tolerance
+    # would silently slip past the delta check below; reject them up front.
+    if not np.isfinite(reference).all():
+        raise SystemExit("FAIL: reference contains non-finite values")
+    if not np.isfinite(atol) or atol < 0:
+        raise SystemExit(f"FAIL: atol must be finite and non-negative (got {atol!r})")
     delta = np.abs(actual - reference)
     worst = np.unravel_index(int(delta.argmax()), delta.shape)
     np.save(parity_dir / "turbovla_parity_cpp_env.npy", actual)

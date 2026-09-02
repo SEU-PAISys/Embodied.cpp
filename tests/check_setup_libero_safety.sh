@@ -7,11 +7,21 @@ cd "$(dirname "$0")/.."
 
 # Everything this script touches lives under one unique temp dir (guard
 # fragment, symlink probe and scenario envs), so parallel runs never collide
-# and the exit cleanup only removes our own directory.
-TMP=$(mktemp -d)
-GUARD="$TMP/guards.sh"
-PROBE="$TMP/symlink_probe"
-trap 'rm -rf "$TMP"' EXIT
+# and the exit cleanup only removes our own directory. Abort immediately if
+# the directory cannot be created - with an empty SAFE_TMP every later
+# rm/mkdir would fall back to the filesystem root and defeat the isolation.
+# The variable is deliberately non-generic so it cannot shadow TMP/TEMP.
+SAFE_TMP="$(mktemp -d 2>/dev/null)" || {
+    echo "check_setup_libero_safety: cannot create a temporary directory" >&2
+    exit 1
+}
+[ -d "$SAFE_TMP" ] || {
+    echo "check_setup_libero_safety: mktemp did not produce a usable directory" >&2
+    exit 1
+}
+GUARD="$SAFE_TMP/guards.sh"
+PROBE="$SAFE_TMP/symlink_probe"
+trap 'rm -rf "$SAFE_TMP"' EXIT
 
 # Extract the pure guard block (default resolution + / HOME + .venv checks),
 # which ends right before the first side-effecting command (REPO_ROOT=...).
@@ -56,7 +66,7 @@ scenario() {
 
 # Scenario envs live under the same unique temp dir; the single EXIT trap
 # cleans everything this script created.
-B="$TMP/scenarios"
+B="$SAFE_TMP/scenarios"
 mkdir -p "$B"
 
 # 1. Dedicated dir with a valid existing .venv  -> accepted (will be reused)
