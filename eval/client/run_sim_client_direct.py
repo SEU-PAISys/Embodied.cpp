@@ -36,6 +36,7 @@ except ModuleNotFoundError:
 from adapter.sim.libero import LIBEROSimAdapter
 try:
     from client.libero_profile import LiberoSuiteProfiler
+    from client.libero_profile import TURBOVLA_INFERENCE_DEFINITION
 except ModuleNotFoundError:
     LiberoSuiteProfiler: Any = None
 try:
@@ -762,10 +763,7 @@ def main(argv=None):
         # an action-head-only phase; say so where the number is published.
         inference_definition = None
         if args.arch == "turbovla":
-            inference_definition = (
-                "single fused graph execution (vision tower + BERT + fusion + "
-                "ACT head); per-phase breakdown unavailable for this architecture"
-            )
+            inference_definition = TURBOVLA_INFERENCE_DEFINITION
         profiler = LiberoSuiteProfiler(
             output_path=Path(args.profile_output),
             model_label=args.profile_model_label or model_default,
