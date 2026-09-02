@@ -42,7 +42,8 @@ struct AdapterConfig {
 struct ModelInputStorage {
     std::vector<vla::ImageView> image_views;
     std::vector<int32_t> language_tokens;
-    std::string language_text;    std::vector<float> state;
+    std::string language_text;
+    std::vector<float> state;
     std::vector<float> noise;
 
     vla::Inputs inputs{};

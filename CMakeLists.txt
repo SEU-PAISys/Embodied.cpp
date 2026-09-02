@@ -129,6 +129,56 @@ if(GGML_CUDA)
 
     enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
+    if(MODEL_BUILD_WAM_LINGBOT_VA OR MODEL_BUILD_WAM_COSMOS3)
+        set(CUDNN_ROOT "" CACHE PATH "Optional cuDNN installation prefix")
+
+        set(_EMBODIED_CUDNN_INCLUDE_HINTS ${CUDAToolkit_INCLUDE_DIRS})
+        set(_EMBODIED_CUDNN_LIBRARY_HINTS ${CUDAToolkit_LIBRARY_DIR})
+
+        foreach(_EMBODIED_CUDNN_ROOT IN ITEMS "${CUDNN_ROOT}" "$ENV{CUDNN_ROOT}")
+            if(_EMBODIED_CUDNN_ROOT)
+                list(APPEND _EMBODIED_CUDNN_INCLUDE_HINTS
+                    "${_EMBODIED_CUDNN_ROOT}/include"
+                    "${_EMBODIED_CUDNN_ROOT}/include/${CMAKE_LIBRARY_ARCHITECTURE}"
+                )
+                list(APPEND _EMBODIED_CUDNN_LIBRARY_HINTS
+                    "${_EMBODIED_CUDNN_ROOT}/lib"
+                    "${_EMBODIED_CUDNN_ROOT}/lib64"
+                    "${_EMBODIED_CUDNN_ROOT}/lib/${CMAKE_LIBRARY_ARCHITECTURE}"
+                )
+            endif()
+        endforeach()
+
+        find_path(EMBODIED_CUDNN_INCLUDE_DIR
+            NAMES cudnn.h
+            HINTS ${_EMBODIED_CUDNN_INCLUDE_HINTS}
+        )
+        find_library(EMBODIED_CUDNN_LIBRARY
+            NAMES cudnn
+            HINTS ${_EMBODIED_CUDNN_LIBRARY_HINTS}
+        )
+
+        if(EMBODIED_CUDNN_INCLUDE_DIR AND EMBODIED_CUDNN_LIBRARY)
+            set(EMBODIED_CUDNN_FOUND ON)
+            add_library(embodied_cudnn INTERFACE)
+            add_library(Embodied::cuDNN ALIAS embodied_cudnn)
+            target_include_directories(embodied_cudnn INTERFACE
+                ${EMBODIED_CUDNN_INCLUDE_DIR}
+            )
+            target_link_libraries(embodied_cudnn INTERFACE
+                ${EMBODIED_CUDNN_LIBRARY}
+            )
+            message(STATUS
+                "cuDNN found: include=${EMBODIED_CUDNN_INCLUDE_DIR}, "
+                "library=${EMBODIED_CUDNN_LIBRARY}"
+            )
+        else()
+            set(EMBODIED_CUDNN_FOUND OFF)
+            message(STATUS
+                "cuDNN not found; WAM CUDA kernels will use fallback implementations"
+            )
+        endif()
+    endif()
     if(MODEL_BUILD_WAM_LINGBOT_VA)
         if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
             set(CMAKE_CUDA_ARCHITECTURES 80 86 87 89 90 100 120 CACHE STRING "" FORCE)
@@ -145,23 +195,9 @@ if(GGML_CUDA)
         target_compile_options(lingbot_cuda_kernels PRIVATE
             $<$<COMPILE_LANGUAGE:CUDA>:-O3 --use_fast_math -Xptxas=-O3>
         )
-        find_library(LINGBOT_CUDNN_LIBRARY cudnn
-            PATHS
-                ${CUDAToolkit_LIBRARY_DIR}
-                /usr/local/cuda/lib64
-                /usr/local/cuda-11.6/targets/x86_64-linux/lib
-            NO_DEFAULT_PATH)
-        find_path(LINGBOT_CUDNN_INCLUDE_DIR cudnn.h
-            PATHS
-                ${CUDAToolkit_INCLUDE_DIRS}
-                /usr/local/cuda/include
-                /usr/local/cuda-11.6/include
-                /usr/local/cuda-11.6/targets/x86_64-linux/include
-            NO_DEFAULT_PATH)
-        if(LINGBOT_CUDNN_LIBRARY AND LINGBOT_CUDNN_INCLUDE_DIR)
+        if(EMBODIED_CUDNN_FOUND)
             target_compile_definitions(lingbot_cuda_kernels PUBLIC VLA_LINGBOT_USE_CUDNN)
-            target_include_directories(lingbot_cuda_kernels PUBLIC ${LINGBOT_CUDNN_INCLUDE_DIR})
-            target_link_libraries(lingbot_cuda_kernels PUBLIC ${LINGBOT_CUDNN_LIBRARY})
+            target_link_libraries(lingbot_cuda_kernels PUBLIC Embodied::cuDNN)
         endif()
         target_link_libraries(lingbot_cuda_kernels PUBLIC CUDA::cublas CUDA::cudart)
         target_include_directories(lingbot_cuda_kernels PUBLIC
@@ -197,15 +233,9 @@ if(GGML_CUDA)
             ${CMAKE_CURRENT_SOURCE_DIR}/kernels/cosmos3
             ${CMAKE_CURRENT_SOURCE_DIR}/kernels/cosmos3/third_party/vllm_marlin
         )
-        find_library(CUDNN_LIBRARY cudnn
-            PATHS
-                ${CUDAToolkit_LIBRARY_DIR}
-                /usr/local/cuda/lib64
-                /usr/local/cuda-11.6/targets/x86_64-linux/lib
-            NO_DEFAULT_PATH)
-        if(CUDNN_LIBRARY)
+        if(EMBODIED_CUDNN_FOUND)
             target_compile_definitions(cosmos3_cuda_kernels PUBLIC VLA_COSMOS3_USE_CUDNN)
-            target_link_libraries(cosmos3_cuda_kernels PUBLIC ${CUDNN_LIBRARY})
+            target_link_libraries(cosmos3_cuda_kernels PUBLIC Embodied::cuDNN)
         endif()
         target_link_libraries(cosmos3_cuda_kernels PUBLIC CUDA::cublas CUDA::cudart)
         target_link_libraries(vla_core PRIVATE cosmos3_cuda_kernels)

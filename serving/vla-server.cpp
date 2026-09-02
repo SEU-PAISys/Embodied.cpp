@@ -424,10 +424,8 @@ int main(int argc, char ** argv) {
         }
 
         embodied::adapter::Observation observation;
-        if (!req.language_text().empty()) {
-            observation.instruction = req.language_text();
-            observation.language_text = req.language_text();
-        }
+        observation.instruction = req.language_text();
+        observation.language_text = req.language_text();
         observation.domain_id = req.domain_id();
         observation.language_tokens.assign(req.lang_tokens().begin(), req.lang_tokens().end());
         observation.proprioception.assign(req.state().begin(), req.state().end());
