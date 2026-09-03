@@ -334,7 +334,10 @@ def run_one_task(
     for episode in range(args.n_episodes):
         print(f"*** {task}/task_{task_id} Episode {episode + 1}/{args.n_episodes}")
 
-        if args.arch == "smolvla" and args.noise_seed is not None:
+        derive_noise = args.noise_seed is not None and (
+            args.arch == "smolvla" or args.derive_episode_noise
+        )
+        if derive_noise:
             episode_noise_seed = derive_episode_noise_seed(
                 args.noise_seed, task, task_id, episode
             )
@@ -605,6 +608,10 @@ def parse_args(argv=None):
         help="Stop each episode after this many env steps for smoke tests. "
              "0 means run until done/truncated.")
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--derive-episode-noise", action="store_true",
+                        help="derive per-episode action-noise seeds from "
+                             "(noise_seed, suite, task, episode) like the SmolVLA "
+                             "PR mechanism; default off keeps historical noise sequences")
     parser.add_argument("--observation-width", type=int, default=256,
         help="Raw LIBERO camera width before model preprocessing.")
     parser.add_argument("--observation-height", type=int, default=256,
