@@ -121,7 +121,7 @@ TurboVLA 满长指令（SEP@20）mask 缺陷修复后，短/满长指令 parity 
 
 | 模型 | C++ 闭环 ms/step（bf16/q8/q4）| Python 官方 ms/step | 进程显存 C++ / Python |
 |---|---|---|---|
-| XR0 | 17.83 / 15.07 / 14.88（Q4_K）| 官方闭环 per-step 待从 2000ep log 推算 | 8824 / 9790 MiB |
+| XR0 | 17.83 / 15.07 / 14.88（Q4_K）| 官方 2000ep 产物无时间戳记录，per-step 需重跑评测计时 | 8824 / 9790 MiB |
 | TurboVLA | 5.75 / 5.82 / 2.24*（Q4_K）| 64.5（4060 Laptop，**不同机**）| 880 / 待测 |
 | X-VLA | f32 常驻 4.90（object）；bf16 全量 log 待归档提取 | 官方无 LIBERO evaluator（固定 obs：115.9 ms/forward，4090 同机）| 2370 / 9790 MiB |
 
@@ -147,7 +147,10 @@ parity 回归（SEP@10/13/18/20 mask 用例）、真实 symlink 安装测试全�
 
 ## 七、遗留与后续
 
-1. XR0 官方 Python 闭环 per-step 从 2000ep log 推算（零成本，待做）。
+1. XR0 官方 Python 闭环 per-step：官方 2000ep 产物仅含 rollout 视频/JSON，**无时间戳
+   记录**，per-step 不可推算——如需该口径需重跑官方评测并显式计时（后续工作）。
 2. TurboVLA 官方 Python 的 4090 同机闭环样本（需 turbo_git evaluate 依赖链）。
-3. 三模型 client 的 action-noise seed 派生/resume 校验（对齐 SmolVLA PR 机制）。
+3. ~~三模型 client 的 action-noise seed 派生~~ **已完成**：client 新增
+   `--derive-episode-noise` opt-in（对齐 SmolVLA per-episode 派生机制；默认关闭以保持
+   既有矩阵的 noise 序列可比性）。
 4. TurboVLA Q4 档 goal 敏感：如需 4bit 可用，方向为 imatrix/敏感层高保真量化（后续工作）。
