@@ -166,9 +166,9 @@ Reported VLA comparisons are normalized to each model's Python baseline (`1.00`)
 | **pi0.5** | 1.00 → 0.90 (**10% lower**) |  1.00 → 0.60 (**40% lower**) |
 | **GR00T N1.7** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
 | **HY-VLA** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
-| **[Xiaomi-Robotics-0](docs/results/xr0_libero.md)†** | 1.00 → 0.58 | 1.00 → 0.90 |
-| **[TurboVLA](docs/results/turbovla_libero.md)†** | 1.00 → 1.23 (higher mean) | 1.00 → 0.95 |
-| **[X-VLA](docs/results/xvla_libero.md)** | Pending | Pending |
+| **[Xiaomi-Robotics-0](docs/results/xr0_libero.md)†** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.90 (**10% lower**) |
+| **[TurboVLA](docs/results/turbovla_libero.md)†** | 1.00 → 1.05 (parity; small model) | 1.00 → 0.95 (**5% lower**) |
+| **[X-VLA](docs/results/xvla_libero.md)** | 1.00 → 0.87 (**13% lower**) | 1.00 → 0.24 (**76% lower**, BF16-resident vs FP32 baseline) |
 
 † The [2026-09-03 evidence](docs/results/takeover_20260903.md#7-final-validated-snapshot)
 uses one RTX 4090, five warmups and 100 timed calls from raw CPU observations
@@ -176,8 +176,17 @@ to complete CPU actions; C++ additionally includes its public ZMQ transport.
 Process VRAM is sampled in a separate untimed phase. XR0 uses a BF16 policy
 and F16 vision on **both** sides, with `VLA_XR0_CLIP_GPU=1`; TurboVLA uses BF16.
 These are observed mean deployment/API ratios, not isolated kernel speedups
-or cross-model rankings. C++ has large latency tails; TurboVLA does **not**
-show a mean latency improvement in this batch. See std/p50/p95/p99 and raw
+or cross-model rankings. The 2026-09-03 evening re-run (post allocator-lifetime
+fix, `outputs/bench_fixed_20260903/`) removes the periodic 150-300 ms spikes:
+TurboVLA p99 223->27 ms, XR0 258->67 ms, X-VLA 248->94 ms. TurboVLA is a small
+model where symmetric client-side observation/transport costs dominate, so its
+end-to-end ratio sits near parity while its server-side model phase is 13 ms.
+X-VLA's Python baseline is FP32 (the official default); its C++ rows are BF16
+resident, which also explains the VRAM column. LIBERO success rates after the
+mask/padding/rendering fixes: TurboVLA 95.50/94.75/90.75 (BF16/Q8_0/Q4_0,
+1200 episodes) and 88.0% Q4_K (goal-heavy quantization sensitivity); X-VLA
+96.75% BF16 with object-suite probes Q8_0 98% / Q4_0 99% / Q4_K 100% /
+F32-resident 99%. See std/p50/p95/p99 and raw
 samples in the report before drawing a stable performance conclusion.
 
 X-VLA remains Pending because its matching historical HF weights were not
