@@ -12,6 +12,19 @@ SHA256 is `787c01bd8b328a5948b756aab92f8058a1e0802845a0e1f24506291b9cda59cf`;
 all 669 mapped weights match the historical GGUF. The reconversion preserves
 the checkpoint's per-instruction text lengths.
 
+| Suite | PyTorch¹ | C++ bf16 | C++ q8_0 | C++ q4_k |
+|---|---|---|---|---|
+| spatial | 98/100 | 99/100 | 100/100 | 95/100 |
+| object | 100/100 | 100/100 | 100/100 | 85/100 |
+| goal | 97/100 | 97/100 | 99/100 | 82/100 |
+| libero_10 | 94/100 | 89/100 | 87/100 | 82/100 |
+| **total** | **389/400 = 97.25%** | **385/400 = 96.25%** | **386/400 = 96.50%** | 344/400 = 86.00% |
+
+### Post-fix re-validation (seed 42, per-variant GGUF files, 256 px)
+
+After the attention-mask / padding-metadata / rendering fixes, a full 1200-episode
+re-run with per-variant GGUF files reproduced the reference within ~1 pp:
+
 | Suite | BF16 file | Q8_0 file | Q4_0 file | Q4_K file |
 |---|---:|---:|---:|---:|
 | spatial | 98/100 | 97/100 | 96/100 | 100/100 |
@@ -22,9 +35,9 @@ the checkpoint's per-instruction text lengths.
 
 Q4_K post-handoff: all 215 quantized tensors verified against BF16 offline
 (runtime kernel, max err 0.067 — conversion is clean); the goal-suite loss is
-genuine 4-bit sensitivity for this model on longer "turn on ... and put ..."
-instructions (action sign flips, not load defects). Q8_0 remains the
-recommended quantized configuration; Q4_K is not recommended for TurboVLA.
+genuine 4-bit sensitivity on longer "turn on ... and put ..." instructions
+(action sign flips, not load defects). **Q8_0 remains the recommended quantized
+configuration; Q4_K is not recommended for TurboVLA.**
 
 These Q8_0/Q4_0 files are dequantized to **BF16 residency**; they do not imply
 native low-bit execution or lower runtime VRAM. Q4_0 has a material goal-suite
