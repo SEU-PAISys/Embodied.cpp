@@ -11,7 +11,8 @@ storage runs cover **object only**, at 98/100 and 99/100, and still use BF16
 residency. These are not fresh full-suite quantized-compute sweeps.
 
 A separate fresh object run of the repaired source with actual F32 residency
-completed **100/100**, with zero skipped episodes. The former file labelled
+completed **100/100**, with zero skipped episodes (independently re-verified at
+**99/100** with `VLA_XVLA_F32_WEIGHTS=1` on the main GGUF, seed 42). The former file labelled
 `f32` had two incorrectly ordered per-domain matrices and was actually run
 with BF16 residency; its 0/100 score did not establish an F32 precision failure.
 Conversion now preserves F32 values; a regression checks both matrix transposes.

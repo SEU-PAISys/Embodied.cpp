@@ -12,13 +12,19 @@ SHA256 is `787c01bd8b328a5948b756aab92f8058a1e0802845a0e1f24506291b9cda59cf`;
 all 669 mapped weights match the historical GGUF. The reconversion preserves
 the checkpoint's per-instruction text lengths.
 
-| Suite | BF16 file | Q8_0 file | Q4_0 file |
-|---|---:|---:|---:|
-| spatial | 98/100 | 97/100 | 96/100 |
-| object | 99/100 | 100/100 | 97/100 |
-| goal | 97/100 | 97/100 | 83/100 |
-| libero_10 | 88/100 | 85/100 | 87/100 |
-| **total** | **382/400 (95.50%)** | **379/400 (94.75%)** | **363/400 (90.75%)** |
+| Suite | BF16 file | Q8_0 file | Q4_0 file | Q4_K file |
+|---|---:|---:|---:|---:|
+| spatial | 98/100 | 97/100 | 96/100 | 100/100 |
+| object | 99/100 | 100/100 | 97/100 | 98/100 |
+| goal | 97/100 | 97/100 | 83/100 | 68/100 |
+| libero_10 | 88/100 | 85/100 | 87/100 | 86/100 |
+| **total** | **382/400 (95.50%)** | **379/400 (94.75%)** | **363/400 (90.75%)** | **352/400 (88.00%)** |
+
+Q4_K post-handoff: all 215 quantized tensors verified against BF16 offline
+(runtime kernel, max err 0.067 — conversion is clean); the goal-suite loss is
+genuine 4-bit sensitivity for this model on longer "turn on ... and put ..."
+instructions (action sign flips, not load defects). Q8_0 remains the
+recommended quantized configuration; Q4_K is not recommended for TurboVLA.
 
 These Q8_0/Q4_0 files are dequantized to **BF16 residency**; they do not imply
 native low-bit execution or lower runtime VRAM. Q4_0 has a material goal-suite
