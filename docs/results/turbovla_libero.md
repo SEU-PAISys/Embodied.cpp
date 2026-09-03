@@ -3,7 +3,34 @@
 Runtime: Embodied.cpp C++/GGML direct V+L→A inference · Reference:
 official H-EmbodVis/TurboVLA PyTorch implementation (paper avg **97.7%**).
 
-## Protocol
+## 2026-09-03 joint-checkpoint validation
+
+Current public-client rerun: seed 42, native 256px dual views, raw 8-D state,
+12-action replay, ten episodes per task, no skipped episodes. One verified
+joint/all-four-suite checkpoint is reused for every suite. The raw checkpoint
+SHA256 is `787c01bd8b328a5948b756aab92f8058a1e0802845a0e1f24506291b9cda59cf`;
+all 669 mapped weights match the historical GGUF. The reconversion preserves
+the checkpoint's per-instruction text lengths.
+
+| Suite | BF16 file | Q8_0 file | Q4_0 file |
+|---|---:|---:|---:|
+| spatial | 98/100 | 97/100 | 96/100 |
+| object | 99/100 | 100/100 | 97/100 |
+| goal | 97/100 | 97/100 | 83/100 |
+| libero_10 | 88/100 | 85/100 | 87/100 |
+| **total** | **382/400 (95.50%)** | **379/400 (94.75%)** | **363/400 (90.75%)** |
+
+These Q8_0/Q4_0 files are dequantized to **BF16 residency**; they do not imply
+native low-bit execution or lower runtime VRAM. Q4_0 has a material goal-suite
+loss. The old pre-fix BF16 sweep was 328/400, but the full rerun also changes
+rendering, text-length metadata and quantization tooling; it is not an isolated
+one-variable experiment. Same-360px targeted runs isolate the mask fix.
+
+See the [takeover evidence](takeover_20260903.md) for the defect, three numerical
+parity cases, same-protocol Python controls and measured deployment costs.
+The following seed-7 archive is a separate experiment, not current-code proof.
+
+## Archived protocol (seed 7)
 
 - Suites: LIBERO-spatial / object / goal / libero_10, all 10 tasks each
 - Episodes: 10 per task → 100 per suite, 400 total · seed 7

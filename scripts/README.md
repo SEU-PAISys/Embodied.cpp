@@ -207,6 +207,26 @@ python scripts/convert_turbovla_to_gguf.py \
 Parity scripts: `scripts/parity_turbovla_reference.py`,
 `scripts/parity_turbovla_cpp.py` (final-action acceptance `atol=0.01`).
 
+Use `--norm-gguf` to read the exact converted normalization arrays. The
+reference explicitly selects `model_state_dict` (or `--checkpoint-key` for
+an EMA release). Transformers **4.57.1** was validated for the post-final-LN
+DINO features used by this runtime; 4.57.6 changes `hidden_states[-1]` to
+pre-LN features, and the reference now refuses that semantic mismatch.
+The reference fixture records the dependency versions and weight hashes.
+
+For optional stage diagnostics, start the server with
+`VLA_TURBOVLA_DUMP_DIR=<existing parity directory>`, then pass `--stages` to
+the comparison script. Each request replaces the dumps. Disable this variable
+for performance measurements. Reconvert historical GGUFs missing
+`turbovla.pad_layout_instr` / `turbovla.pad_layout_len` to preserve the
+checkpoint's per-instruction BERT encoding lengths.
+
+`scripts/rollout_turbovla_reference.py` connects the official model to the
+same LIBERO adapter and episode loop as the C++ client: native 256px dual
+views, 8-D state, 12-action replay, relative control. This is a shared-protocol
+model comparison, not the official release-policy CLI. The common C++
+runner's `--no-video` option retains results without writing videos.
+
 ## X-VLA
 
 X-VLA converts to a single policy GGUF (Florence-2 DaViT vision + BART
@@ -227,7 +247,50 @@ configuration, or a compatible fast-tokenizer snapshot). Conversion does
 not create the example `checkpoints/xvla/hf` directory. TurboVLA instead
 uses the WordPiece vocabulary embedded in its GGUF; it needs no client tokenizer.
 
+X-VLA conversion retains source F32 values and refuses an existing output.
+`VLA_XVLA_F32_WEIGHTS=1` is a **runtime** residency choice, not a converter
+rounding switch. A file named `f32` does not prove F32 computation or correct
+per-domain matrix layout; see the [controlled repair evidence](../docs/results/takeover_20260903.md).
+
+## Fixed-input deployment timing
+
+`scripts/bench_vla_boundary.py` supports all three public C++ model clients and
+the validated TurboVLA/XR0 Python model references. It consumes a saved fixture (two native
+256px CHW views, raw 8-D state, instruction; XR0 also needs matched seeded
+30×32 noise, X-VLA fixed 30×20 noise), performs warmup, and records raw samples
+plus mean/std/p50/p95/p99. TurboVLA and X-VLA images must be float values in [0, 1].
+Use `--backend cpp --server-pid <PID>` for process VRAM, or `--backend python`
+with the reference's model paths. `--n 100 --warmup 5` is the default.
+Process memory uses 20 **additional untimed** requests after latency sampling
+(`--memory-requests 20`); no GPU-memory query runs in the timing window.
+
+The timing boundary is raw CPU input to full CPU actions (TurboVLA 12×7;
+XR0 30×32, five flow steps), including preprocessing and device transfers.
+For the deployed XR0 F16 mmproj, use `--xr0-vision-dtype f16` on the Python
+reference while keeping its text/action policy BF16; record both precisions.
+C++ X-VLA uses 30×20 output, 224px preprocessing and `--domain-id 3` by default.
+Its Python baseline is deliberately unavailable here until a matching source
+snapshot is verified; an unrelated HF snapshot is not a valid denominator.
+C++ additionally includes ZMQ transport, so label results as deployment/API
+latency, not GPU-only speedup. Do not benchmark while another evaluation is
+running. JSON and final actions use new output files; original results are
+never overwritten. Unavailable per-process VRAM remains null, not zero.
+
 ## Verify Outputs
+
+For TurboVLA and X-VLA **storage** quantization, use:
+
+```bash
+python scripts/quantize_vla_gguf.py \
+  --input checkpoints/turbovla/turbovla.gguf \
+  --output checkpoints/turbovla/turbovla-q8_0.gguf --outtype q8_0
+```
+
+The script uses vendored `gguf-py` codecs (and its Python dependencies),
+preserves metadata array types, and refuses existing output paths. Supported
+outputs are `q8_0` and `q4_0`; inputs must be original F32/BF16 GGUFs.
+Both runtimes dequantize these files to **BF16 residency by default**.
+Smaller files alone do not establish native low-bit inference or VRAM savings.
 
 Confirm that the generated files are in the expected `checkpoints/` directory,
 then load them with the matching server from the top-level README. For a

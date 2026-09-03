@@ -319,10 +319,12 @@ struct XiaomiRobotics0ModelArch : public ModelArchBase {
     std::vector<float> action_mask;              // std > 1e-5
 
     std::mt19937 rng{std::random_device{}()};
+    ggml_gallocr_t graph_allocator = nullptr; // owns the reusable CUDA activation buffer
     int n_threads = 4;
 };
 
 XiaomiRobotics0ModelArch::~XiaomiRobotics0ModelArch() {
+    if (graph_allocator) ggml_gallocr_free(graph_allocator);
     if (weight_buf)  ggml_backend_buffer_free(weight_buf);
     if (ctx_weights) ggml_free(ctx_weights);
     if (backend)     ggml_backend_free(backend);
@@ -923,10 +925,12 @@ std::vector<float> XiaomiRobotics0ModelArch::predict(const Inputs& in) {
     ggml_cgraph * gf = ggml_new_graph_custom(C, 32768, false);
     ggml_build_forward_expand(gf, x_final);
 
-    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-    if (!galloc || !ggml_gallocr_alloc_graph(galloc, gf)) {
+    if (!graph_allocator)
+        graph_allocator = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    if (!graph_allocator || !ggml_gallocr_alloc_graph(graph_allocator, gf)) {
         std::fprintf(stderr, "vla(xr0): ggml_gallocr_alloc_graph failed (out of memory?)\n");
-        if (galloc) ggml_gallocr_free(galloc);
+        if (graph_allocator) ggml_gallocr_free(graph_allocator);
+        graph_allocator = nullptr;
         ggml_free(C);
         return {};
     }
@@ -990,7 +994,6 @@ std::vector<float> XiaomiRobotics0ModelArch::predict(const Inputs& in) {
     stats.ms_inference = std::chrono::duration<float, std::milli>(clk::now() - ti0).count();
     if (st != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "vla(xr0): ggml_backend_graph_compute failed (%d)\n", (int) st);
-        ggml_gallocr_free(galloc);
         ggml_free(C);
         return {};
     }
@@ -998,7 +1001,6 @@ std::vector<float> XiaomiRobotics0ModelArch::predict(const Inputs& in) {
     std::vector<float> out((size_t) chunk * max_ad);
     ggml_backend_tensor_get(x_final, out.data(), 0, out.size() * sizeof(float));
 
-    ggml_gallocr_free(galloc);
     ggml_free(C);
 
     // decode to world units: a = a_norm * std + mean (HF decode_action)

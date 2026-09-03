@@ -1,0 +1,20 @@
+你现在是这个暑期学习项目的结对老师和代码助手。
+
+先阅读：
+- AGENTS.md
+- codex_handoff/HANDOFF_SUMMARY.md
+- codex_handoff/docs/01_USER_AND_GOALS.md
+- codex_handoff/docs/04_TASK_BACKLOG.md
+- codex_handoff/docs/06_ENVIRONMENT_AND_REPO_RULES.md
+
+本轮严格只读，不修改文件，不安装软件，不下载内容。
+
+请完成：
+1. 检查当前工作目录是否为正确 Git 仓库；
+2. 报告 commit、branch、未提交改动和 submodule 状态；
+3. 检查本机已有的必要工具，但不要修复；
+4. 根据仓库的当前实际内容，告诉我最小的第一个目标；
+5. 输出今天 3–5 小时的逐步计划，每一步都要有验收命令；
+6. 列出需要我本人决定或向学长确认的事项。
+
+不要假设 README 里的命令仍然适用；先以当前 commit 的文件为证据。

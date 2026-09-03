@@ -140,6 +140,12 @@ struct gguf_reader {
             std::vector<ggml_bf16_t> tmp(n);
             if (!read_raw(name, tmp.data())) return {};
             ggml_bf16_to_fp32_row(tmp.data(), f32.data(), n);
+        } else if (ggml_is_quantized(t->type)) {
+            const size_t qbytes = ggml_nbytes(t);
+            std::vector<uint8_t> raw(qbytes);
+            if (!read_raw(name, raw.data())) return {};
+            // Public ggml conversion table covers every k-quant (Q8_0/Q4_0/Q4_K/Q6_K/...).
+            ggml_get_type_traits(t->type)->to_float(raw.data(), f32.data(), n);
         } else {
             std::fprintf(stderr, "vla(xvla): tensor %s has unsupported type %d\n", name, (int) t->type);
             return {};
@@ -392,10 +398,12 @@ struct XVLAModelArch : public ModelArchBase {
     std::vector<ActBlockW> act_blk;
 
     std::unique_ptr<gguf_reader> reader;          // kept open: embedding lookups
+    ggml_gallocr_t graph_allocator = nullptr;     // owns the reusable CUDA activation buffer
     int n_threads = 4;
 };
 
 XVLAModelArch::~XVLAModelArch() {
+    if (graph_allocator) ggml_gallocr_free(graph_allocator);
     if (weight_buf)  ggml_backend_buffer_free(weight_buf);
     if (ctx_weights) ggml_free(ctx_weights);
     if (backend)     ggml_backend_free(backend);
@@ -923,10 +931,12 @@ std::vector<float> XVLAModelArch::predict(const Inputs& in) {
 
     ggml_cgraph * gf = ggml_new_graph_custom(C, 1 << 17, false);
     ggml_build_forward_expand(gf, prev);
-    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-    if (!galloc || !ggml_gallocr_alloc_graph(galloc, gf)) {
+    if (!graph_allocator)
+        graph_allocator = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    if (!graph_allocator || !ggml_gallocr_alloc_graph(graph_allocator, gf)) {
         std::fprintf(stderr, "vla(xvla): ggml_gallocr_alloc_graph failed (out of memory?)\n");
-        if (galloc) ggml_gallocr_free(galloc);
+        if (graph_allocator) ggml_gallocr_free(graph_allocator);
+        graph_allocator = nullptr;
         ggml_free(C);
         return {};
     }
@@ -939,7 +949,6 @@ std::vector<float> XVLAModelArch::predict(const Inputs& in) {
     const ggml_status stt = ggml_backend_graph_compute(backend, gf);
     if (stt != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "vla(xvla): ggml_backend_graph_compute failed (%d)\n", (int) stt);
-        ggml_gallocr_free(galloc);
         ggml_free(C);
         return {};
     }
@@ -948,7 +957,6 @@ std::vector<float> XVLAModelArch::predict(const Inputs& in) {
     // [dim_action, num_actions] column-major get == [step, dim] flatten
     std::vector<float> out((size_t) num_actions * dim_action);
     ggml_backend_tensor_get(prev, out.data(), 0, out.size() * sizeof(float));
-    ggml_gallocr_free(galloc);
     ggml_free(C);
 
     // ee6d postprocess: sigmoid on the two gripper logits.

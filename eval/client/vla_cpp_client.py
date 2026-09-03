@@ -124,6 +124,8 @@ ARCH_PRESETS = {
         "n_action_steps": 30,
         "chunk": 30,
         "use_fast_tokenizer": False,
+        # Runtime only measures the full graph/inference window.
+        "unmeasured_phases": ("vision", "prefill", "denoise"),
     },}
 
 

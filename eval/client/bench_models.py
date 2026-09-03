@@ -7,6 +7,7 @@ latency_ms_total / _inference / _prefill / _denoise / _vision.
 """
 from __future__ import annotations
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -55,15 +56,26 @@ ARCHES = {
 
 
 def main() -> None:
-    arch = sys.argv[1]
-    n = int(sys.argv[2]) if len(sys.argv) > 2 else 10
-    addr = "tcp://127.0.0.1:5555"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("arch", choices=sorted(ARCHES))
+    parser.add_argument("n", type=int, nargs="?", default=10)
+    parser.add_argument("--vla-addr", default="tcp://127.0.0.1:5555")
+    parser.add_argument("--tokenizer", help="Override the architecture's tokenizer path.")
+    parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--domain-id", type=int, default=3,
+                        help="X-VLA domain (3 for the LIBERO checkpoint).")
+    args = parser.parse_args()
+    if args.n < 1 or args.warmup < 1:
+        parser.error("n and --warmup must be positive")
+    if args.domain_id < 0:
+        parser.error("--domain-id must be nonnegative")
+    arch, n, addr = args.arch, args.n, args.vla_addr
     cfg = ARCHES[arch]
 
     client = VlaCppClient(
         addr,
         arch=cfg["arch"],
-        tokenizer_name=cfg["tokenizer"],
+        tokenizer_name=args.tokenizer if args.tokenizer is not None else cfg["tokenizer"],
         image_size=cfg["image_size"],
         max_state_dim=cfg["max_state_dim"],
         max_length=cfg["max_length"],
@@ -84,8 +96,11 @@ def main() -> None:
     state[1] = -0.2
     obs = {cfg["image_keys"][0]: base, cfg["image_keys"][1]: wrist,
            "observation.state": state, "task": cfg["task"]}
+    if arch == "xvla":
+        obs["domain_id"] = args.domain_id
 
-    client._predict_chunk(obs)  # warmup (CUDA alloc / mmproj warm)
+    for _ in range(args.warmup):
+        client._predict_chunk(obs)  # CUDA allocation / graph warmup
 
     rows = []
     for _ in range(n):
@@ -111,7 +126,11 @@ def main() -> None:
     unmeasured = set(ARCH_PRESETS.get(arch, {}).get("unmeasured_phases", ()))
     for nm in unmeasured & set(name):
         a[:, name.index(nm)] = np.nan
-    print(f"ARCH={arch}  n_reqs={n}  chunk={client.preset_chunk}x{client.max_state_dim}")
+    print(f"ARCH={arch}  n_reqs={n}  warmup={args.warmup}  "
+          f"chunk={chunk.shape[0]}x{chunk.shape[1]}")
+    print(f"  endpoint={addr}  tokenizer={args.tokenizer or cfg['tokenizer']}")
+    if arch == "xvla":
+        print(f"  domain_id={args.domain_id}")
     for j, nm in enumerate(name):
         col = a[:, j]
         if np.isnan(col).all():

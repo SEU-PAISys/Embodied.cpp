@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -80,6 +79,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.output.exists() or args.output.is_symlink():
+        raise SystemExit(f"refusing to overwrite {args.output}")
     st_path = args.hf_dir / "model.safetensors"
     cfg_path = args.hf_dir / "config.json"
     if not st_path.is_file():
@@ -195,11 +196,11 @@ def main() -> None:
                 arr = arr.astype(np.float32)
         writer.add_tensor(name, arr)
 
-    MAT = os.environ.get("VLA_XVLA_F32_WEIGHTS") != "1"
-
     def lin(name: str, arr: np.ndarray) -> None:
         """nn.Linear weight [out, in]: row-major bytes double as ggml [in, out]."""
-        add_tensor(name, arr.astype(np.float16 if MAT else np.float32))
+        # Residency is selected by the runtime, not by lossy FP16 rounding
+        # followed by writing F32 bytes back into the source file.
+        add_tensor(name, arr.astype(np.float32))
 
     def bias(name: str, arr: np.ndarray) -> None:
         add_tensor(name, arr.astype(np.float32))
@@ -261,8 +262,7 @@ def main() -> None:
     add_tensor("vproj.temporal", temporal[0].astype(np.float32))
     proj = get("vlm.image_projection")              # [2048, 1024], used as x @ W
     require(proj.shape, dim_embed[-1], projection_dim)
-    add_tensor("vproj.proj.w", np.transpose(proj, (1, 0)).astype(
-        np.float16 if MAT else np.float32))
+    add_tensor("vproj.proj.w", np.transpose(proj, (1, 0)).astype(np.float32))
     norm_pair("vproj.proj_norm", "vlm.image_proj_norm")
 
     # ---------------- text encoder ----------------

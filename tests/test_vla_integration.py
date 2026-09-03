@@ -237,7 +237,7 @@ class AdapterCompatibilityTests(unittest.TestCase):
 class EpisodeAccountingTests(unittest.TestCase):
     """Aborted (terminated mid-step) episodes must be recorded exactly once."""
 
-    def _run_task(self, abort_flags, arch="xvla", real_profiler=False):
+    def _run_task(self, abort_flags, arch="xvla", real_profiler=False, no_video=False):
         """Run the real run_one_task against a fake env; flags say which abort."""
         client, _obs = fake_client(arch)
         workdir = tempfile.mkdtemp()
@@ -246,6 +246,8 @@ class EpisodeAccountingTests(unittest.TestCase):
                 "--n-episodes", str(len(abort_flags)), "--output-dir", workdir]
         if arch == "xr0":
             argv += ["--observation-size", "256"]
+        if no_video:
+            argv += ["--no-video"]
         args = runner.parse_args(argv)
         if real_profiler:
             profiler = LiberoSuiteProfiler(
@@ -274,7 +276,7 @@ class EpisodeAccountingTests(unittest.TestCase):
                 pass
 
         fake_gym = types.ModuleType("gymnasium")
-        fake_gym.make = lambda name, **kwargs: FakeEnv()
+        fake_gym.make = MagicMock(return_value=FakeEnv())
         fake_sim = types.ModuleType("sim")
         fake_libero = types.ModuleType("sim.libero")
         fake_sim.libero = fake_libero
@@ -282,9 +284,17 @@ class EpisodeAccountingTests(unittest.TestCase):
                                       "sim.libero": fake_libero}), \
              contextlib.redirect_stdout(io.StringIO()):
             result = runner.run_one_task(args, client, "libero_object", 0, profiler)
+        video_dir = fake_gym.make.call_args.kwargs["output_video_dir"]
+        self.assertEqual(video_dir is None, no_video)
         summary = (Path(workdir) / arch / "libero_object" / "task_0" / "summary.txt").read_text(
             encoding="utf-8")
         return result, profiler, summary
+
+    def test_no_video_preserves_episode_metrics(self):
+        result, _, summary = self._run_task([False], no_video=True)
+        self.assertEqual(result["successes"], 1)
+        self.assertEqual(result["implementation"], "cpp")
+        self.assertIn("(1/1)", summary)
 
     def test_all_episodes_aborted(self):
         result, profiler, summary = self._run_task([True, True])
@@ -367,6 +377,57 @@ class EpisodeAccountingTests(unittest.TestCase):
         self.assertEqual(result["episodes_counted"], 0)
 
 
+class TurboMaskTests(unittest.TestCase):
+    def test_native_masks_match_reference_for_full_and_padded_text(self):
+        compiler = shutil.which("g++") or shutil.which("clang++")
+        if compiler is None:
+            self.skipTest("C++ compiler unavailable for native mask regression")
+        source = (REPO / "models" / "turbovla.cpp").read_text(encoding="utf-8")
+        # Compile the production mask block, not a Python copy of its logic.
+        block = source.split("    const float neg_inf =", 1)[1].split(
+            "    std::vector<float> fuse_mask", 1)[0]
+        program = r"""
+#include <vector>
+#include <limits>
+#include <cstdint>
+#include <cstdio>
+int main() {
+    const int64_t L = 21;
+    for (int64_t text_encode_len : {11, 14, 21}) {
+      for (int64_t sep : {text_encode_len - 2, text_encode_len - 1}) {
+        std::vector<char> is_special(L, 0);
+        is_special[0] = is_special[sep] = 1;
+        std::vector<int32_t> token_valid(L, 0);
+        for (int64_t i = 0; i <= sep; ++i) token_valid[i] = 1;
+        const float neg_inf =""" + block + r"""
+        for (int64_t q = 0; q < L; ++q) {
+            for (int64_t k = 0; k < L; ++k) {
+                // Official mask starts as identity; a non-final SEP opens
+                // the sub-sentence square. Padding retains self-attention.
+                const bool expected = q == k ||
+                    (sep < text_encode_len - 1 && q > 0 && q <= sep && k > 0 && k <= sep);
+                const float want = expected ? 0.f : neg_inf;
+                if (bert_mask[q * L + k] != want || enh_mask[q * L + k] != want) {
+                    std::fprintf(stderr, "mask mismatch sep=%lld q=%lld k=%lld\n",
+                        (long long)sep, (long long)q, (long long)k);
+                    return 1;
+                }
+            }
+        }
+      }
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            src, binary = Path(tmp) / "mask.cpp", Path(tmp) / "mask-test.exe"
+            src.write_text(program, encoding="utf-8")
+            built = subprocess.run([compiler, "-std=c++17", str(src), "-o", str(binary)],
+                                   capture_output=True, text=True, timeout=60)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(ran.returncode, 0, ran.stderr)
+
+
 class BenchCliTests(unittest.TestCase):
     def test_bench_models_reports_total_and_unmeasured_n_a(self):
         # Run bench_models.main() against a fake client: output must include
@@ -392,6 +453,34 @@ class BenchCliTests(unittest.TestCase):
         self.assertIn("total", text)
         self.assertIn("mean=", text)                 # measured phases printed
         self.assertIn("n/a", text)                   # vision/prefill/denoise
+        self.assertIn("chunk=12x7", text)             # actual server output
+        self.assertEqual(fake._predict_chunk.call_count, 6)  # 5 warmup + 1
+        fake.close.assert_called_once()
+
+    def test_bench_models_overrides_and_validates_cli(self):
+        spec = importlib.util.spec_from_file_location(
+            "bench_models", str(REPO / "eval" / "client" / "bench_models.py"))
+        bm = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bm)
+        fake = MagicMock()
+        fake._predict_chunk.return_value = np.zeros((30, 20), dtype=np.float32)
+        fake._last_response = SimpleNamespace(latency_ms_total=10.0)
+        with patch.object(bm, "VlaCppClient", return_value=fake) as constructor, \
+             patch.object(sys, "argv", ["bench", "xvla", "2", "--warmup", "3",
+                 "--tokenizer", "/local/tokenizer", "--vla-addr", "tcp://127.0.0.1:5999",
+                 "--domain-id", "3"]), contextlib.redirect_stdout(io.StringIO()):
+            bm.main()
+        self.assertEqual(constructor.call_args.args, ("tcp://127.0.0.1:5999",))
+        self.assertEqual(constructor.call_args.kwargs["tokenizer_name"], "/local/tokenizer")
+        self.assertEqual(fake._predict_chunk.call_count, 5)
+        self.assertEqual(fake._predict_chunk.call_args.args[0]["domain_id"], 3)
+        for argv in (["bench", "xvla", "0"], ["bench", "xvla", "--warmup", "0"],
+                     ["bench", "xvla", "--domain-id", "-1"]):
+            with patch.object(sys, "argv", argv), patch.object(bm, "VlaCppClient") as constructor, \
+                 contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+                bm.main()
+            self.assertEqual(error.exception.code, 2)
+            constructor.assert_not_called()
 
 
 class ParityCliTests(unittest.TestCase):
@@ -564,6 +653,10 @@ class ClientTests(unittest.TestCase):
             ("turbovla", "server_vision_ms", None),
             ("turbovla", "server_prefill_ms", None),
             ("turbovla", "server_inference_ms", 8.0),   # fused-graph execution
+            ("xvla", "server_vision_ms", None),
+            ("xvla", "server_prefill_ms", None),
+            ("xvla", "server_denoise_ms", None),
+            ("xvla", "server_inference_ms", 8.0),
             ("xr0", "server_vision_ms", 2.0),
         ):
             with self.subTest(arch=arch, field=field):

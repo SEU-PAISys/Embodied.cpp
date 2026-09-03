@@ -220,6 +220,7 @@ def run_one_task(
     task: str,
     task_id: int,
     profiler: Any = None,
+    implementation: str = "cpp",
 ) -> dict[str, Any]:
     import gymnasium as gym
     import sim.libero  # noqa: F401  registers gymnasium envs
@@ -230,7 +231,7 @@ def run_one_task(
     env_kwargs = {
         "seed": args.seed,
         "video_fps": args.fps,
-        "output_video_dir": output_dir,
+        "output_video_dir": None if args.no_video else output_dir,
         "video_view_mode": args.view_mode,
         "control_mode": args.control_mode,
         "observation_width": args.observation_width,
@@ -302,7 +303,7 @@ def run_one_task(
         _timeline_out = timeline_path_for_video(video_path)
         write_inference_timeline(
             _timeline_out,
-            implementation="cpp",
+            implementation=implementation,
             task=task,
             task_id=task_id,
             episode=episode,
@@ -523,6 +524,7 @@ def run_one_task(
                   if inference_times else 0.0)
     result = {
         "arch": args.arch,
+        "implementation": implementation,
         "suite": task,
         "task_id": task_id,
         "episodes_requested": args.n_episodes,
@@ -562,7 +564,7 @@ def run_one_task(
     print(f"*** {task}/task_{task_id} completed.")
     print(f"- Success rate: {success_count / counted:.2%}  ({int(success_count)}/{effective})")
     print(f"- Skipped (terminated mid-step): {skipped}/{args.n_episodes}")
-    print(f"- Saved videos to: {output_dir.resolve()}")
+    print(f"- Saved results to: {output_dir.resolve()} (video={'off' if args.no_video else 'on'})")
     return result
 
 def parse_args(argv=None):
@@ -603,11 +605,13 @@ def parse_args(argv=None):
         help="Stop each episode after this many env steps for smoke tests. "
              "0 means run until done/truncated.")
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--observation-width", type=int, default=360,
+    parser.add_argument("--observation-width", type=int, default=256,
         help="Raw LIBERO camera width before model preprocessing.")
-    parser.add_argument("--observation-height", type=int, default=360,
+    parser.add_argument("--observation-height", type=int, default=256,
         help="Raw LIBERO camera height before model preprocessing.")
     parser.add_argument("--output-dir", type=str, default="outputs")
+    parser.add_argument("--no-video", action="store_true",
+                        help="Save metrics/timelines without rendering evaluation videos.")
     parser.add_argument(
         "--view-mode",
         choices=["single-view", "multi-view"], default="multi-view",

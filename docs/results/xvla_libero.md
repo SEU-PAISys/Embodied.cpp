@@ -3,7 +3,26 @@
 Runtime: Embodied.cpp C++/GGML · Reference: official 2toinf/X-VLA
 PyTorch implementation.
 
-## Protocol
+## 2026-09-03 validation and source warning
+
+Recounted seed-42 BF16-resident results: spatial 96/100, object 99/100,
+goal 95/100, libero_10 97/100 (**387/400, 96.75%**). Existing Q8_0/Q4_0
+storage runs cover **object only**, at 98/100 and 99/100, and still use BF16
+residency. These are not fresh full-suite quantized-compute sweeps.
+
+A separate fresh object run of the repaired source with actual F32 residency
+completed **100/100**, with zero skipped episodes. The former file labelled
+`f32` had two incorrectly ordered per-domain matrices and was actually run
+with BF16 residency; its 0/100 score did not establish an F32 precision failure.
+Conversion now preserves F32 values; a regression checks both matrix transposes.
+
+The historical source HF snapshot was not found in the Windows workspace,
+WSL project/cache or server project/cache. The current server HF snapshot is
+a different set of weights. Consequently **Python-normalized performance
+remains Pending**. See the [controlled repair and evidence](takeover_20260903.md).
+The following seed-7 archive is retained separately, not relabelled as this run.
+
+## Archived protocol (seed 7)
 
 - Suites: LIBERO-spatial / object / goal / libero_10, all 10 tasks each
 - Episodes: 10 per task → 100 per suite, 400 total · seed 7

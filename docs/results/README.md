@@ -1,5 +1,26 @@
 # LIBERO Evaluation Reports
 
+## Latest integration validation (2026-09-03)
+
+The [takeover report](takeover_20260903.md#7-final-validated-snapshot) and
+[machine-readable evidence](takeover_20260903_evidence.json) integrate the
+latest results with the existing per-model reports:
+
+| Model | Latest validated scope | Result |
+|---|---|---|
+| [TurboVLA](turbovla_libero.md) | Fresh 400 episodes per storage variant, seed 42 | BF16 95.50%; Q8_0 94.75%; Q4_0 90.75% |
+| [XR0](xr0_libero.md) | Recounted existing 2000 episodes per variant; complete weight-source audit | BF16 98.05%; Q8_0 97.90%; Q4_K 97.85% |
+| [X-VLA](xvla_libero.md) | Fresh repaired-source, true-F32 object suite only | 100/100; historical 0/100 traced to wrong matrix layout |
+
+TurboVLA's three targeted Python controls match the C++ success counts;
+they are not a new full Python sweep. Shared-client server recovery and real
+Linux symlink tests also pass. Q8_0/Q4_0 in TurboVLA/X-VLA are **storage**
+formats with BF16 residency, not native low-bit execution.
+README 1.2 now links observed XR0/TurboVLA deployment cost ratios, with explicit
+precision and long-tail caveats. X-VLA's Python-normalized comparison stays Pending.
+
+## Historical reports
+
 Historical LIBERO reports for **TurboVLA**, **Xiaomi-Robotics-0** and
 **X-VLA**, using the same public evaluation, profiling and aggregation
 entry points as other supported LIBERO models. These archived results are
@@ -57,8 +78,10 @@ python scripts/aggregate_eval_summary.py \
 
 Use a new run name for each model, weight precision, seed or protocol change;
 do not overwrite a previous run. For XR0 choose its YAML and 50 episodes/task;
-for TurboVLA choose its YAML, omit `--tokenizer`, and restart the server with
-the correct **suite-specific checkpoint** before evaluating each suite.
+for TurboVLA choose its YAML and omit `--tokenizer`. Match the checkpoint's
+training scope: switch checkpoints for a suite-specific release, but reuse
+the same checkpoint across suites for the audited joint/all-four-suite model.
+Record its hash; a filename such as `object.pth` alone does not establish scope.
 The C++ XR0 historical seed and complete asset/environment metadata are not
 archived, so a new explicitly seeded run is not an exact historical replay.
 
@@ -76,11 +99,14 @@ standalone `result_<task>.txt` files.
 
 ## Performance evidence
 
-The new-model cells in README section 1.2 remain **Pending** until matched
-Python/C++ measurements are committed. Previously quoted TurboVLA/XR0
-timings and resident-memory values do not have supporting measurements in
-these reports. X-VLA's historical timing note is retained in its report but
-mixes Python FP32 query time and C++ round-trip time; it is not a BF16 speedup.
+The new XR0/TurboVLA entries use the [2026-09-03 measurements](takeover_20260903.md#7-final-validated-snapshot):
+100 timed requests plus a separate process-memory phase, matched inputs and
+precision, with raw samples, hashes and commands. They include full CPU-input
+to CPU-action deployment cost, not just server phases. Large C++ latency
+tails remain; these are observed ratios, not stable acceleration guarantees.
+X-VLA stays **Pending** because the matching historical HF source is absent.
+Its historical Python FP32 query versus C++ round-trip timing is not a valid
+BF16 speedup. The older incompatible measurements below remain excluded.
 
 Historical per-call measurements were recorded on 2026-08-18 in the
 workspace artifact `outputs/eval_20260818_corrected/EVALUATION_REPORT.md`

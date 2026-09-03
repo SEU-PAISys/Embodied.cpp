@@ -4,7 +4,27 @@ Runtime: Embodied.cpp C++/GGML · Reference: official Xiaomi-Robotics-0
 PyTorch stack (`deploy/server.py` + `eval_libero/main.py`,
 paper avg **98.7%**).
 
-## Protocol
+## 2026-09-03 server audit
+
+Recounted existing seed-42 results (not a new 6000-episode rerun):
+
+| Suite | BF16 | Q8_0 | Q4_K |
+|---|---:|---:|---:|
+| spatial | 492/500 | 493/500 | 494/500 |
+| object | 496/500 | 495/500 | 497/500 |
+| goal | 490/500 | 490/500 | 488/500 |
+| libero_10 | 483/500 | 480/500 | 478/500 |
+| **total** | **1961/2000 (98.05%)** | **1958/2000 (97.90%)** | **1957/2000 (97.85%)** |
+
+Source runs: `rerun_results/xr0-bf16`, `xr0-q8_0`, `xr0-q4_k`; all records have
+zero skipped episodes. They remain distinct from the older archive below.
+The current HF snapshot reproduces all 616 main-model tensors/metadata and all
+316 vision tensors in the deployed files. The [takeover report](takeover_20260903.md)
+records hashes, a 30×32-action timing protocol, and GPU vision settings.
+Do not reuse the handoff's 42.53/148.19 latency ratio: it compared different
+timing boundaries and Python 10-step output against C++ 30-step output.
+
+## Archived protocol
 
 - Suites: LIBERO-spatial / object / goal / libero_10, all 10 tasks each
 - Episodes: 50 per task → 500 per suite, 2000 total per configuration

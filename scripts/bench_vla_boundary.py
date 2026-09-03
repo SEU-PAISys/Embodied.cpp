@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Fixed raw CPU observations -> full CPU action chunk deployment benchmark.
+
+Includes preprocessing, host/device transfers and output readback on both sides.
+C++ additionally includes its public ZMQ transport; this is NOT kernel latency.
+No simulator, action-queue replay, model load or fixture construction is timed.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+import time
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / "eval"), str(ROOT / "scripts")]
+from client.libero_profile import VramSampler
+
+
+def summarize(samples):
+    values = np.asarray(samples, dtype=np.float64)
+    if values.ndim != 1 or not values.size or not np.isfinite(values).all() or (values < 0).any():
+        raise ValueError("expected nonempty finite nonnegative latency samples")
+    return dict(mean=float(values.mean()), std=float(values.std()),
+                **{f"p{p}": float(np.percentile(values, p)) for p in (50, 95, 99)})
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--arch", choices=("turbovla", "xr0", "xvla"), required=True)
+    parser.add_argument("--backend", choices=("cpp", "python"), required=True)
+    parser.add_argument("--fixture", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--n", type=int, default=100)
+    parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--memory-requests", type=int, default=20,
+                        help="Separate untimed requests for process VRAM; 0 disables memory sampling.")
+    parser.add_argument("--address", default="tcp://127.0.0.1:5555")
+    parser.add_argument("--server-pid", type=int)
+    parser.add_argument("--hf-dir", type=Path)
+    parser.add_argument("--checkpoint", type=Path)
+    parser.add_argument("--official-root", type=Path)
+    parser.add_argument("--bert-path", type=Path)
+    parser.add_argument("--norm-gguf", type=Path)
+    parser.add_argument("--checkpoint-key", default="model_state_dict")
+    parser.add_argument("--domain-id", type=int, default=3)
+    parser.add_argument("--xr0-vision-dtype", choices=("bf16", "f16"), default="bf16",
+                        help="Python XR0 only: select vision precision independently of the BF16 policy.")
+    args = parser.parse_args()
+    if args.n < 1 or args.warmup < 1 or args.memory_requests < 0:
+        parser.error("n and warmup must be positive; memory-requests must be nonnegative")
+    if args.output.exists() or args.output.with_suffix(".actions.npy").exists():
+        parser.error("output already exists; choose a fresh run")
+    if args.arch in ("xr0", "xvla") and args.hf_dir is None:
+        parser.error("xr0/xvla requires --hf-dir (matching tokenizer assets)")
+    if args.arch == "xvla" and args.backend == "python":
+        parser.error("X-VLA Python baseline needs a verified matching source snapshot; not implemented here")
+    if args.domain_id < 0:
+        parser.error("domain-id must be nonnegative")
+    if args.backend == "python" and args.arch == "turbovla" and any(
+        getattr(args, k) is None for k in ("checkpoint", "official_root", "bert_path", "norm_gguf")
+    ):
+        parser.error("TurboVLA Python requires checkpoint, official-root, bert-path and norm-gguf")
+    if args.backend == "cpp" and (args.server_pid is None or args.server_pid < 1):
+        parser.error("C++ requires the exact --server-pid for process VRAM")
+    with np.load(args.fixture, allow_pickle=False) as fixture:
+        images = fixture["images_chw"].copy()
+        state = fixture["state"].copy()
+        task = str(fixture["instruction"])
+        noise = fixture["action_noise"].copy() if "action_noise" in fixture else None
+    if images.shape != (2, 3, 256, 256) or not np.isfinite(images).all():
+        raise ValueError("fixture requires two finite 256px CHW images")
+    if args.arch != "xr0" and (not np.issubdtype(images.dtype, np.floating) or images.min() < 0 or images.max() > 1):
+        raise ValueError("TurboVLA/X-VLA fixtures must use float images in [0, 1]")
+    if state.shape != (8,) or not np.isfinite(state).all():
+        raise ValueError("fixture requires a finite 8-D raw state")
+    if args.arch == "xr0" and (noise is None or noise.shape != (1, 30, 32) or not np.isfinite(noise).all()):
+        raise ValueError("XR0 requires fixed 30x32 noise generated with the reference's seed/dtype/device")
+    if args.arch == "xvla" and (noise is None or noise.shape != (1, 30, 20) or not np.isfinite(noise).all()):
+        raise ValueError("X-VLA requires fixed finite 30x20 noise")
+    import torch
+    import transformers
+    obs = {"observation.images.image": images[0], "observation.images.image2": images[1],
+           "observation.state": state, "task": task}
+    if noise is not None:
+        obs["action_noise"] = noise
+    obs["domain_id"] = args.domain_id
+    expected_shape = {"turbovla": (12, 7), "xr0": (30, 32), "xvla": (30, 20)}[args.arch]
+    cleanup = lambda: None
+    if args.backend == "cpp":
+        from client.vla_cpp_client import VlaCppClient
+        client = VlaCppClient(args.address, arch=args.arch,
+            tokenizer_name=str(args.hf_dir) if args.arch != "turbovla" else None,
+            image_keys=("observation.images.image", "observation.images.image2"),
+            image_size={"turbovla":256, "xr0":None, "xvla":224}[args.arch],
+            max_state_dim={"turbovla":8, "xr0":32, "xvla":20}[args.arch],
+            max_length={"turbovla":64, "xr0":512, "xvla":50}[args.arch],
+            n_action_steps=expected_shape[0], real_action_dim=7)
+        predict = lambda: client._predict_chunk(obs)
+        cleanup = client.close
+    elif args.arch == "turbovla":
+        from rollout_turbovla_reference import TurboReferenceClient, load_reference_model, load_norm_arrays
+        args.precision, args.device = "bf16", "cuda"
+        model, _ = load_reference_model(args)
+        client = TurboReferenceClient(model, load_norm_arrays(args.norm_gguf))
+        predict = lambda: client._predict_chunk(obs)
+    else:
+        from transformers import AutoModel, AutoProcessor
+        from client.vla_cpp_client import _xr0_prompt
+        model = AutoModel.from_pretrained(args.hf_dir, trust_remote_code=True,
+                                        torch_dtype=torch.bfloat16).to("cuda").eval()
+        if args.xr0_vision_dtype == "f16":
+            # Match the deployed F16 mmproj without editing upstream code.
+            # The official model casts visual outputs to the text dtype.
+            model.vlm.visual.to(dtype=torch.float16)
+        processor = AutoProcessor.from_pretrained(args.hf_dir, trust_remote_code=True)
+        config = processor.action_config["libero_all"]
+        # This snapshot's normalization repeats ten identical rows. Extend the
+        # same statistics to the GGUF's 30-step chunk, not a 10-vs-30 comparison.
+        for value in config.values():
+            if not torch.equal(value, value[:, :1].expand_as(value)):
+                raise ValueError("time-dependent normalization cannot be extended to 30 actions")
+        mean, std = (config[k][:, :1].to("cuda") for k in ("mean", "std"))
+        mask = (std > 1e-5).to(torch.bfloat16).expand(1, 30, 32).contiguous()
+        torch.manual_seed(42)
+        actual_noise = torch.randn_like(mask).float().cpu().numpy()
+        if not np.array_equal(noise, actual_noise):
+            raise ValueError("fixture noise differs from official seed=42 CUDA BF16 noise")
+
+        def predict():
+            raw = [(np.clip(im, 0, 1) * 255).astype(np.uint8).transpose(1, 2, 0)
+                   if np.issubdtype(im.dtype, np.floating) else im.transpose(1, 2, 0) for im in images]
+            inputs = processor(text=[_xr0_prompt(task.capitalize() + ".", 2, 1)],
+                               images=raw, videos=None, padding=True, return_tensors="pt").to("cuda")
+            padded = np.zeros(32, np.float32)
+            padded[:8] = state
+            with torch.inference_mode():
+                output = model(**dict(inputs), state=torch.from_numpy(padded).to("cuda", torch.bfloat16)[None, None],
+                               action_mask=mask, num_steps=5, seed=42)
+                return (output.actions.float() * std + mean)[0].cpu().numpy().copy()
+
+    sampler = VramSampler(args.server_pid if args.backend == "cpp" else os.getpid(), .02)
+    samples, server_samples = [], []
+    try:
+        for _ in range(args.warmup):
+            actions = predict()
+            if actions.shape != expected_shape or not np.isfinite(actions).all():
+                raise ValueError("invalid warmup output")
+        for _ in range(args.n):
+            started = time.perf_counter()
+            actions = predict()  # Both paths return CPU arrays, synchronizing GPU work.
+            samples.append((time.perf_counter() - started) * 1000)
+            if actions.shape != expected_shape or not np.isfinite(actions).all():
+                raise ValueError("invalid measured output")
+            if args.backend == "cpp":
+                server_samples.append(client.get_last_inference_profile())
+        # nvidia-smi and CUDA allocation can contend inside the driver. Keep
+        # the instrument out of the latency window for both implementations.
+        if args.memory_requests:
+            sampler.start()
+            for _ in range(args.memory_requests):
+                memory_actions = predict()
+                if memory_actions.shape != expected_shape or not np.isfinite(memory_actions).all():
+                    raise ValueError("invalid memory-phase output")
+    finally:
+        if sampler.ident is not None:
+            sampler.stop()
+        cleanup()
+    sources = sorted(set(sampler.sources))
+    result = dict(arguments={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+        boundary=__doc__, shape=list(expected_shape), samples_ms=samples, latency_ms=summarize(samples),
+        memory_measurement="separate untimed requests after latency sampling; no nvidia-smi during timing",
+        fixture_sha256=hashlib.sha256(args.fixture.read_bytes()).hexdigest(),
+        script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        torch=torch.__version__, transformers=transformers.__version__, numpy=np.__version__,
+        python_precision=({"policy":"bf16", "vision":args.xr0_vision_dtype if args.arch == "xr0" else "bf16"}
+                          if args.backend == "python" else None),
+        server_samples=server_samples, vram_samples_mib=sampler.samples_mib, vram_sources=sources,
+        gpu_uuids=sorted(set(sampler.gpu_uuids)),
+        sampled_process_peak_mib=max(sampler.samples_mib) if sampler.samples_mib and sources == ["process_used_memory"] else None)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("x") as stream:
+        json.dump(result, stream, indent=2, allow_nan=False)
+    with args.output.with_suffix(".actions.npy").open("xb") as stream:
+        np.save(stream, actions, allow_pickle=False)
+    print(json.dumps({"latency_ms": result["latency_ms"], "sampled_process_peak_mib": result["sampled_process_peak_mib"]}))
+
+
+if __name__ == "__main__":
+    main()

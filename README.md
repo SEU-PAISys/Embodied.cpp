@@ -159,25 +159,31 @@ We continuously track advances in embodied AI and adapt `Embodied.cpp` to the la
 
 ### 1.2 Performance Acceleration
 
-Reported VLA comparisons are normalized to each model's Python baseline (`1.00`), with **Python → C++ BF16** ratios. Lower inference latency and VRAM are better. **Pending** means a comparable benchmark with auditable evidence is not yet committed; it does not mean the runtime is unsupported.
+Reported VLA comparisons are normalized to each model's Python baseline (`1.00`), with **Python → C++ BF16-policy** ratios (see precision details below). Lower inference latency and VRAM are better. **Pending** means a comparable benchmark with auditable evidence is not yet available; it does not mean the runtime is unsupported.
 
 | Model | Inference Latency ↓ | VRAM ↓ |
 |---|---:|---:|
 | **pi0.5** | 1.00 → 0.90 (**10% lower**) |  1.00 → 0.60 (**40% lower**) |
 | **GR00T N1.7** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
 | **HY-VLA** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
-| **[Xiaomi-Robotics-0](docs/results/xr0_libero.md)** | Pending | Pending |
-| **[TurboVLA](docs/results/turbovla_libero.md)** | Pending | Pending |
+| **[Xiaomi-Robotics-0](docs/results/xr0_libero.md)†** | 1.00 → 0.58 | 1.00 → 0.90 |
+| **[TurboVLA](docs/results/turbovla_libero.md)†** | 1.00 → 1.23 (higher mean) | 1.00 → 0.95 |
 | **[X-VLA](docs/results/xvla_libero.md)** | Pending | Pending |
 
-The three runtime reports document LIBERO results, not yet matched BF16
-latency/VRAM comparisons. In particular, X-VLA's historical FP32 Python query
-and C++ round-trip timings have different measurement boundaries and must
-not be converted into a BF16 speedup. Weight-buffer sizes, process VRAM and
-whole-device VRAM are also distinct metrics. See the shared
-[measurement and reproduction requirements](docs/results/README.md#performance-evidence)
-before filling these cells. XR0's optional `VLA_XR0_CLIP_GPU` setting must be
-recorded in each benchmark; no unmeasured speedup is assumed.
+† The [2026-09-03 evidence](docs/results/takeover_20260903.md#7-final-validated-snapshot)
+uses one RTX 4090, five warmups and 100 timed calls from raw CPU observations
+to complete CPU actions; C++ additionally includes its public ZMQ transport.
+Process VRAM is sampled in a separate untimed phase. XR0 uses a BF16 policy
+and F16 vision on **both** sides, with `VLA_XR0_CLIP_GPU=1`; TurboVLA uses BF16.
+These are observed mean deployment/API ratios, not isolated kernel speedups
+or cross-model rankings. C++ has large latency tails; TurboVLA does **not**
+show a mean latency improvement in this batch. See std/p50/p95/p99 and raw
+samples in the report before drawing a stable performance conclusion.
+
+X-VLA remains Pending because its matching historical HF weights were not
+found; the available HF snapshot differs. Its old FP32 Python query versus
+C++ round-trip numbers are not a valid BF16 comparison. See the shared
+[measurement requirements](docs/results/README.md#performance-evidence).
 
 For World Models, C++ substantially reduces VRAM while keeping the success rate close to the Python baseline.
 

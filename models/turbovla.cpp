@@ -66,6 +66,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <map>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -137,6 +138,12 @@ struct gguf_reader {
             std::vector<ggml_bf16_t> tmp(n);
             if (!read_raw(name, tmp.data())) return {};
             ggml_bf16_to_fp32_row(tmp.data(), f32.data(), n);
+        } else if (ggml_is_quantized(t->type)) {
+            const size_t qbytes = ggml_nbytes(t);
+            std::vector<uint8_t> raw(qbytes);
+            if (!read_raw(name, raw.data())) return {};
+            // Public ggml conversion table covers every k-quant (Q8_0/Q4_0/Q4_K/Q6_K/...).
+            ggml_get_type_traits(t->type)->to_float(raw.data(), f32.data(), n);
         } else {
             std::fprintf(stderr, "vla(turbovla): tensor %s has unsupported type %d\n", name, (int) t->type);
             return {};
@@ -450,11 +457,14 @@ struct TurboVLAModelArch : public ModelArchBase {
     bool               rope_ready = false;
 
     WordPieceTokenizer tokenizer;
+    std::map<std::vector<int32_t>, int64_t> text_padding_lengths;
     std::unique_ptr<gguf_reader> reader;   // kept open: embedding lookups in predict
+    ggml_gallocr_t graph_allocator = nullptr; // owns the reusable CUDA activation buffer
     int n_threads = 4;
 };
 
 TurboVLAModelArch::~TurboVLAModelArch() {
+    if (graph_allocator) ggml_gallocr_free(graph_allocator);
     if (weight_buf)  ggml_backend_buffer_free(weight_buf);
     if (ctx_weights) ggml_free(ctx_weights);
     if (backend)     ggml_backend_free(backend);
@@ -513,7 +523,9 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
         std::fprintf(stderr, "vla(turbovla): predict needs language_text or lang_tokens\n");
         return {};
     }
-    if ((int64_t) ids.size() > L - 2) ids.resize((size_t) (L - 2));
+    const auto layout = text_padding_lengths.find(ids);
+    const int64_t text_encode_len = layout == text_padding_lengths.end() ? L : layout->second;
+    if ((int64_t) ids.size() > text_encode_len - 2) ids.resize((size_t) (text_encode_len - 2));
     std::vector<int32_t> framed;                 // [CLS] ... [SEP] [PAD]...
     framed.reserve((size_t) L);
     framed.push_back(tokenizer.id_cls);
@@ -588,9 +600,9 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
         std::vector<int32_t> pos_ids((size_t) L, 0);
         {
             int64_t prev = -1;
-            for (int64_t i = 0; i < L; ++i) {
+            for (int64_t i = 0; i < text_encode_len; ++i) {
                 if (!is_special[(size_t) i]) continue;
-                if (i != 0 && i != L - 1)
+                if (i != 0 && i != text_encode_len - 1)
                     for (int64_t q = prev + 1; q <= i; ++q)
                         pos_ids[(size_t) q] = (int32_t) (q - prev - 1);
                 prev = i;
@@ -652,12 +664,15 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
     // between special tokens attend internally; the tail stays diagonal.
     const float neg_inf = -std::numeric_limits<float>::infinity();
     std::vector<float> bert_mask((size_t) L * L, neg_inf);      // [k, q] row-major
+    // The reference starts from an identity mask. Set every diagonal before
+    // copying to the enhancer, including real tokens when SEP is at L - 1.
+    for (int64_t q = 0; q < L; ++q) bert_mask[(size_t) (q * L + q)] = 0.f;
     std::vector<float> enh_mask((size_t) L * L, neg_inf);
     {
         int64_t prev = -1;
-        for (int64_t i = 0; i < L; ++i) {
+        for (int64_t i = 0; i < text_encode_len; ++i) {
             if (!is_special[(size_t) i]) continue;
-            if (i == 0 || i == L - 1) {
+            if (i == 0 || i == text_encode_len - 1) {
                 bert_mask[(size_t) (i * L + i)] = 0.f;   // self only
             } else {
                 for (int64_t q = prev + 1; q <= i; ++q)
@@ -674,15 +689,6 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
                 if (!token_valid[(size_t) k]) enh_mask[(size_t) (q * L + k)] = neg_inf;
         for (int64_t q = 0; q < L; ++q)
             if (!token_valid[(size_t) q]) enh_mask[(size_t) (q * L + q)] = 0.f;
-        // BERT pad rows (after [SEP] with no trailing special token) end up
-        // all --inf, whose softmax is NaN. Give every row a diagonal escape so
-        // the mask never produces NaN (the padded rows are discarded downstream).
-        for (int64_t q = 0; q < L; ++q) {
-            bool any_open = false;
-            for (int64_t k = 0; k < L; ++k)
-                if (bert_mask[(size_t) (q * L + k)] == 0.f) { any_open = true; break; }
-            if (!any_open) bert_mask[(size_t) (q * L + q)] = 0.f;
-        }
     }
     std::vector<float> fuse_mask((size_t) L * visual_tokens, 0.f);  // [k=L, q=visual]
     for (int64_t q = 0; q < visual_tokens; ++q)
@@ -720,6 +726,8 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
     ggml_set_input(t_sin);
     ggml_tensor * t_bert_mask = ggml_new_tensor_2d(C, GGML_TYPE_F32, L, L);
     ggml_set_input(t_bert_mask);
+    ggml_tensor * t_text_keep = ggml_new_tensor_2d(C, GGML_TYPE_F32, 1, L);
+    ggml_set_input(t_text_keep);
     ggml_tensor * t_enh_mask = ggml_new_tensor_2d(C, GGML_TYPE_F32, L, L);
     ggml_set_input(t_enh_mask);
     ggml_tensor * t_fuse_mask = ggml_new_tensor_2d(C, GGML_TYPE_F32, L, visual_tokens);
@@ -815,6 +823,10 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
         f = linear(C, f, w.ffn_down);
         txt = ln_f32(C, ggml_add(C, txt, f), w.ffn_norm, 1e-12f);
     }
+    // The reference encodes only text_encode_len rows, then zero-pads BERT
+    // hidden states to L before the (biased) projection. Masking after that
+    // projection would incorrectly discard its bias in the extra rows.
+    txt = ggml_mul(C, txt, t_text_keep);
     txt_bert = txt;
     txt = linear(C, txt, text_proj);                                   // [hidden, L]
     txt_projected = txt;
@@ -921,13 +933,27 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
     a = ggml_tanh(C, a);
     ggml_set_output(a);
 
+    // Opt-in parity diagnostics. Retaining intermediates changes allocation
+    // and timing; never enable this when benchmarking a production run.
+    const char * dump_dir = std::getenv("VLA_TURBOVLA_DUMP_DIR");
+    const std::pair<const char *, ggml_tensor *> stages[] = {
+        {"dino", vis_dino}, {"vision_projected", vis_projected},
+        {"bert", txt_bert}, {"text_projected", txt_projected},
+        {"vision_fused", vis}, {"text_fused", txt},
+        {"state_tokens", st}, {"normalized", a},
+    };
+    if (dump_dir && *dump_dir)
+        for (const auto & stage : stages) ggml_set_output(stage.second);
+
     ggml_cgraph * gf = ggml_new_graph_custom(C, 1 << 16, false);
     ggml_build_forward_expand(gf, a);
 
-    ggml_gallocr_t galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-    if (!galloc || !ggml_gallocr_alloc_graph(galloc, gf)) {
+    if (!graph_allocator)
+        graph_allocator = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    if (!graph_allocator || !ggml_gallocr_alloc_graph(graph_allocator, gf)) {
         std::fprintf(stderr, "vla(turbovla): ggml_gallocr_alloc_graph failed (out of memory?)\n");
-        if (galloc) ggml_gallocr_free(galloc);
+        if (graph_allocator) ggml_gallocr_free(graph_allocator);
+        graph_allocator = nullptr;
         ggml_free(C);
         return {};
     }
@@ -938,6 +964,9 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
     ggml_backend_tensor_set(t_cos, rope_cos.data(), 0, ggml_nbytes(t_cos));
     ggml_backend_tensor_set(t_sin, rope_sin.data(), 0, ggml_nbytes(t_sin));
     ggml_backend_tensor_set(t_bert_mask, bert_mask.data(), 0, ggml_nbytes(t_bert_mask));
+    std::vector<float> text_keep((size_t) L, 0.f);
+    std::fill(text_keep.begin(), text_keep.begin() + text_encode_len, 1.f);
+    ggml_backend_tensor_set(t_text_keep, text_keep.data(), 0, ggml_nbytes(t_text_keep));
     ggml_backend_tensor_set(t_enh_mask, enh_mask.data(), 0, ggml_nbytes(t_enh_mask));
     ggml_backend_tensor_set(t_fuse_mask, fuse_mask.data(), 0, ggml_nbytes(t_fuse_mask));
 
@@ -950,7 +979,6 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
     const ggml_status stt = ggml_backend_graph_compute(backend, gf);
     if (stt != GGML_STATUS_SUCCESS) {
         std::fprintf(stderr, "vla(turbovla): ggml_backend_graph_compute failed (%d)\n", (int) stt);
-        ggml_gallocr_free(galloc);
         ggml_free(C);
         return {};
     }
@@ -958,7 +986,23 @@ std::vector<float> TurboVLAModelArch::predict(const Inputs& in) {
     // [action_dim, horizon] row-major get == [step, dim] flatten
     std::vector<float> out((size_t) horizon * action_dim);
     ggml_backend_tensor_get(a, out.data(), 0, out.size() * sizeof(float));
-    ggml_gallocr_free(galloc);
+    if (dump_dir && *dump_dir) {
+        for (const auto & stage : stages) {
+            const std::string path = std::string(dump_dir) + "/turbovla_cpp_" + stage.first + ".f32";
+            std::vector<float> values((size_t) ggml_nelements(stage.second));
+            GGML_ASSERT(stage.second->type == GGML_TYPE_F32 && ggml_is_contiguous(stage.second));
+            ggml_backend_tensor_get(stage.second, values.data(), 0, values.size() * sizeof(float));
+            FILE * file = std::fopen(path.c_str(), "wb");
+            if (!file) {
+                std::fprintf(stderr, "vla(turbovla): cannot write parity dump %s\n", path.c_str());
+                continue;
+            }
+            const bool ok = std::fwrite(values.data(), sizeof(float), values.size(), file) == values.size();
+            const int closed = std::fclose(file);
+            if (!ok || closed != 0)
+                std::fprintf(stderr, "vla(turbovla): incomplete parity dump %s\n", path.c_str());
+        }
+    }
     ggml_free(C);
     stats.ms_inference = std::chrono::duration<float, std::milli>(clk::now() - ti0).count();
 
@@ -1109,6 +1153,38 @@ std::unique_ptr<ModelArchBase> turbovla_create(const std::string & mmproj_path,
         std::fprintf(stderr, "vla(turbovla): bundled vocab missing or size mismatch "
                              "(turbovla.bert_vocab_list)\n");
         return nullptr;
+    }
+
+    const int64_t layout_instr = gguf_find_key(g.gctx, "turbovla.pad_layout_instr");
+    const int64_t layout_len = gguf_find_key(g.gctx, "turbovla.pad_layout_len");
+    if ((layout_instr >= 0) != (layout_len >= 0)) {
+        std::fprintf(stderr, "vla(turbovla): incomplete instruction padding metadata\n");
+        return nullptr;
+    }
+    if (layout_instr >= 0) {
+        if (gguf_get_kv_type(g.gctx, layout_instr) != GGUF_TYPE_ARRAY ||
+            gguf_get_kv_type(g.gctx, layout_len) != GGUF_TYPE_ARRAY ||
+            gguf_get_arr_type(g.gctx, layout_instr) != GGUF_TYPE_STRING ||
+            gguf_get_arr_type(g.gctx, layout_len) != GGUF_TYPE_INT32 ||
+            gguf_get_arr_n(g.gctx, layout_instr) != gguf_get_arr_n(g.gctx, layout_len)) {
+            std::fprintf(stderr, "vla(turbovla): invalid instruction padding arrays\n");
+            return nullptr;
+        }
+        const auto * lengths = static_cast<const int32_t *>(gguf_get_arr_data(g.gctx, layout_len));
+        for (size_t i = 0; i < gguf_get_arr_n(g.gctx, layout_instr); ++i) {
+            const int64_t length = lengths[i];
+            auto tokens = m->tokenizer.encode(gguf_get_arr_str(g.gctx, layout_instr, i));
+            if (length < 3 || length > m->text_len || tokens.empty()) {
+                std::fprintf(stderr, "vla(turbovla): invalid instruction padding length\n");
+                return nullptr;
+            }
+            auto inserted = m->text_padding_lengths.emplace(std::move(tokens), length);
+            if (!inserted.second && inserted.first->second != length) {
+                std::fprintf(stderr, "vla(turbovla): conflicting tokenized instruction lengths\n");
+                return nullptr;
+            }
+        }
+        std::printf("vla(turbovla): instruction padding layouts = %zu\n", m->text_padding_lengths.size());
     }
 
     // backend

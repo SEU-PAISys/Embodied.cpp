@@ -5,14 +5,16 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
+import json
 import sys
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import torch
-from transformers import BertConfig, BertModel
-from transformers.models.dinov3_vit import DINOv3ViTConfig, DINOv3ViTModel
+import transformers
 
 
 def provide_eval_only_timm_shim() -> None:
@@ -50,6 +52,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--precision", choices=("bf16", "fp32"), default="bf16")
+    parser.add_argument("--norm-gguf", type=Path,
+                        help="Read normalization arrays from the exact compared GGUF.")
+    parser.add_argument("--checkpoint-key", default="model_state_dict",
+                        help="Explicit weight entry; use ema_model_state_dict for EMA releases.")
     parser.add_argument(
         "--instruction",
         default="pick up the black bowl next to the cookie box and place it on the plate",
@@ -57,23 +63,23 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
+def load_reference_model(args):
+    """Build the official model offline and strictly load the selected weights.
+
+    Backbone factories avoid downloading weights that the full checkpoint
+    immediately replaces. The official source tree itself is never edited.
+    """
+    from transformers import BertConfig, BertModel
+    from transformers.models.dinov3_vit import DINOv3ViTConfig, DINOv3ViTModel
     sys.path.insert(0, str(args.official_root))
     provide_eval_only_timm_shim()
 
-    from turbovla.evaluation.policy import (  # noqa: PLC0415
-        ACTION_MAX,
-        ACTION_MIN,
-        PROPRIO_MEAN,
-        PROPRIO_STD,
-    )
     from turbovla.models import text_encoder, vision_encoder  # noqa: PLC0415
     from turbovla.models.configuration import TurboVLAConfig  # noqa: PLC0415
     from turbovla.models.turbovla import build_turbovla  # noqa: PLC0415
 
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    state_dict = checkpoint["model_state_dict"]
+    state_dict = checkpoint[args.checkpoint_key]
     config = TurboVLAConfig.from_mapping(copy.deepcopy(checkpoint["model_config"]))
     config.text.model_name_or_path = str(args.bert_path)
     config.text.local_files_only = True
@@ -93,14 +99,53 @@ def main() -> None:
         rope_theta=100.0,
         layerscale_value=1.0,
     )
-    text_encoder._load_pretrained_model = lambda _: BertModel(bert_config)
-    vision_encoder._load_pretrained_model = lambda _: DINOv3ViTModel(dino_config)
-
-    model = build_turbovla(config)
+    with patch.object(text_encoder, "_load_pretrained_model", lambda _: BertModel(bert_config)), \
+         patch.object(vision_encoder, "_load_pretrained_model", lambda _: DINOv3ViTModel(dino_config)):
+        model = build_turbovla(config)
     model.load_state_dict(state_dict, strict=True)
     dtype = torch.bfloat16 if args.precision == "bf16" else torch.float32
     device = torch.device(args.device)
     model.to(device=device, dtype=dtype).eval().requires_grad_(False)
+    # This checkpoint/runtime consumes post-final-LayerNorm DINO features.
+    # Transformers 4.57.6 changed hidden_states[-1] to the pre-norm value;
+    # the official encoder selects that field, silently changing the policy.
+    def check_vision_output(_module, _inputs, output):
+        if output.hidden_states is not None and not torch.equal(
+            output.hidden_states[-1], output.last_hidden_state
+        ):
+            raise RuntimeError(
+                "DINO hidden_states[-1] is not the post-norm last_hidden_state. "
+                "This TurboVLA GGUF requires post-norm features; use a validated "
+                "reference environment (tested: transformers 4.57.1), not a "
+                "silent model-output override."
+            )
+    model.vision_encoder.backbone.register_forward_hook(check_vision_output)
+    return model, config
+
+
+def load_norm_arrays(norm_gguf=None):
+    if norm_gguf is None:
+        from turbovla.evaluation.policy import ACTION_MAX, ACTION_MIN, PROPRIO_MEAN, PROPRIO_STD
+        return tuple(np.asarray(v, dtype=np.float32) for v in
+                     (PROPRIO_MEAN, PROPRIO_STD, ACTION_MIN, ACTION_MAX))
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "third_party/llama.cpp/gguf-py"))
+    import gguf
+    reader = gguf.GGUFReader(str(norm_gguf))
+    tensors = {t.name: t for t in reader.tensors}
+    values = tuple(gguf.dequantize(tensors[name].data, tensors[name].tensor_type).reshape(-1).copy()
+                   for name in ("norm.proprio_mean", "norm.proprio_std", "norm.action_min", "norm.action_max"))
+    if [v.size for v in values] != [8, 8, 7, 7] or not all(np.isfinite(v).all() for v in values):
+        raise ValueError("invalid TurboVLA normalization arrays")
+    return values
+
+
+def main() -> None:
+    args = parse_args()
+    model, config = load_reference_model(args)
+    PROPRIO_MEAN, PROPRIO_STD, ACTION_MIN, ACTION_MAX = load_norm_arrays(args.norm_gguf)
+    dtype = torch.bfloat16 if args.precision == "bf16" else torch.float32
+    device = torch.device(args.device)
 
     stages: dict[str, np.ndarray] = {}
 
@@ -112,8 +157,10 @@ def main() -> None:
 
     model.vision_encoder.register_forward_hook(capture("dino"))
     model.vision_projection.register_forward_hook(capture("vision_projection"))
-    model.text_encoder.bert.register_forward_hook(
-        capture("bert", lambda output: output.last_hidden_state)
+    # Capture the padded BERT features actually consumed by the projection,
+    # not the shorter per-instruction encoder output before zero padding.
+    model.text_encoder.text_projection.register_forward_pre_hook(
+        lambda _module, inputs: stages.update(bert=inputs[0].detach().float().cpu().numpy())
     )
     model.text_encoder.text_projection.register_forward_hook(capture("text_projected"))
     model.vision_language_interaction.register_forward_hook(
@@ -125,7 +172,7 @@ def main() -> None:
     images_u8 = rng.integers(0, 256, size=(2, 256, 256, 3), dtype=np.uint8)
     state_norm = np.linspace(-0.5, 0.5, 8, dtype=np.float32)
     state = np.asarray(PROPRIO_MEAN, dtype=np.float32) + (
-        np.asarray(PROPRIO_STD, dtype=np.float32) * state_norm
+        (np.asarray(PROPRIO_STD, dtype=np.float32) + 1e-6) * state_norm
     )
     images = images_u8.astype(np.float32) / 255.0
     mean = np.asarray([0.485, 0.456, 0.406], dtype=np.float32)
@@ -135,7 +182,8 @@ def main() -> None:
     state_tensor = torch.from_numpy(state_norm[None]).to(device=device, dtype=dtype)
 
     tokenized, _, _ = model.text_encoder._tokenize_group(
-        [args.instruction], device, config.text.padding_length
+        [args.instruction], device,
+        config.text.padding_length_by_instruction.get(args.instruction, config.text.padding_length)
     )
     token_ids = tokenized.input_ids[0].cpu().numpy()
     token_valid = tokenized.attention_mask[0].cpu().numpy().astype(bool)
@@ -166,6 +214,23 @@ def main() -> None:
     stages["vision_fused"] = fused[:, :512]
     stages["text_fused"] = fused[:, 512:]
     np.savez(args.out_dir / "turbovla_parity_ref_stages.npz", **stages)
+    def sha256(path):
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+    manifest = {
+        "checkpoint": str(args.checkpoint), "checkpoint_sha256": sha256(args.checkpoint),
+        "checkpoint_key": args.checkpoint_key, "official_root": str(args.official_root),
+        "torch": torch.__version__, "transformers": transformers.__version__,
+        "precision": args.precision, "vision_output": "post-final-layernorm",
+        "fixture_seed": 20260819, "instruction": args.instruction,
+        "encoder_length": len(token_ids), "runtime_text_length": config.text.padding_length,
+        "norm_gguf": str(args.norm_gguf) if args.norm_gguf else None,
+        "norm_gguf_sha256": sha256(args.norm_gguf) if args.norm_gguf else None,
+    }
+    (args.out_dir / "reference_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"tokens={token_ids.tolist()}")
     print(f"valid={int(token_valid.sum())}/{len(token_valid)} pads={int((~token_valid).sum())}")
     print(f"normalized[0]={normalized[0].tolist()}")

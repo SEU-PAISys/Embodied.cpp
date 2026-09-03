@@ -1,0 +1,14 @@
+只阅读，不修改，也不运行长时间构建。
+
+请定位一个推理请求的完整调用链：
+client → transport/protobuf → server handler → adapter/runtime → model inference → action response。
+
+要求：
+- 用“文件路径 → 类/函数/target → 下一跳”的格式；
+- 引用具体符号；
+- 标出 Python/C++ 边界；
+- 标出数据结构和关键 shape（能从代码确认时）；
+- 对无法确认的部分明确写“待验证”；
+- 最后给出三条最小动态验证方法，例如断点或日志位置。
+
+不要泛泛总结目录，不要编辑代码。
