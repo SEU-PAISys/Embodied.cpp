@@ -115,7 +115,7 @@ Q8_0 98/100 · Q4_0 99/100 · Q4_K 100/100 · **F32 常驻 99/100**（主 GGUF +
 |---|---|---:|---|
 | TurboVLA | 8 阶段中间层 + 最终动作 | **0.00418**（短指令）/ 0.00281–0.00530（修复后复验）| atol 0.01 ✅ |
 | XR0 | 主模型+vision 双路 | 0.00936 | atol 0.01 ✅ |
-| X-VLA | AutoModel vs C++ | 诊断性（详见 takeover §2）| — |
+| X-VLA | 新同源 HF/GGUF 固定输入 | F32 **0.000203**；BF16 **0.003104** | atol 0.005 ✅ |
 
 TurboVLA 满长指令（SEP@20）mask 缺陷修复后，短/满长指令 parity 全部通过；
 逐层 dump 定位记录于 takeover 报告（文本塔为误差爆点，视觉塔次之）。
@@ -128,20 +128,24 @@ TurboVLA 满长指令（SEP@20）mask 缺陷修复后，短/满长指令 parity 
 新补 TurboVLA 公共闭环：RTX 4090、同权重 BF16、seed 42、spatial task 0/4 各 10 回合，
 双方均 20/20 成功。相同 `get_action()` 边界下，按环境步数加权 C++ **2.147**、
 Python **3.637 ms/step**，约低 41%。这是两任务修复版对照，不替换 seed 7 主表。
-XR0 历史官方 2000 回合缺时间戳，无法推算 per-step；X-VLA 缺匹配权重对照。
+XR0 历史官方 2000 回合缺时间戳，无法推算 per-step；历史 X-VLA 缺匹配权重，
+另建的新同源 HF/GGUF 对照已有固定输入 parity 和重复性能测试，但没有完整成功率对照。
 
 固定原始 CPU 观测 → 完整 CPU 动作块（5 warmup + 100 calls，同卡 RTX 4090）：
 XR0 双侧 BF16 policy/F16 vision：C++ **53.56**、Python **143.63 ms**；
 TurboVLA 双侧 BF16：C++ **27.24**、Python **28.39 ms**。
 进程采样峰值分别 8824/9790、880/924 MiB。
-X-VLA C++ BF16 为 **84.41 ms / 2370 MiB**，Python 比值 **Pending**。
+历史 X-VLA C++ BF16 为 **84.41 ms / 2370 MiB**，因对应 HF 权重缺失，
+其 Python 比值仍为 **Pending**。新同源对照的三轮 BF16 顺序交叉测试没有稳定的
+C++ 延迟优势，且 C++ 进程显存高 3.9%，不能替代历史行或宣称加速。
 115.9 ms 旧 Python 短测只有 20 次前向且不含预处理/读回，日志的 3.437 GiB
 为 allocator 峰值，不能把 XR0 的 9790 MiB 套给它。
 完整 std/p50/p95/p99、抽样限制与原始来源见[复核报告](v2_followup_20260903.md)。
 
 ### 5.5 构建与测试
 
-集成测试 42 项、Linux 安装安全 7 项、量化回归（Q4_K 215 张量逐一验证）、
+五组 Python 回归共 **50 项全通过、0 skip**，Linux 安装安全 **7 项全通过**；
+量化回归包含真实 Q6 codec、元数据数组保持和 Q4_K 215 张量逐一验证，
 parity 回归（SEP@10/13/18/20 mask 用例）、真实 symlink 安装测试全部通过；
 三个独立构建目录（CPU/CUDA 单模型/CUDA 全模型）此前已验证。
 
@@ -160,4 +164,9 @@ parity 回归（SEP@10/13/18/20 mask 用例）、真实 symlink 安装测试全�
 3. XR0/X-VLA 的 `--derive-episode-noise` 现已真正控制请求噪声并有回归测试，
    默认关闭保留历史序列；新协议全量成功率未重跑。TurboVLA ACT 无 action-noise 输入，
    LingBot 使用独立噪声选项，均不接受此开关。
-4. TurboVLA Q4 档 goal 敏感：如需 4bit 可用，方向为 imatrix/敏感层高保真量化（后续工作）。
+4. TurboVLA Q4 档 goal 敏感。Q6 新增的 87.50% 全量运行使用了缺少逐指令
+   padding 元数据的旧 GGUF，不能据此证明 Q6 同样敏感；正确布局 Q6 全量为
+   **378/400（94.50%）**，同协议 BF16 为 **382/400（95.50%）**，goal 为
+   98/100。逐回合双侧精确检验 p=0.424，不称无损或等价。详见
+   [Q6 产物审计](q6_artifact_audit_20260904.md)。imatrix 只是一种候选方向，
+   在有校准实验前不作为已定位的根因或既定方案。

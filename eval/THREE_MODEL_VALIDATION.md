@@ -13,8 +13,8 @@ The acceptance rules are in [VLA_BENCHMARK_STANDARD.md](VLA_BENCHMARK_STANDARD.m
 | HY-VLA | Published normalized RoboTwin result | Published normalized BF16/8/6/4-bit result | Paper matrix | Benchmark differs from LIBERO; absolute raw samples and a current local rerun are missing |
 | SmolVLA | Historical 400-vs-400 LIBERO comparison: 284/400 C++ vs 265/400 official; final seed protocol only has a 12-vs-12 smoke | Pending: recorded latency scopes differ; a same-method process-memory sample is 1117 vs 1385 MiB | One unlabelled GGUF configuration | Upstream reference limitation: final-protocol full scale and an explicit precision manifest are absent; not a work item for this three-model PR |
 | Xiaomi-Robotics-0 | Historical 2000 episodes per BF16/Q8_0/Q4_K variant; paired BF16/Q6_K task-0 gate is 10/10 each under the final seed protocol | Matched BF16 policy + F16 vision: C++ 53.56 ms vs Python 143.63 ms; Q6_K is 69.33 ms and 4476 MiB vs BF16 8824 MiB | BF16, Q8_0, Q4_K full historical results; Q6_K fixed-boundary + one-task evidence | Q6_K misses strict `atol=0.005` parity by 1/960 values and lacks a full suite; historical full runs predate the final explicit seed manifest |
-| TurboVLA | Fresh 400 episodes per storage variant; shared-loop two-task Python/C++ control is 20/20 on both sides; Q6_K full suite 350/400 (87.50%, goal-sensitive like Q4_K) | Matched BF16: C++ 27.24 ms vs Python 28.39 ms, 5 warm-ups + 100 samples | BF16, Q8_0, Q4_0 storage results; Q6_K full suite complete (87.50%) | The BF16 margin is small and bounded to the measured batch; full matched Python success sweep and full Q6 sweep are missing |
-| X-VLA | Historical four-suite results plus repaired-source F32 object-suite 100/100; Q6_K full suite 392/400 (98.00%) plus baseline gate | New same-source F32/BF16 parity and repeated timings available; no consistent BF16 latency advantage, 3.9% higher process VRAM | BF16, Q8_0, Q4_0 and repaired-source F32 C++ results; Q6_K full suite complete (98.00%) | Historical-source normalized row remains Pending; the new pair still needs matched full success comparisons |
+| TurboVLA | Fresh 400 episodes per BF16/Q8/Q4 storage variant; shared-loop two-task Python/C++ control is 20/20 on both sides; correct-layout Q6 378/400 vs BF16 382/400 | Matched BF16: C++ 27.24 ms vs Python 28.39 ms, 5 warm-ups + 100 samples | BF16, Q8_0, Q4_0 and Q6_K storage sweeps; Q6 has BF16 residency and no runtime-memory saving | Full matched Python success sweep remains pending; the old-layout 350/400 run is retained only as configuration-failure evidence |
+| X-VLA | Historical four-suite results plus repaired-source F32 object-suite 100/100; historical-source Q6 392/400 under legacy observation-derived noise; explicit-noise paired gate 10/10 each | New same-source F32/BF16 parity and repeated timings available; no consistent BF16 latency advantage, 3.9% higher process VRAM | BF16, Q8_0, Q4_0 and repaired-source F32 C++ results; historical-source Q6 full integration observation, not matched non-inferiority | Historical-source normalized row remains Pending; the new HF pair still needs matched full success comparisons; Q6 noise protocol differs from the paired gate |
 
 ## Published baseline values
 
@@ -45,8 +45,11 @@ cost of producing one action across different output horizons, use the new
    from fixed-input parity and repeated deployment timings to matched success
    comparisons. It has no consistent BF16 latency or memory advantage; the
    historical checkpoint's normalized row remains Pending.
-2. Extend Q6 coverage from bounded gates to full success sweeps. TurboVLA and
-   X-VLA now have a [same-batch Q6 report](../docs/results/turbovla_xvla_q6_followup_20260904.md).
+2. The corrected-layout TurboVLA Q6 full sweep is now complete at 378/400
+   against same-protocol BF16 382/400. The [artifact audit](../docs/results/q6_artifact_audit_20260904.md)
+   identifies why the earlier 350/400 run is not that result. X-VLA's 392/400 full integration
+   observation uses legacy noise; a final-protocol paired comparison remains
+   separate. Both retain the [same-batch Q6 report](../docs/results/turbovla_xvla_q6_followup_20260904.md).
    XR0 Q6_K has a
    [fixed-boundary and one-task report](../docs/results/xr0_q6_followup_20260904.md),
    but its strict parity miss and missing full suite remain open.
