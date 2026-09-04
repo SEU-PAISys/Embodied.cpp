@@ -45,6 +45,11 @@ cost of producing one action across different output horizons, use the new
    from fixed-input parity and repeated deployment timings to matched success
    comparisons. It has no consistent BF16 latency or memory advantage; the
    historical checkpoint's normalized row remains Pending.
+   **P1 gate cleared (2026-09-04)**: the reference client's explicit-noise
+   denoise loop is bit-exact against official `generate_actions()` with the
+   same seed/inputs (`scripts/verify_xvla_denoise_equiv.py`, max abs error 0.0,
+   evidence `~/yangzhixiao/xvla_denoise_equiv.json`); the remaining P1 item is
+   a pinned local Python/LIBERO environment before the 400+400 run.
 2. The corrected-layout TurboVLA Q6 full sweep is now complete at 378/400
    against same-protocol BF16 382/400. The [artifact audit](../docs/results/q6_artifact_audit_20260904.md)
    identifies why the earlier 350/400 run is not that result. X-VLA's 392/400 full integration
