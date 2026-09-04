@@ -72,6 +72,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "turbo_builtin_pad_layout.inc"
+
 namespace vla {
 
 namespace {
@@ -1160,6 +1162,18 @@ std::unique_ptr<ModelArchBase> turbovla_create(const std::string & mmproj_path,
     if ((layout_instr >= 0) != (layout_len >= 0)) {
         std::fprintf(stderr, "vla(turbovla): incomplete instruction padding metadata\n");
         return nullptr;
+    }
+    if (layout_instr < 0) {
+        // GGUF lacks the per-instruction padding layout (older conversions):
+        // fall back to the builtin LIBERO all-4-suite table so quantized
+        // variants keep the exact padding the checkpoint was trained with.
+        for (size_t i = 0; i < kTurboBuiltinPadLayoutN; ++i) {
+            auto tokens = m->tokenizer.encode(kTurboBuiltinPadLayout[i].text);
+            if (tokens.empty()) continue;
+            m->text_padding_lengths.emplace(std::move(tokens), kTurboBuiltinPadLayout[i].length);
+        }
+        std::fprintf(stderr, "vla(turbovla): instruction padding layouts (builtin) = %zu\n",
+                     m->text_padding_lengths.size());
     }
     if (layout_instr >= 0) {
         if (gguf_get_kv_type(g.gctx, layout_instr) != GGUF_TYPE_ARRAY ||
