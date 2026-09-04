@@ -178,6 +178,44 @@ class ConfigTests(unittest.TestCase):
                 self.assertEqual(vc.call_args.kwargs["max_length"], want_length)
                 self.assertEqual(vc.call_args.kwargs["n_action_steps"], want_replay)
 
+    def test_xvla_python_uses_shared_client_entrypoint(self):
+        args = runner.parse_args([
+            "--arch", "xvla", "--implementation", "python", "--hf-dir", "/model",
+            "--xvla-precision", "f32", "--task-id", "0",
+        ])
+        reference = MagicMock()
+        fake_module = types.SimpleNamespace(XVLAReferenceClient=MagicMock(return_value=reference))
+        adapter = MagicMock()
+        with patch.dict(sys.modules, {"scripts.rollout_xvla_reference": fake_module}), \
+             patch.object(runner, "LIBEROSimAdapter", return_value=adapter):
+            self.assertIs(runner.build_client(args), adapter)
+        fake_module.XVLAReferenceClient.assert_called_once_with(
+            Path("/model"), precision="f32", n_action_steps=30, noise_seed=None,
+        )
+        with self.assertRaisesRegex(ValueError, "requires --hf-dir"):
+            runner.build_client(runner.parse_args([
+                "--arch", "xvla", "--implementation", "python", "--task-id", "0",
+            ]))
+        with self.assertRaisesRegex(ValueError, "supports xvla only"):
+            runner.build_client(runner.parse_args([
+                "--arch", "turbovla", "--implementation", "python", "--hf-dir", "/model",
+                "--task-id", "0",
+            ]))
+        argv = ["--arch", "xvla", "--implementation", "python", "--hf-dir", "/model",
+                "--task-id", "0", "--profile-output", "profile.json"]
+        with patch.object(runner, "build_client"), \
+             patch.object(runner, "run_one_task") as rollout, \
+             patch.object(runner, "LiberoSuiteProfiler") as profiler, \
+             contextlib.redirect_stdout(io.StringIO()):
+            runner.main(argv)
+        self.assertEqual(rollout.call_args.kwargs["implementation"], "python")
+        self.assertEqual(profiler.call_args.kwargs["server_pid"], os.getpid())
+        self.assertEqual(profiler.call_args.kwargs["implementation"], "python")
+        self.assertEqual(profiler.call_args.kwargs["inference_source_label"],
+                         "official Python model forward")
+        self.assertEqual(profiler.call_args.kwargs["vram_target_label"],
+                         "official Python reference process")
+
     def test_standalone_tools_import_without_pythonpath(self):
         # Each child gets a clean import path; tests in this process otherwise
         # mask wrong sys.path setup in standalone entry points.

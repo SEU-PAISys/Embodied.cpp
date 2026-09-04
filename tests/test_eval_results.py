@@ -81,6 +81,7 @@ class ResultTests(unittest.TestCase):
                 profiler.record_step(1)
         profiler.episodes.append({"success": True, "skipped": False})
         result = profiler.result(complete=True)
+        self.assertEqual(result["implementation"], "cpp")
         self.assertEqual(result["inf_ms"]["n"], 1)
         self.assertEqual(result["inf_ms"]["mean"], 20)
         self.assertEqual(result["inf_ms"]["samples"], [20.0])
@@ -90,6 +91,20 @@ class ResultTests(unittest.TestCase):
         self.assertEqual(result["generated_action_step_ms"]["mean"], 0.667)
         self.assertEqual(result["model_step_ms"]["mean"], 2.0)
         self.assertFalse(result["table_ready"])  # no GPU memory measurement
+
+    def test_python_profile_labels_are_not_server_claims(self):
+        profiler = LiberoSuiteProfiler(
+            output_path=Path("unused.json"), model_label="X-VLA", backbone_label="test",
+            arch="xvla", suite="libero_object", replay_chunk_size=30,
+            expected_episodes=0, server_address="unused", server_pid=1,
+            vram_interval_s=0.25, warmup_requests=0, implementation="python",
+            inference_source_label="official Python model forward",
+        )
+        result = profiler.result(complete=False)
+        self.assertEqual(result["implementation"], "python")
+        self.assertIn("official Python model forward",
+                      result["generated_action_step_ms"]["definition"])
+        self.assertNotIn("server-side", result["model_step_ms"]["definition"])
 
     def test_turbovla_total_and_graph_window_stay_distinct(self):
         # inf_ms.mean comes from latency_ms_total (whole server call) while

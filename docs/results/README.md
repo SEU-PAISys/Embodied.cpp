@@ -28,7 +28,15 @@ The [TurboVLA/X-VLA Q6_K follow-up](turbovla_xvla_q6_followup_20260904.md)
 adds same-batch BF16/Q6 latency, unchanged process VRAM, and 80 paired
 closed-loop episodes. TurboVLA Q6 is 30/30 versus BF16 29/30 on three selected
 goal tasks, despite a fixed-fixture maximum action difference of 2.0; X-VLA is
-10/10 on both sides for object task 0. Neither is a full Q6 success sweep.
+10/10 on both sides for object task 0. A later pair of 400-episode observations
+is retained but is not a like-for-like extension of these gates: TurboVLA used
+an old artifact missing per-instruction padding metadata and X-VLA used legacy
+observation-derived noise. The [artifact audit](q6_artifact_audit_20260904.md)
+records the hashes, protocol differences, corrected control and raw archive.
+The corrected TurboVLA Q6 full sweep is **378/400 (94.50%)**, versus
+same-protocol BF16 **382/400 (95.50%)**; its goal suite is 98/100, not the
+old-layout run's 69/100. The paired difference is not statistically resolved
+(two-sided exact McNemar p=0.424), so the report does not call it loss-free.
 
 A [new same-source X-VLA pair](xvla_matched_followup_20260904.md) now has
 902-tensor identity checks and F32/BF16 numerical gates, plus three BF16 timing

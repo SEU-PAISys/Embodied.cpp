@@ -100,9 +100,14 @@ do not identify its binary using the checkout revision alone. The local
 checkout remains `517b972` plus uncommitted changes; nothing was pushed.
 
 
-## Full-suite success rates (2026-09-04, seed 42, 256 px, 400 episodes each)
+## Additional full-suite runs (2026-09-04; configuration differs from gates above)
 
-| Suite | TurboVLA Q6_K | X-VLA Q6_K |
+The following counts were independently verified against all 80 task JSONs
+(800 episodes, zero skipped). They are real observations, but **not the
+same experiment configuration as the preceding gates**. See the
+[artifact/configuration audit](q6_artifact_audit_20260904.md).
+
+| Suite | TurboVLA Q6_K, old layout | X-VLA Q6_K, legacy noise |
 |---|---:|---:|
 | spatial | 96/100 | 98/100 |
 | object | 100/100 | 100/100 |
@@ -110,11 +115,42 @@ checkout remains `517b972` plus uncommitted changes; nothing was pushed.
 | libero_10 | 85/100 | 98/100 |
 | **total** | **350/400 (87.50%)** | **392/400 (98.00%)** |
 
-X-VLA Q6_K lands within 1.2 pp of its BF16 reference (99.2%) and is acceptable
-as the formal 6-bit storage variant. TurboVLA Q6_K shows the same goal-suite
-sensitivity already recorded for Q4_K/Q4_0 (68%/83%) — the loss is
-model/quantizer-format specific and non-linear in bit width (Q8_0 at 94.75%
-is loss-free), so Q8_0 remains the recommended quantized configuration for
-TurboVLA. The missing padding-array concern was cleared by re-conversion:
-tensor name sets are identical (673 = 673) and the checkpoint metadata carries
-a single text_padding_length = 21, so no per-instruction data was ever lost.
+TurboVLA used Q6 SHA-256 `74943e33f861c0aaf9d5b3c3440ed0c514e49440eeeb9f8d19d6214c241e0b1c`,
+not `c253c24c...` from the table above. This file lacks the checkpoint's
+40-entry per-instruction padding layout. The claim that tensor-name equality
+proved metadata equivalence was incorrect. The 87.50% result must not be
+attributed solely to Q6 quantization; a corrected-layout full sweep is pending.
+
+X-VLA used the same Q6 artifact as above, but `derive_episode_noise=false`
+and `noise_seed=null`, unlike the explicit derived-noise paired gate. Its
+98.00% is a historical-source C++ integration observation, not a matched
+non-inferiority result against the seed-7 99.2% reference or the new HF pair.
+No acceptable-loss threshold or "loss-free" claim is established here.
+
+## Corrected-layout TurboVLA Q6 result
+
+The Q6 artifact with the checkpoint's 40-entry padding layout (SHA-256
+`c253c24c...`) was then rerun across all four suites under the same seed-42,
+256px, replay-12 protocol, without video. All 400 episodes were counted and
+none was skipped.
+
+| Suite | BF16 correct layout | Q6_K correct layout |
+|---|---:|---:|
+| spatial | 98/100 | 96/100 |
+| object | 99/100 | 99/100 |
+| goal | 97/100 | 98/100 |
+| libero_10 | 88/100 | 85/100 |
+| **total** | **382/400 (95.50%)** | **378/400 (94.50%)** |
+
+The Wilson 95% intervals are [93.000%, 97.135%] for BF16 and
+[91.813%, 96.340%] for Q6. Paired by suite/task/episode, 373 trials succeeded
+on both, 9 only on BF16, 5 only on Q6, and 13 on neither (14 discordant;
+two-sided exact McNemar p=0.424). This run does not prove equivalence or a
+one-point quality loss; it shows no statistically resolved paired difference
+at this sample size. Q8_0 remains the conservative recommendation because its
+fixed-input deviation is smaller and Q6 provides no runtime-memory benefit.
+
+A controlled goal-task-2 rerun produced 0/10 with the old metadata and 10/10
+with the correct metadata while all 673 tensor payloads were byte-identical.
+The old 69% goal result was therefore a configuration artifact, not evidence
+that six-bit storage has the same goal sensitivity as four-bit storage.

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -165,6 +166,17 @@ def build_client(args):
     else:
         args.max_length = args.max_length if args.max_length is not None else 512
         args.n_action_steps = args.n_action_steps if args.n_action_steps is not None else 1
+
+    if args.implementation == "python":
+        if args.arch != "xvla":
+            raise ValueError("--implementation python currently supports xvla only")
+        if not args.hf_dir:
+            raise ValueError("--implementation python requires --hf-dir")
+        from scripts.rollout_xvla_reference import XVLAReferenceClient
+        return LIBEROSimAdapter(XVLAReferenceClient(
+            Path(args.hf_dir), precision=args.xvla_precision,
+            n_action_steps=args.n_action_steps, noise_seed=args.noise_seed,
+        ))
 
     default_lerobot_image_keys = ["observation.images.image", "observation.images.image2"]
     lingbot_image_keys = (
@@ -641,6 +653,12 @@ def parse_args(argv=None):
 
     parser.add_argument("--arch", choices=ARCH_CHOICES, default="lingbot_va",
         help="Model/client path. Also namespaces the output dir.")
+    parser.add_argument("--implementation", choices=("cpp", "python"), default="cpp",
+        help="Inference implementation; Python currently supports the official X-VLA reference.")
+    parser.add_argument("--hf-dir", type=str, default=None,
+        help="Official Hugging Face checkpoint directory for --implementation python.")
+    parser.add_argument("--xvla-precision", choices=("bf16", "f32"), default="bf16",
+        help="Official Python X-VLA compute precision.")
     parser.add_argument("--vla-addr", type=str, default="tcp://localhost:5555",
         help="ZMQ address of the C++ inference daemon, for example vla-server or vla-server.")
     parser.add_argument("--tokenizer", type=str, default=None,
@@ -783,8 +801,15 @@ def main(argv=None):
         # graph, so its "inference" figure is the whole graph execution, not
         # an action-head-only phase; say so where the number is published.
         inference_definition = None
+        vram_target_label = "VLA server"
         if args.arch == "turbovla":
             inference_definition = TURBOVLA_INFERENCE_DEFINITION
+        if args.implementation == "python":
+            inference_definition = (
+                "official PyTorch model forward from preprocessed tensors through "
+                "complete CPU action read-back; image/token preprocessing is excluded"
+            )
+            vram_target_label = "official Python reference process"
         profiler = LiberoSuiteProfiler(
             output_path=Path(args.profile_output),
             model_label=args.profile_model_label or model_default,
@@ -794,9 +819,15 @@ def main(argv=None):
             replay_chunk_size=args.n_action_steps,
             expected_episodes=len(task_ids) * args.n_episodes,
             server_address=args.vla_addr,
-            server_pid=args.profile_server_pid,
+            server_pid=(args.profile_server_pid if args.implementation == "cpp"
+                        else args.profile_server_pid or os.getpid()),
             vram_interval_s=args.profile_vram_interval_s,
             warmup_requests=args.profile_warmup_requests,
+            implementation=args.implementation,
+            inference_source_label=("server-side model forward"
+                                    if args.implementation == "cpp"
+                                    else "official Python model forward"),
+            vram_target_label=vram_target_label,
             **({"inference_definition": inference_definition} if inference_definition else {}),
         )
         profiler.start()
@@ -804,7 +835,8 @@ def main(argv=None):
     complete = False
     try:
         for task_id in task_ids:
-            run_one_task(args, client, args.task, task_id, profiler)
+            run_one_task(args, client, args.task, task_id, profiler,
+                         implementation=args.implementation)
         complete = True
     finally:
         if profiler is not None:

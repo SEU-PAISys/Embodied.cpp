@@ -190,7 +190,9 @@ or cross-model rankings. Reusing the model-owned graph allocator reduced the
 BF16 p99 values from 223/258/248 ms to 28/64/94 ms for TurboVLA/XR0/X-VLA
 in the matched 100-call batches. Their mean C++ latencies were 27.24/53.56/84.41 ms;
 the matched Python baselines for TurboVLA/XR0 were 28.39/143.63 ms.
-All ten configurations in the allocator-reuse audit retained byte-identical+actions before and after that optimization. This statement does not cover the+later Q6_K derivatives, whose numerical differences are reported separately.
+All ten configurations in the allocator-reuse audit retained byte-identical
+actions before and after that optimization. This statement does not cover the
+later Q6_K derivatives, whose numerical differences are reported separately.
 Separate 500-call runs also lacked the former periodic spikes, but finite runs
 do not guarantee tail-free execution under every workload. TurboVLA's small
 observed margin is not a universal speedup claim. See std/p50/p95/p99, timing

@@ -15,6 +15,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import sys
 import time
 from pathlib import Path
@@ -26,10 +27,13 @@ sys.path.insert(1, str(EVAL))
 
 import numpy as np
 import torch
+from PIL import Image
 
 import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
 from adapter.sim.libero import _rotate6d_to_axisangle
 from sim.libero.libero_env import LiberoEnv, TASK_SUITE_MAX_STEPS
+from client.reproducibility import generate_action_noise
+from client.vla_cpp_client import _xr0_hash_seed
 
 LIBERO_SUITE_ALIASES = {
     "spatial": "libero_spatial",
@@ -38,6 +42,126 @@ LIBERO_SUITE_ALIASES = {
     "10": "libero_10",
     "long": "libero_90",
 }
+
+
+class XVLAReferenceClient:
+    """Official PyTorch X-VLA behind the same queued-client API as vla-server."""
+
+    def __init__(self, model_path: Path, *, precision: str = "bf16",
+                 n_action_steps: int = 30, noise_seed: int | None = None):
+        from transformers import AutoImageProcessor, AutoModel, AutoProcessor
+
+        if precision not in ("bf16", "f32"):
+            raise ValueError(f"unsupported X-VLA precision: {precision}")
+        if not 1 <= n_action_steps <= 30:
+            raise ValueError("X-VLA replay steps must be in [1, 30]")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.dtype = torch.bfloat16 if precision == "bf16" else torch.float32
+        self.model = AutoModel.from_pretrained(
+            model_path, trust_remote_code=True, torch_dtype=self.dtype,
+            attn_implementation="eager",
+        ).to(device=self.device, dtype=self.dtype).eval()
+        self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+        self.processor.image_processor = AutoImageProcessor.from_pretrained(
+            model_path, use_fast=False
+        )
+        if self.model.num_actions != 30 or self.model.action_space.dim_action != 20:
+            raise ValueError("X-VLA reference requires a 30x20 action head")
+        self.n_action_steps = n_action_steps
+        self._initial_noise_seed = noise_seed
+        self._queue: deque[np.ndarray] = deque(maxlen=n_action_steps)
+        self._last_inference_profile = None
+        self._inference_sequence = 0
+        self.reset()
+
+    def get_arch(self):
+        return "xvla"
+
+    def reset(self, noise_seed: int | None = None):
+        self._queue.clear()
+        self._last_inference_profile = None
+        self._episode_noise_seed = noise_seed
+        resolved = self._initial_noise_seed if noise_seed is None else noise_seed
+        self._noise_rng = np.random.default_rng(resolved) if resolved is not None else None
+
+    def has_queued_action(self):
+        return bool(self._queue)
+
+    def get_action_from_queue(self):
+        if not self._queue:
+            raise RuntimeError("action queue is empty; call get_action(obs) first")
+        return self._queue.popleft()
+
+    def get_last_inference_profile(self):
+        return dict(self._last_inference_profile) if self._last_inference_profile else None
+
+    def get_action(self, observations):
+        if not self._queue:
+            for row in self._predict_chunk(observations)[:self.n_action_steps, :10]:
+                self._queue.append(np.ascontiguousarray(row, dtype=np.float32))
+        return self._queue.popleft()
+
+    def _predict_chunk(self, observations):
+        images = []
+        for key in ("observation.images.image", "observation.images.image2"):
+            image = np.asarray(observations[key], dtype=np.float32)
+            if image.ndim != 3 or image.shape[0] != 3:
+                raise ValueError(f"{key}: expected CHW [3,H,W], got {image.shape}")
+            images.append(np.ascontiguousarray(
+                (image.transpose(1, 2, 0).clip(0, 1) * 255).round(), dtype=np.uint8
+            ))
+        state = np.asarray(observations["observation.state"], dtype=np.float32).reshape(-1)
+        if state.shape != (20,):
+            raise ValueError(f"X-VLA reference state must be [20], got {state.shape}")
+        task = str(observations.get("task", ""))
+        domain_id = int(observations.get("domain_id", 3))
+        inputs = self.processor(images=images, language_instruction=task)
+        inputs.update(proprio=torch.from_numpy(state[None]),
+                      domain_id=torch.tensor([domain_id], dtype=torch.long))
+        inputs = {key: value.to(self.device, dtype=self.dtype if value.is_floating_point()
+                                else value.dtype) for key, value in inputs.items()}
+        explicit_noise = observations.get("action_noise")
+        if explicit_noise is not None:
+            noise = np.ascontiguousarray(explicit_noise, dtype=np.float32)
+            if noise.shape != (30, 20):
+                raise ValueError(f"X-VLA action_noise must be [30,20], got {noise.shape}")
+        elif self._noise_rng is not None:
+            noise = generate_action_noise(self._noise_rng, 30, 20)
+        else:
+            hash_images = [np.ascontiguousarray(
+                Image.fromarray(image).resize((224, 224), Image.BICUBIC), dtype=np.uint8
+            ) for image in images]
+            seed = _xr0_hash_seed("xvla", state, hash_images, task)
+            generator = torch.Generator(device="cpu").manual_seed(seed)
+            noise = torch.randn((30, 20), generator=generator).numpy()
+        x1 = torch.from_numpy(noise[None]).to(self.device, dtype=self.dtype)
+
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        started = time.perf_counter()
+        with torch.inference_mode():
+            enc = self.model.forward_vlm(inputs["input_ids"], inputs["image_input"],
+                                         inputs["image_mask"])
+            action = torch.zeros_like(x1)
+            for index in range(10, 0, -1):
+                t = torch.full((1,), index / 10, device=self.device, dtype=self.dtype)
+                x_t = x1 * t[:, None, None] + action * (1 - t[:, None, None])
+                proprio, x_t = self.model.action_space.preprocess(inputs["proprio"], x_t)
+                action = self.model.transformer(domain_id=inputs["domain_id"],
+                    action_with_noise=x_t, proprio=proprio, t=t, **enc)
+            output = self.model.action_space.postprocess(action)[0].float().cpu().numpy().copy()
+        if output.shape != (30, 20) or not np.isfinite(output).all():
+            raise RuntimeError(f"invalid X-VLA output: shape={output.shape}, finite={np.isfinite(output).all()}")
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        self._inference_sequence += 1
+        self._last_inference_profile = {
+            "sequence": self._inference_sequence,
+            "server_total_ms": elapsed_ms, "server_inference_ms": elapsed_ms,
+            "server_vision_ms": None, "server_prefill_ms": None,
+            "server_denoise_ms": None, "model_chunk_size": 30,
+            "model_action_dim": 20, "replay_chunk_size": self.n_action_steps,
+        }
+        return output
 
 
 def build_obs(model_inputs_source: dict, processor, task: str, device: str):

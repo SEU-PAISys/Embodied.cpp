@@ -21,6 +21,13 @@ batch size, model settings, and effective compute precision. Record checkpoint
 SHA-256 values and distinguish three independent properties: source checkpoint,
 GGUF storage type, and runtime compute type.
 
+Checkpoint identity includes inference metadata, not only tensor names or
+payloads. Before a full sweep, compare tokenizer/preprocessing settings,
+normalization and per-instruction layouts against the source checkpoint and
+the paired baseline. Preserve these fields during quantization. Two GGUFs
+with identical tensors but different padding layouts are different inference
+configurations; a tensor-name count cannot certify equivalence.
+
 1. Use batch size 1, at least 5 untimed warm-up requests, and at least 100
    timed requests.
 2. Time the same deployment boundary on both sides: raw CPU observations to a
