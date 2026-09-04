@@ -98,3 +98,23 @@ Relevant source/build SHA-256:
 The server checkout is `19176e1` plus the validated working-tree changes;
 do not identify its binary using the checkout revision alone. The local
 checkout remains `517b972` plus uncommitted changes; nothing was pushed.
+
+
+## Full-suite success rates (2026-09-04, seed 42, 256 px, 400 episodes each)
+
+| Suite | TurboVLA Q6_K | X-VLA Q6_K |
+|---|---:|---:|
+| spatial | 96/100 | 98/100 |
+| object | 100/100 | 100/100 |
+| goal | 69/100 | 96/100 |
+| libero_10 | 85/100 | 98/100 |
+| **total** | **350/400 (87.50%)** | **392/400 (98.00%)** |
+
+X-VLA Q6_K lands within 1.2 pp of its BF16 reference (99.2%) and is acceptable
+as the formal 6-bit storage variant. TurboVLA Q6_K shows the same goal-suite
+sensitivity already recorded for Q4_K/Q4_0 (68%/83%) — the loss is
+model/quantizer-format specific and non-linear in bit width (Q8_0 at 94.75%
+is loss-free), so Q8_0 remains the recommended quantized configuration for
+TurboVLA. The missing padding-array concern was cleared by re-conversion:
+tensor name sets are identical (673 = 673) and the checkpoint metadata carries
+a single text_padding_length = 21, so no per-instruction data was ever lost.
