@@ -27,6 +27,7 @@ cpp = (
     "static const size_t kTurboBuiltinPadLayoutN = "
     "sizeof(kTurboBuiltinPadLayout) / sizeof(kTurboBuiltinPadLayout[0]);\n"
 )
-out = os.path.join(HERE, "turbo_builtin_pad_layout.inc")
+out = os.path.join(HERE, "..", "models", "turbo_builtin_pad_layout.inc")
+out = os.path.abspath(out)
 open(out, "w", encoding="utf-8", newline="\n").write(cpp)
 print(f"generated {out}: {len(lines)} entries")

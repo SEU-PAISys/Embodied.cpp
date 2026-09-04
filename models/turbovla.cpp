@@ -1164,9 +1164,19 @@ std::unique_ptr<ModelArchBase> turbovla_create(const std::string & mmproj_path,
         return nullptr;
     }
     if (layout_instr < 0) {
-        // GGUF lacks the per-instruction padding layout (older conversions):
-        // fall back to the builtin LIBERO all-4-suite table so quantized
-        // variants keep the exact padding the checkpoint was trained with.
+        // GGUF lacks the per-instruction padding layout. This fallback exists
+        // only for the known legacy LIBERO all-4-suite conversions and must be
+        // enabled explicitly: applying one checkpoint's instruction table to
+        // arbitrary TurboVLA weights would silently change text truncation and
+        // padding behavior.
+        const char * builtin_ok = std::getenv("VLA_TURBOVLA_BUILTIN_PAD_LAYOUT");
+        if (!builtin_ok || builtin_ok[0] == '\0') {
+            std::fprintf(stderr, "vla(turbovla): missing instruction padding metadata; "
+                                 "reconvert with scripts/convert_turbovla_to_gguf.py or set "
+                                 "VLA_TURBOVLA_BUILTIN_PAD_LAYOUT=1 to opt in to the builtin "
+                                 "LIBERO all-4-suite table\n");
+            return nullptr;
+        }
         for (size_t i = 0; i < kTurboBuiltinPadLayoutN; ++i) {
             auto tokens = m->tokenizer.encode(kTurboBuiltinPadLayout[i].text);
             if (tokens.empty()) continue;

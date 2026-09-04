@@ -24,7 +24,8 @@ import gguf
 QTYPES = {"q8_0": gguf.GGMLQuantizationType.Q8_0, "q4_0": gguf.GGMLQuantizationType.Q4_0,
           "q6_k": gguf.GGMLQuantizationType.Q6_K, "q4_k": gguf.GGMLQuantizationType.Q4_K}
 FILE_TYPES = {"q8_0": gguf.LlamaFileType.MOSTLY_Q8_0, "q4_0": gguf.LlamaFileType.MOSTLY_Q4_0,
-              "q6_k": gguf.LlamaFileType.MOSTLY_Q6_K}
+              "q6_k": gguf.LlamaFileType.MOSTLY_Q6_K,
+              "q4_k": gguf.LlamaFileType.MOSTLY_Q4_K_S}
 EXCLUDE = ("token_emb", "pos_emb", "norm", ".bias", ".emb", "conv", "patch_embed",
            "lm_head", "head.", "action_head", "proj_in", "proj_out", "wte", "pe", "text.proj")
 
@@ -53,8 +54,10 @@ def quantize_file(source: Path, output: Path, outtype: str, min_rows: int = 128,
     if not selected:
         raise ValueError("no tensors selected")
     quantizer = None
-    if outtype == "q6_k":
-        # Keep Q8/Q4 usable without torch or a compiled shared library.
+    if outtype in ("q6_k", "q4_k"):
+        # K-quant encoders live in the GGML library; the vendored numpy writer
+        # can only dequantize these types, so route them through the shared
+        # TensorQuantizer (Q8_0/Q4_0 stay on the pure-numpy path).
         from gguf_quantize import TensorQuantizer
         quantizer = TensorQuantizer(outtype, ggml_lib or ROOT / "build/bin/libggml-base.so")
     output.parent.mkdir(parents=True, exist_ok=True)
