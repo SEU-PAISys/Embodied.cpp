@@ -476,6 +476,9 @@ class VlaCppClient:
         self.noise_chunk_size = int(preset.get("noise_chunk_size", 0))
         self.noise_action_dim = int(preset.get("noise_action_dim", 0))
         self._initial_noise_seed = noise_seed
+        # Only an explicit reset(seed) opts the dedicated XR0/X-VLA paths
+        # into episode RNG noise; reset() retains their observation-hash protocol.
+        self._episode_noise_seed: int | None = None
         self._noise_rng: np.random.Generator | None = None
         self.preset_chunk = int(preset.get("chunk", 30))
         self.use_server_tokenizer = bool(preset.get("use_server_tokenizer", False))
@@ -499,6 +502,7 @@ class VlaCppClient:
         self._action_queue.clear()
         self._step = 0
         self._last_inference_profile = None
+        self._episode_noise_seed = noise_seed
         resolved_seed = self._initial_noise_seed if noise_seed is None else noise_seed
         self._noise_rng = (
             np.random.default_rng(resolved_seed) if resolved_seed is not None else None
@@ -777,6 +781,10 @@ class VlaCppClient:
         action_noise = observations.get("action_noise")
         if action_noise is not None:
             noise = np.ascontiguousarray(action_noise, dtype=np.float32).reshape(-1)
+        elif self._episode_noise_seed is not None:
+            noise = generate_action_noise(
+                self._noise_rng, self.preset_chunk, self.max_state_dim
+            ).reshape(-1)
         else:
             seed = _xr0_hash_seed("xvla", state, images_u8, task)
             torch.manual_seed(seed)
@@ -854,6 +862,10 @@ class VlaCppClient:
         action_noise = observations.get("action_noise")
         if action_noise is not None:
             noise = np.ascontiguousarray(action_noise, dtype=np.float32).reshape(-1)
+        elif self._episode_noise_seed is not None:
+            noise = generate_action_noise(
+                self._noise_rng, self.preset_chunk, self.max_state_dim
+            ).reshape(-1)
         else:
             seed = _xr0_hash_seed("libero_all", state, images_u8, language_raw)
             torch.manual_seed(seed)

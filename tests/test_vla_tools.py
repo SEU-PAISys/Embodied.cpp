@@ -20,6 +20,54 @@ def load_script(name):
 
 
 class EvidenceToolTests(unittest.TestCase):
+    def test_xvla_official_predictor_boundary_and_repeatable_noise(self):
+        import torch
+        module = load_script("bench_vla_boundary")
+        seen = []
+
+        class Model(torch.nn.Module):
+            num_actions = 30
+            action_space = SimpleNamespace(dim_action=20)
+
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.zeros(1))
+
+            def generate_actions(self, **inputs):
+                seen.append(inputs)
+                return torch.randn(1, 30, 20, dtype=inputs["proprio"].dtype)
+
+        calls = []
+
+        def processor(**inputs):
+            calls.append(inputs)
+            return dict(input_ids=torch.zeros(1, 50, dtype=torch.long),
+                        image_input=torch.zeros(1, 3, 3, 224, 224),
+                        image_mask=torch.tensor([[True, True, False]]))
+
+        images = np.full((2, 3, 256, 256), .5, np.float32)
+        state = np.arange(8, dtype=np.float32)
+        noise = torch.randn(1, 30, 20, generator=torch.Generator().manual_seed(42)).numpy()
+        predict = module.xvla_predictor(Model(), processor, images, state, "pick", noise, 3, 42)
+        self.assertEqual(calls, [])  # preprocessing is not cached outside timing
+        before_rng = torch.get_rng_state().clone()
+        first, second = predict(), predict()
+        np.testing.assert_array_equal(first, noise[0])
+        np.testing.assert_array_equal(first, second)
+        self.assertTrue(torch.equal(before_rng, torch.get_rng_state()))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["images"][0].shape, (256, 256, 3))
+        self.assertEqual(calls[0]["images"][0].dtype, np.uint8)
+        self.assertEqual(int(calls[0]["images"][0][0, 0, 0]), 128)
+        self.assertEqual(seen[0]["domain_id"].tolist(), [3])
+        self.assertEqual(seen[0]["input_ids"].dtype, torch.long)
+        self.assertEqual(seen[0]["image_mask"].dtype, torch.bool)
+        self.assertEqual(seen[0]["steps"], 10)
+        np.testing.assert_array_equal(seen[0]["proprio"].numpy()[0, :8], state)
+        self.assertEqual(seen[0]["proprio"][0, 8:].count_nonzero(), 0)
+        with self.assertRaisesRegex(ValueError, "fixture noise differs"):
+            module.xvla_predictor(Model(), processor, images, state, "pick", noise + 1, 3, 42)
+
     def test_latency_summary_rejects_invalid_samples(self):
         module = load_script("bench_vla_boundary")
         self.assertEqual(module.summarize([1, 2, 3])["mean"], 2)

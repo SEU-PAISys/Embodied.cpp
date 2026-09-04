@@ -3,7 +3,19 @@
 口径对齐 `eval/SMOLVLA_TECHNICAL_REPORT_ZH.md` §5.4：C++ = LIBERO 闭环 client
 `get_action()`/RPC 逐 environment-step 摊销 wall（eval 日志 "Average inference
 time per step"，全量 log 提取）；Python = 官方评测 episode 总 wall ÷ env steps。
-VRAM = nvidia-smi 进程峰值。**延迟比值要求双侧同机**。
+这两个计时边界并不相同，即使同机也不能直接相除。新补齐的对照见下节，双侧均为
+公共 `get_action()`。本文不把 allocator 显存与 nvidia-smi 进程显存混用。
+
+## V2 复核：同机同边界 TurboVLA 对照
+
+| 实现 | 成功回合 | 环境步数 | 按步数加权 get_action ms/step |
+|---|---:|---:|---:|
+| C++ | 20/20 | 2049 | 2.147 |
+| 官方 Python 模型接入公共闭环 | 20/20 | 2061 | 3.637 |
+
+RTX 4090、同权重 BF16、seed 42、spatial task 0/4 各 10 回合、256px、12 步回放。
+含首次推理和动作队列，不含环境推进；不是 episode 总 wall。有限两任务样本约低 41%，
+不替换 seed 7 主表。来源、逐回合记录、舍入误差见[复核报告](v2_followup_20260903.md#2-补齐-turbovla-同机公共闭环对照)。
 
 ## C++ 闭环 ms/step（4090，全量 log 提取）
 
@@ -21,13 +33,14 @@ f32 常驻 object 4.90 ms/step（100 log）。TurboVLA Q4_K 的 2.24 受失败 e
 
 | 模型 | 数据 | 设备 | 状态 |
 |---|---|---|---|
-| TurboVLA | 64.5 ms/env-step（object，100ep 推算：1807s/28000 步）| **4060 Laptop（WSL）** | ❌ 不同机，需 4090 重跑 |
-| XR0 | official PyTorch 2000ep seed7（成功率有，per-step 待从 log 推算）| 待查 | 待核 |
-| X-VLA | 官方无 LIBERO evaluator | — | 闭环比值不可得，用固定 obs bench 标注 |
+| TurboVLA | 历史 64.5 ms/env-step 为 episode 总 wall；新公共闭环 3.637 ms/step | 历史 4060 Laptop / 新 RTX 4090 | 只对新公共闭环计算比值 |
+| XR0 | 官方 PyTorch 2000ep seed7 产物无时间戳 | — | 不可推算；需重新计时 |
+| X-VLA | 未建立同权重 Python 公共闭环 | — | 比值 Pending；不能混用固定 obs 前向 |
 
 ## 与 SmolVLA 规范的差距清单
 
-1. Python 官方闭环 4090 重跑（TurboVLA 需解决 turbo_git evaluate 依赖；
-   XR0 官方 stack 部署待查；X-VLA 无官方 evaluator——只能固定 obs 标注）。
-2. 三模型 client 的 action-noise seed 派生/resume 校验（SmolVLA PR 机制）未确认。
-3. 报告格式对齐 VALIDATION/TECHNICAL_REPORT（双侧对照段+诚实标注）。
+1. TurboVLA 已补最小同机公共闭环；全套 Python 重跑仍未完成。XR0 耗时需新采集，
+   X-VLA 尚缺匹配权重，不能据“无独立 evaluator”推断无法接公共入口。
+2. XR0/X-VLA opt-in 现已作用于实际请求噪声并有回归测试；默认保持历史协议，
+   新协议全量成功率尚未验收。TurboVLA ACT 没有随机 action-noise 输入。
+3. 原 C++ 聚合行是各自历史批次，并非此新 20 回合对照，不据此跨批次计算比值。

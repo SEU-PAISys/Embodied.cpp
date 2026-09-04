@@ -1,6 +1,39 @@
 # LIBERO Evaluation Reports
 
+All new comparisons follow the project-wide
+[VLA benchmark standard](../../eval/VLA_BENCHMARK_STANDARD.md). The
+[validation ledger](../../eval/THREE_MODEL_VALIDATION.md) keeps published
+original-model references separate from locally reproduced evidence and lists
+the remaining gaps for every VLA runtime.
+
 ## Latest integration validation (2026-09-03)
+
+The [V2 follow-up](v2_followup_20260903.md) and its
+[auditable samples](v2_followup_20260903_evidence.json) supersede conflicting
+handoff summaries: allocator reuse removes the former periodic spikes in the
+tested batches; matched BF16 deployment means are TurboVLA 27.24 vs Python
+28.39 ms and XR0 53.56 vs 143.63 ms. The new shared-loop TurboVLA control is
+20/20 on both sides, with weighted get_action costs of 2.147 vs 3.637 ms/step.
+Historical seed 7 primary tables are retained separately.
+X-VLA's available HF and historical GGUF **differ** (901/902 mapped tensors),
+so its normalized latency and VRAM stay Pending. The earlier 9790 MiB X-VLA
+Python value was an incorrect reuse of XR0's measurement.
+
+The [XR0 Q6_K follow-up](xr0_q6_followup_20260904.md) records the first unified
+Q6 precision result: 69.33 ms and 4476 MiB in the fixed-boundary test, plus a
+paired one-task 10/10 closed-loop gate. It remains partial evidence because the
+strict 0.005 parity gate missed by one value and no full Q6 suite was run.
+
+The [TurboVLA/X-VLA Q6_K follow-up](turbovla_xvla_q6_followup_20260904.md)
+adds same-batch BF16/Q6 latency, unchanged process VRAM, and 80 paired
+closed-loop episodes. TurboVLA Q6 is 30/30 versus BF16 29/30 on three selected
+goal tasks, despite a fixed-fixture maximum action difference of 2.0; X-VLA is
+10/10 on both sides for object task 0. Neither is a full Q6 success sweep.
+
+A [new same-source X-VLA pair](xvla_matched_followup_20260904.md) now has
+902-tensor identity checks and F32/BF16 numerical gates, plus three BF16 timing
+rounds. It shows no consistent BF16 latency advantage or process-memory saving.
+This separate checkpoint does not resolve the missing historical source.
 
 The [takeover report](takeover_20260903.md#7-final-validated-snapshot) and
 [machine-readable evidence](takeover_20260903_evidence.json) integrate the
@@ -99,11 +132,12 @@ standalone `result_<task>.txt` files.
 
 ## Performance evidence
 
-The new XR0/TurboVLA entries use the [2026-09-03 measurements](takeover_20260903.md#7-final-validated-snapshot):
+The new XR0/TurboVLA entries use the [allocator-reuse follow-up](v2_followup_20260903.md):
 100 timed requests plus a separate process-memory phase, matched inputs and
 precision, with raw samples, hashes and commands. They include full CPU-input
-to CPU-action deployment cost, not just server phases. Large C++ latency
-tails remain; these are observed ratios, not stable acceleration guarantees.
+to CPU-action deployment cost, not just server phases. The earlier repeated
+150–300 ms spikes were absent from these batches and the 500-call follow-up;
+these are observed ratios, not guarantees across devices or workloads.
 X-VLA stays **Pending** because the matching historical HF source is absent.
 Its historical Python FP32 query versus C++ round-trip timing is not a valid
 BF16 speedup. The older incompatible measurements below remain excluded.

@@ -4,7 +4,7 @@
   <img src="assets/embodied-cpp-icon.png" alt="embodied.cpp overview" width="100%">
 </p>
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.md)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![arXiv](https://img.shields.io/badge/arXiv-2607.02501-b31b1b.svg)](https://arxiv.org/abs/2607.02501)
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-SEU--PAISys%2FEmbodied.cpp-yellow)](https://huggingface.co/SEU-PAISys/Embodied.cpp)
 <!-- Reserved for future badges:
@@ -159,38 +159,48 @@ We continuously track advances in embodied AI and adapt `Embodied.cpp` to the la
 
 ### 1.2 Performance Acceleration
 
-Reported VLA comparisons are normalized to each model's Python baseline (`1.00`), with **Python → C++ BF16-policy** ratios (see precision details below). Lower inference latency and VRAM are better. **Pending** means a comparable benchmark with auditable evidence is not yet available; it does not mean the runtime is unsupported.
+Reported VLA comparisons are normalized to each model's Python baseline (`1.00`), with **Python → C++ BF16-policy** ratios (see precision details below). Lower inference latency and VRAM are better. **Pending** means a comparable benchmark with auditable evidence is not yet available; it does not mean the runtime is unsupported. The [unified benchmark standard](eval/VLA_BENCHMARK_STANDARD.md) and [evidence ledger](eval/THREE_MODEL_VALIDATION.md) apply to every VLA runtime.
 
 | Model | Inference Latency ↓ | VRAM ↓ |
 |---|---:|---:|
-| **pi0.5** | 1.00 → 0.90 (**10% lower**) |  1.00 → 0.60 (**40% lower**) |
-| **GR00T N1.7** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
-| **HY-VLA** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
-| **[Xiaomi-Robotics-0](docs/results/xr0_libero.md)†** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.90 (**10% lower**) |
-| **[TurboVLA](docs/results/turbovla_libero.md)†** | 1.00 → 1.05 (parity; small model) | 1.00 → 0.95 (**5% lower**) |
-| **[X-VLA](docs/results/xvla_libero.md)** | 1.00 → 0.87 (**13% lower**) | 1.00 → 0.24 (**76% lower**, BF16-resident vs FP32 baseline) |
+| **pi0.5‡** | 1.00 → 0.90 (**10% lower**) |  1.00 → 0.60 (**40% lower**) |
+| **SmolVLA§** | Pending | Pending |
+| **GR00T N1.7‡** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
+| **HY-VLA‡** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
+| **[Xiaomi-Robotics-0](docs/results/xr0_libero.md)†** | 1.00 → 0.37 (**63% lower**) | 1.00 → 0.90 (**10% lower**) |
+| **[TurboVLA](docs/results/turbovla_libero.md)†** | 1.00 → 0.96 (**4% lower**, observed batch) | 1.00 → 0.95 (**5% lower**) |
+| **[X-VLA](docs/results/xvla_libero.md)** | Pending | Pending |
 
-† The [2026-09-03 evidence](docs/results/takeover_20260903.md#7-final-validated-snapshot)
+‡ Published normalized results from the original Embodied.cpp paper. The
+absolute raw samples and complete rerun manifests are not stored in this
+repository, so these are not fresh measurements from this branch.
+
+§ SmolVLA has functional and closed-loop parity evidence, but its recorded C++
+and official latency scopes differ and the GGUF precision is not explicitly
+identified. Its same-method process-memory sample is retained in the
+[validation report](eval/SMOLVLA_VALIDATION.md), not promoted into this BF16 table.
+
+† The [audited post-fix evidence](docs/results/v2_followup_20260903.md)
 uses one RTX 4090, five warmups and 100 timed calls from raw CPU observations
 to complete CPU actions; C++ additionally includes its public ZMQ transport.
 Process VRAM is sampled in a separate untimed phase. XR0 uses a BF16 policy
 and F16 vision on **both** sides, with `VLA_XR0_CLIP_GPU=1`; TurboVLA uses BF16.
 These are observed mean deployment/API ratios, not isolated kernel speedups
-or cross-model rankings. The 2026-09-03 evening re-run (post allocator-lifetime
-fix, `outputs/bench_fixed_20260903/`) removes the periodic 150-300 ms spikes:
-TurboVLA p99 223->27 ms, XR0 258->67 ms, X-VLA 248->94 ms. TurboVLA is a small
-model where symmetric client-side observation/transport costs dominate, so its
-end-to-end ratio sits near parity while its server-side model phase is 13 ms.
-X-VLA's Python baseline is FP32 (the official default); its C++ rows are BF16
-resident, which also explains the VRAM column. LIBERO success rates after the
-mask/padding/rendering fixes: TurboVLA 95.50/94.75/90.75 (BF16/Q8_0/Q4_0,
-1200 episodes) and 88.0% Q4_K (goal-heavy quantization sensitivity); X-VLA
-96.75% BF16 with object-suite probes Q8_0 98% / Q4_0 99% / Q4_K 100% /
-F32-resident 99%. See std/p50/p95/p99 and raw
-samples in the report before drawing a stable performance conclusion.
+or cross-model rankings. Reusing the model-owned graph allocator reduced the
+BF16 p99 values from 223/258/248 ms to 28/64/94 ms for TurboVLA/XR0/X-VLA
+in the matched 100-call batches. Their mean C++ latencies were 27.24/53.56/84.41 ms;
+the matched Python baselines for TurboVLA/XR0 were 28.39/143.63 ms.
+All ten configurations in the allocator-reuse audit retained byte-identical+actions before and after that optimization. This statement does not cover the+later Q6_K derivatives, whose numerical differences are reported separately.
+Separate 500-call runs also lacked the former periodic spikes, but finite runs
+do not guarantee tail-free execution under every workload. TurboVLA's small
+observed margin is not a universal speedup claim. See std/p50/p95/p99, timing
+boundaries and the separate 20-episode shared-loop comparison in the report.
 
-X-VLA remains Pending because its matching historical HF weights were not
-found; the available HF snapshot differs. Its old FP32 Python query versus
+X-VLA's historical-normalized row remains Pending because its matching HF
+weights were not found. A [new same-source comparison](docs/results/xvla_matched_followup_20260904.md)
+passes fixed-input parity, but repeated BF16 timings show no consistent speedup
+and process VRAM is slightly higher; it does not replace the archived checkpoint.
+Its old FP32 Python query versus
 C++ round-trip numbers are not a valid BF16 comparison. See the shared
 [measurement requirements](docs/results/README.md#performance-evidence).
 
@@ -201,7 +211,7 @@ For World Models, C++ substantially reduces VRAM while keeping the success rate 
 | **Cosmos3** | 21.84 GB → 19.49 GB (**10.8% lower**) |
 | **LingBot-VA** | 24.75 GB → 16.44 GB (**33.6% lower**) |
 
-> **Highlights:** The reported comparisons above show C++ BF16 VLA inference latency reductions up to **52%** and VRAM reductions up to **40%**; pending rows are excluded. For World Models, reported VRAM reductions reach **33.6%**, with success-rate changes limited to **2 percentage points**.
+> **Highlights:** The reported comparisons above show observed C++ BF16-policy VLA latency reductions up to **63%** and VRAM reductions up to **40%**; pending rows are excluded. For World Models, reported VRAM reductions reach **33.6%**, with success-rate changes limited to **2 percentage points**.
 
 ### 1.3 Runtime Roadmap
 - This project is still under active construction 🚧
@@ -243,8 +253,8 @@ checkpoints with the scripts in [`scripts/`](scripts/README.md):
 - `Cosmos3-Nano`: [RoboLab WAM GGUF with the Wan VAE encoder](scripts/README.md#cosmos3-nano)
 - `SmolVLA`: LeRobot policy GGUF plus SigLIP mmproj GGUF
 - `Xiaomi-Robotics-0`: Qwen3-VL-4B backbone + DiT flow-matching action head, converted with `scripts/convert_xr0_to_gguf.py`; quantize with `scripts/quantize_xr0_gguf.py` (q8_0/q6_k/q5_k/q4_k)
-- `TurboVLA`: DINOv3 ViT + BERT + bidirectional cross-attn fusion + ACT decoder, converted with `scripts/convert_turbovla_to_gguf.py`
-- `X-VLA`: Florence-2 DaViT + BART encoder + domain-conditioned flow head, converted with `scripts/convert_xvla_to_gguf.py`
+- `TurboVLA`: DINOv3 ViT + BERT + bidirectional cross-attn fusion + ACT decoder, converted with `scripts/convert_turbovla_to_gguf.py`; create q8_0/q6_k/q4_0 storage variants with `scripts/quantize_vla_gguf.py`
+- `X-VLA`: Florence-2 DaViT + BART encoder + domain-conditioned flow head, converted with `scripts/convert_xvla_to_gguf.py`; create q8_0/q6_k/q4_0 storage variants with `scripts/quantize_vla_gguf.py`
 
 Recommended local layout:
 
@@ -570,8 +580,8 @@ checkpoint or a custom quantization.
 | LingBot-VA | [Model artifacts and Wan quantization](scripts/README.md#lingbot-va) |
 | Cosmos3-Nano | [RoboLab full_w8 GGUF](scripts/README.md#cosmos3-nano) |
 | Xiaomi-Robotics-0 | [GGUF conversion and k-quantization](scripts/README.md#xiaomi-robotics-0) |
-| TurboVLA | [Self-contained GGUF](scripts/README.md#turbovla) |
-| X-VLA | [Policy GGUF](scripts/README.md#x-vla) |
+| TurboVLA | [Self-contained GGUF and storage quantization](scripts/README.md#turbovla) |
+| X-VLA | [Policy GGUF and storage quantization](scripts/README.md#x-vla) |
 
 See [`scripts/README.md`](scripts/README.md) for prerequisites, commands,
 expected outputs, and post-conversion checks.
@@ -614,7 +624,7 @@ If you find `Embodied.cpp` useful in your research, please consider citing:
 
 ## 8. ⚖️ License
 
-This project is released under the [Apache License 2.0](LICENSE.md). Third-party dependencies, model checkpoints, datasets, and upstream reference implementations are distributed under their own licenses.
+This project is released under the [Apache License 2.0](LICENSE). Third-party dependencies, model checkpoints, datasets, and upstream reference implementations are distributed under their own licenses.
 
 ## 9. 🙏 Acknowledgements
 

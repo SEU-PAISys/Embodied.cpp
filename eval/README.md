@@ -2,8 +2,13 @@
 
 The original vla.cpp multi-dataset evaluation harness has been trimmed to the
 datasets and model families maintained in embodied.cpp. Current evaluation code
-targets LIBERO and RoboTwin with `pi05`, `groot_n1`, `hy_vla`, `lingbot_va`,
-`xr0`, `turbovla`, and `xvla` paths.
+targets LIBERO and RoboTwin with `pi05`, `smolvla`, `groot_n1`, `hy_vla`,
+`lingbot_va`, `xr0`, `turbovla`, and `xvla` paths.
+
+Use the [unified VLA benchmark standard](VLA_BENCHMARK_STANDARD.md) for timing,
+memory, success-rate, precision, and evidence requirements. The
+[validation ledger](THREE_MODEL_VALIDATION.md) shows which claims are published
+references, locally reproduced comparisons, integration evidence, or Pending.
 
 The adapter boundary now owns simulator-specific observation parsing:
 

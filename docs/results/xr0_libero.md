@@ -4,6 +4,15 @@ Runtime: Embodied.cpp C++/GGML · Reference: official Xiaomi-Robotics-0
 PyTorch stack (`deploy/server.py` + `eval_libero/main.py`,
 paper avg **98.7%**).
 
+The [V2 post-allocator benchmark](v2_followup_20260903.md) records matched
+CPU-input-to-CPU-actions means of C++ 53.56 vs Python 143.63 ms, with
+std/p50/p95/p99 and the same BF16 policy/F16 vision precision on both sides.
+This fixed-input performance evidence is separate from historical success rates.
+The [2026-09-04 Q6_K follow-up](xr0_q6_followup_20260904.md) adds a matched
+100-call memory/performance result and a paired 10-episode task gate. Q6_K saves
+49.27% process VRAM versus BF16 but is 29.44% slower in the fixed-boundary run;
+it misses the strict 0.005 parity tolerance by one of 960 values.
+
 ## 2026-09-03 server audit
 
 Recounted existing seed-42 results (not a new 6000-episode rerun):
@@ -57,7 +66,8 @@ timing boundaries and Python 10-step output against C++ 30-step output.
 4. Numeric parity of the runtime is max-abs-error 3.3e-4 vs PyTorch in
    bf16; k-quant checkpoints are produced by
    `scripts/quantize_xr0_gguf.py` (q8_0/q6_k/q5_k/q4_k; big-matmul-only,
-   norms and embeddings stay high-precision).
+   norms and embeddings stay high-precision). Q6_K is separately documented
+   because it does not pass the BF16 parity threshold.
 
 ## Per-task success rates (official PyTorch run, seed 7)
 

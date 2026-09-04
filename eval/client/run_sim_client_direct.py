@@ -538,6 +538,7 @@ def run_one_task(
         "average_step_ms": avg_inf_ms,
         "seed": args.seed,
         "noise_seed": args.noise_seed,
+        "derive_episode_noise": args.derive_episode_noise,
         "n_action_steps": args.n_action_steps,
         "episodes": episode_results,
         "observation_width": args.observation_width,
@@ -627,7 +628,8 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=42,
         help="Seed for the LIBERO env reset/init-state rollout (default: 42).")
     parser.add_argument("--noise-seed", type=int, default=None,
-        help="Deterministic SmolVLA action-noise seed. Each task/episode gets a stable derived seed.")
+        help="Non-negative action-noise seed. SmolVLA derives per-episode seeds by default; "
+             "XR0/X-VLA require --derive-episode-noise for episode derivation.")
 
     parser.add_argument("--observation-size", type=int, default=None,
         help="Set both raw camera dimensions; cannot be combined with explicit "
@@ -712,6 +714,14 @@ def parse_args(argv=None):
         parser.set_defaults(**conf_defaults)
 
     args = parser.parse_args(argv)
+    if args.noise_seed is not None and args.noise_seed < 0:
+        parser.error("--noise-seed must be non-negative")
+    if args.derive_episode_noise:
+        if args.noise_seed is None:
+            parser.error("--derive-episode-noise requires --noise-seed")
+        if args.arch not in ("smolvla", "xr0", "xvla"):
+            parser.error("--derive-episode-noise is implemented for smolvla/xr0/xvla only; "
+                         "TurboVLA has no action-noise input and LingBot uses its own noise flags")
     cli = sys.argv[1:] if argv is None else argv
     dimensions = ("--observation-width", "--observation-height")
     explicit_dimensions = {arg.split("=", 1)[0] for arg in cli} & set(dimensions)

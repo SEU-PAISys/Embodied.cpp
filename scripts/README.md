@@ -14,9 +14,9 @@ package is available:
 ```
 
 Conversion scripts require a Python environment with `torch`, `numpy`, and
-`safetensors`. Quantization scripts additionally load `libggml-base.so` from a
-configured build. Use the library from the same build configuration that will
-run the resulting model.
+`safetensors`. Q8_0/Q4_0 storage quantization uses vendored `gguf-py` directly;
+Q6_K additionally loads `libggml-base.so` from a configured build. Use the
+library from the same build configuration that will run the resulting model.
 
 Each converter accepts `--help`. Run its `--dry-run` mode first where available
 to validate paths and tensor mappings before writing a large GGUF file.
@@ -32,8 +32,8 @@ to validate paths and tensor mappings before writing a large GGUF file.
 | Cosmos3-Nano | `convert_cosmos3_full_w8_to_gguf.py` | Use the upstream full_w8 bundle |
 | SmolVLA | `convert_smolvla_to_gguf.py`, `convert_smolvla_mmproj_to_gguf.py` | Output type selected during conversion |
 | Xiaomi-Robotics-0 | `convert_xr0_to_gguf.py` | `quantize_xr0_gguf.py` (q8_0/q6_k/q5_k/q4_k) |
-| TurboVLA | `convert_turbovla_to_gguf.py` | — |
-| X-VLA | `convert_xvla_to_gguf.py` | — |
+| TurboVLA | `convert_turbovla_to_gguf.py` | `quantize_vla_gguf.py` (q8_0/q6_k/q4_0; storage quantization) |
+| X-VLA | `convert_xvla_to_gguf.py` | `quantize_vla_gguf.py` (q8_0/q6_k/q4_0; storage quantization) |
 
 Place final artifacts under the `checkpoints/` layout shown in the top-level
 README, then use the matching build and evaluation configuration.
@@ -255,7 +255,7 @@ per-domain matrix layout; see the [controlled repair evidence](../docs/results/t
 ## Fixed-input deployment timing
 
 `scripts/bench_vla_boundary.py` supports all three public C++ model clients and
-the validated TurboVLA/XR0 Python model references. It consumes a saved fixture (two native
+the TurboVLA/XR0 references plus the official X-VLA Python model. It consumes a saved fixture (two native
 256px CHW views, raw 8-D state, instruction; XR0 also needs matched seeded
 30×32 noise, X-VLA fixed 30×20 noise), performs warmup, and records raw samples
 plus mean/std/p50/p95/p99. TurboVLA and X-VLA images must be float values in [0, 1].
@@ -269,8 +269,15 @@ XR0 30×32, five flow steps), including preprocessing and device transfers.
 For the deployed XR0 F16 mmproj, use `--xr0-vision-dtype f16` on the Python
 reference while keeping its text/action policy BF16; record both precisions.
 C++ X-VLA uses 30×20 output, 224px preprocessing and `--domain-id 3` by default.
-Its Python baseline is deliberately unavailable here until a matching source
-snapshot is verified; an unrelated HF snapshot is not a valid denominator.
+Its Python path uses the official HF model and processor. Use only a GGUF
+converted from that exact HF snapshot: an unrelated historical GGUF is not a
+valid denominator. `--xvla-precision bf16|f32` selects Python precision; select
+the matching C++ residency separately (`VLA_XVLA_F32_WEIGHTS=1` for F32).
+The fixture's explicit 30×20 noise must match `--xvla-noise-seed` (default 42)
+on the Python device/dtype; a mismatch is rejected before timing. The original
+historical X-VLA checkpoint comparison remains Pending even when a new pair
+is benchmarked. The Python branch requires the official snapshot's optional
+import dependencies as well as compatible Transformers/PyTorch versions.
 C++ additionally includes ZMQ transport, so label results as deployment/API
 latency, not GPU-only speedup. Do not benchmark while another evaluation is
 running. JSON and final actions use new output files; original results are
@@ -288,7 +295,11 @@ python scripts/quantize_vla_gguf.py \
 
 The script uses vendored `gguf-py` codecs (and its Python dependencies),
 preserves metadata array types, and refuses existing output paths. Supported
-outputs are `q8_0` and `q4_0`; inputs must be original F32/BF16 GGUFs.
+outputs are `q8_0`, `q4_0`, and `q6_k`; inputs must be original F32/BF16 GGUFs.
+Q6_K reuses the shared GGML quantizer and additionally requires PyTorch and a
+built `libggml-base.so` (override its path with `--ggml-lib`). It selects matrix
+rows divisible by 256; ineligible tensors retain their original type. Q8_0 and
+Q4_0 do not require PyTorch or that shared library.
 Both runtimes dequantize these files to **BF16 residency by default**.
 Smaller files alone do not establish native low-bit inference or VRAM savings.
 

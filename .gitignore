@@ -1,6 +1,5 @@
 
 !.env.example
-!docs/results/
 # Build
 # CMake
 # Compiled objects / libraries / generated binaries
@@ -116,6 +115,7 @@ datasets/
 debug/
 dist/
 docs/*
+!docs/results/
 eval/client/python_*.py
 eval/client/replay_lingbot_npz_request.py
 eval/conf/*.local.yaml

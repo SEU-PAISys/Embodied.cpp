@@ -11,8 +11,10 @@ storage runs cover **object only**, at 98/100 and 99/100, and still use BF16
 residency. These are not fresh full-suite quantized-compute sweeps.
 
 A separate fresh object run of the repaired source with actual F32 residency
-completed **100/100**, with zero skipped episodes (independently re-verified at
-**99/100** with `VLA_XVLA_F32_WEIGHTS=1` on the main GGUF, seed 42). The former file labelled
+completed **100/100**, with zero skipped episodes. A separate historical-GGUF
+run reached **99/100** with `VLA_XVLA_F32_WEIGHTS=1`, seed 42; the source audit
+shows that these are different checkpoints, not same-weight replications.
+The former file labelled
 `f32` had two incorrectly ordered per-domain matrices and was actually run
 with BF16 residency; its 0/100 score did not establish an F32 precision failure.
 Conversion now preserves F32 values; a regression checks both matrix transposes.
@@ -22,6 +24,16 @@ WSL project/cache or server project/cache. The current server HF snapshot is
 a different set of weights. Consequently **Python-normalized performance
 remains Pending**. See the [controlled repair and evidence](takeover_20260903.md).
 The following seed-7 archive is retained separately, not relabelled as this run.
+
+The [Q6_K follow-up](turbovla_xvla_q6_followup_20260904.md) compares the
+historical GGUF against its own Q6 storage derivative: object task 0 is 10/10
+on both sides, and GPU memory is unchanged. This does not resolve the absent
+historical HF baseline.
+
+A separately approved [new HF/GGUF pair](xvla_matched_followup_20260904.md)
+now passes F32 and BF16 fixed-input Python/C++ parity and has repeated matched
+deployment measurements. It does not show a consistent BF16 latency advantage
+or a BF16 process-memory reduction, and is not a full success-rate rerun.
 
 ## Archived protocol (seed 7)
 

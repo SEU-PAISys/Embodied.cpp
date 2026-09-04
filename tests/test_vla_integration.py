@@ -48,6 +48,7 @@ def fake_client(arch):
     client.use_server_tokenizer = preset.get("use_server_tokenizer", False)
     client._step = client._inference_sequence = 0
     client._initial_noise_seed = client._noise_rng = None
+    client._episode_noise_seed = None
     client.noise_chunk_size = client.noise_action_dim = 0
     client._last_response = client._last_inference_profile = None
     client._action_queue = deque(maxlen=client.n_action_steps)
@@ -100,8 +101,8 @@ class ConfigTests(unittest.TestCase):
                 rollout.assert_called_once()
                 profiler.return_value.write.assert_called_once_with(complete=True)
 
-    def test_render_overrides_and_old_default(self):
-        self.assertEqual(runner.parse_args(["--arch", "pi05"]).observation_width, 360)
+    def test_render_overrides_and_native_default(self):
+        self.assertEqual(runner.parse_args(["--arch", "pi05"]).observation_width, 256)
         args = runner.parse_args(["--conf", "libero_xr0_eval.yaml", "--observation-size", "320"])
         self.assertEqual((args.observation_width, args.observation_height), (320, 320))
         # XR0 requires a square camera; a one-sided override that makes the
@@ -134,6 +135,20 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(args.num_steps_wait, 7)
         self.assertEqual(args.vla_addr, "tcp://127.0.0.1:5556")
         self.assertEqual(args.observation_width, 256)
+
+    def test_episode_noise_requires_seed_and_supported_policy(self):
+        self.assertFalse(runner.parse_args(["--arch", "xr0"]).derive_episode_noise)
+        for flags in (["--derive-episode-noise"], ["--noise-seed", "-1"],
+                      ["--arch", "turbovla", "--derive-episode-noise", "--noise-seed", "7"],
+                      ["--arch", "pi05", "--derive-episode-noise", "--noise-seed", "7"],
+                      ["--arch", "groot_n1", "--derive-episode-noise", "--noise-seed", "7"],
+                      ["--arch", "lingbot_va", "--derive-episode-noise", "--noise-seed", "7"]):
+            with self.subTest(flags=flags), contextlib.redirect_stderr(io.StringIO()), \
+                 self.assertRaises(SystemExit):
+                runner.parse_args(flags)
+        for arch in ("xr0", "xvla", "smolvla"):
+            args = runner.parse_args(["--arch", arch, "--derive-episode-noise", "--noise-seed", "7"])
+            self.assertTrue(args.derive_episode_noise)
 
     def test_cli_task_overrides_yaml_suite(self):
         # Explicit --task / --libero-suite on the CLI must override the YAML
@@ -237,7 +252,8 @@ class AdapterCompatibilityTests(unittest.TestCase):
 class EpisodeAccountingTests(unittest.TestCase):
     """Aborted (terminated mid-step) episodes must be recorded exactly once."""
 
-    def _run_task(self, abort_flags, arch="xvla", real_profiler=False, no_video=False):
+    def _run_task(self, abort_flags, arch="xvla", real_profiler=False, no_video=False,
+                  derive_noise=False):
         """Run the real run_one_task against a fake env; flags say which abort."""
         client, _obs = fake_client(arch)
         workdir = tempfile.mkdtemp()
@@ -248,6 +264,8 @@ class EpisodeAccountingTests(unittest.TestCase):
             argv += ["--observation-size", "256"]
         if no_video:
             argv += ["--no-video"]
+        if derive_noise:
+            argv += ["--noise-seed", "7", "--derive-episode-noise"]
         args = runner.parse_args(argv)
         if real_profiler:
             profiler = LiberoSuiteProfiler(
@@ -289,6 +307,17 @@ class EpisodeAccountingTests(unittest.TestCase):
         summary = (Path(workdir) / arch / "libero_object" / "task_0" / "summary.txt").read_text(
             encoding="utf-8")
         return result, profiler, summary
+
+    def test_episode_noise_protocol_is_recorded(self):
+        result, _, _ = self._run_task([False, False], derive_noise=True)
+        self.assertTrue(result["derive_episode_noise"])
+        self.assertEqual([e["noise_seed"] for e in result["episodes"]], [
+            runner.derive_episode_noise_seed(7, "libero_object", 0, episode)
+            for episode in range(2)
+        ])
+        legacy, _, _ = self._run_task([False])
+        self.assertFalse(legacy["derive_episode_noise"])
+        self.assertIsNone(legacy["episodes"][0]["noise_seed"])
 
     def test_no_video_preserves_episode_metrics(self):
         result, _, summary = self._run_task([False], no_video=True)
@@ -615,6 +644,48 @@ class SafetyScriptTests(unittest.TestCase):
 
 
 class ClientTests(unittest.TestCase):
+    def test_dedicated_episode_seed_controls_actual_request_noise(self):
+        for arch in ("xr0", "xvla"):
+            with self.subTest(arch=arch):
+                client, obs = fake_client(arch)
+                explicit = obs.pop("action_noise")
+                request = client.pb.PredictRequest()
+
+                def payload():
+                    request.noise.clear()
+                    client._predict_chunk(obs)
+                    return np.array(request.noise, dtype=np.float32)
+
+                client.reset(noise_seed=7)
+                first, second = payload(), payload()
+                self.assertEqual(first.size, client.preset_chunk * client.max_state_dim)
+                self.assertFalse(np.array_equal(first, second))
+                client.reset(noise_seed=7)
+                np.testing.assert_array_equal(payload(), first)
+                np.testing.assert_array_equal(payload(), second)
+                client.reset(noise_seed=8)
+                self.assertFalse(np.array_equal(payload(), first))
+                obs["action_noise"] = explicit
+                np.testing.assert_array_equal(payload(), explicit.reshape(-1))
+
+    def test_dedicated_default_reset_retains_observation_hash_noise(self):
+        import torch
+        for arch in ("xr0", "xvla"):
+            with self.subTest(arch=arch):
+                client, obs = fake_client(arch)
+                obs.pop("action_noise")
+                client._initial_noise_seed = 7
+                client.reset(noise_seed=99)
+                client.reset()  # opt-in must not leak into the next legacy episode
+                with patch("client.vla_cpp_client._xr0_hash_seed", return_value=123) as hashed:
+                    client._predict_chunk(obs)
+                hashed.assert_called_once()
+                expected = torch.randn(
+                    1, client.preset_chunk, client.max_state_dim,
+                    generator=torch.Generator().manual_seed(123),
+                ).numpy().reshape(-1)
+                np.testing.assert_array_equal(client.pb.PredictRequest().noise, expected)
+
     def test_success_profiles_and_queue_replay_for_all_three_models(self):
         for arch in ("xr0", "turbovla", "xvla"):
             with self.subTest(arch=arch):

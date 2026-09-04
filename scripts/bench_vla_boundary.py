@@ -30,6 +30,44 @@ def summarize(samples):
                 **{f"p{p}": float(np.percentile(values, p)) for p in (50, 95, 99)})
 
 
+def xvla_predictor(model, processor, images, state, task, noise, domain_id, seed):
+    """Official generate_actions, with a verified repeatable RNG input.
+
+    Preprocessing and all transfers stay inside predict; model/processor loading
+    and RNG validation stay outside timing. No upstream code is patched.
+    """
+    import torch
+    parameter = next(model.parameters())
+    device, dtype = parameter.device, parameter.dtype
+    generator = torch.Generator(device=device).manual_seed(seed)
+    rng_state = generator.get_state()
+    expected = torch.randn((1, 30, 20), generator=generator, device=device, dtype=dtype)
+    if not np.array_equal(noise, expected.float().cpu().numpy()):
+        raise ValueError("X-VLA fixture noise differs from official seed/device/dtype noise")
+    if model.num_actions != 30 or model.action_space.dim_action != 20:
+        raise ValueError("X-VLA benchmark requires 30x20 model output")
+
+    def predict():
+        raw = [np.ascontiguousarray((im.transpose(1, 2, 0).clip(0, 1) * 255).round(),
+                                   dtype=np.uint8) for im in images]
+        inputs = processor(images=raw, language_instruction=task)
+        proprio = np.zeros((1, 20), np.float32)
+        proprio[0, :8] = state
+        inputs.update(proprio=torch.from_numpy(proprio),
+                      domain_id=torch.tensor([domain_id], dtype=torch.long))
+        inputs = {key: value.to(device=device, dtype=dtype if value.is_floating_point() else value.dtype)
+                  for key, value in inputs.items()}
+        devices = [device] if device.type == "cuda" else []
+        with torch.inference_mode(), torch.random.fork_rng(devices=devices):
+            if device.type == "cuda":
+                torch.cuda.set_rng_state(rng_state, device)
+            else:
+                torch.set_rng_state(rng_state)
+            return model.generate_actions(**inputs, steps=10)[0].float().cpu().numpy().copy()
+
+    return predict
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arch", choices=("turbovla", "xr0", "xvla"), required=True)
@@ -49,6 +87,10 @@ def main():
     parser.add_argument("--norm-gguf", type=Path)
     parser.add_argument("--checkpoint-key", default="model_state_dict")
     parser.add_argument("--domain-id", type=int, default=3)
+    parser.add_argument("--xvla-precision", choices=("bf16", "f32"), default="bf16",
+                        help="Python X-VLA only; C++ precision is selected by its server environment")
+    parser.add_argument("--xvla-noise-seed", type=int, default=42,
+                        help="Python X-VLA requires a fixture matching this seed/device/dtype")
     parser.add_argument("--xr0-vision-dtype", choices=("bf16", "f16"), default="bf16",
                         help="Python XR0 only: select vision precision independently of the BF16 policy.")
     args = parser.parse_args()
@@ -58,10 +100,10 @@ def main():
         parser.error("output already exists; choose a fresh run")
     if args.arch in ("xr0", "xvla") and args.hf_dir is None:
         parser.error("xr0/xvla requires --hf-dir (matching tokenizer assets)")
-    if args.arch == "xvla" and args.backend == "python":
-        parser.error("X-VLA Python baseline needs a verified matching source snapshot; not implemented here")
     if args.domain_id < 0:
         parser.error("domain-id must be nonnegative")
+    if args.xvla_noise_seed < 0:
+        parser.error("xvla-noise-seed must be nonnegative")
     if args.backend == "python" and args.arch == "turbovla" and any(
         getattr(args, k) is None for k in ("checkpoint", "official_root", "bert_path", "norm_gguf")
     ):
@@ -109,6 +151,17 @@ def main():
         model, _ = load_reference_model(args)
         client = TurboReferenceClient(model, load_norm_arrays(args.norm_gguf))
         predict = lambda: client._predict_chunk(obs)
+    elif args.arch == "xvla":
+        from transformers import AutoImageProcessor, AutoModel, AutoProcessor
+        dtype = torch.bfloat16 if args.xvla_precision == "bf16" else torch.float32
+        model = AutoModel.from_pretrained(args.hf_dir, trust_remote_code=True,
+            torch_dtype=dtype, attn_implementation="eager").to(device="cuda", dtype=dtype).eval()
+        processor = AutoProcessor.from_pretrained(args.hf_dir, trust_remote_code=True)
+        # Pin PIL preprocessing without forcing a slow BART tokenizer: some
+        # valid snapshots contain tokenizer.json but no separate merges.txt.
+        processor.image_processor = AutoImageProcessor.from_pretrained(args.hf_dir, use_fast=False)
+        predict = xvla_predictor(model, processor, images, state, task, noise,
+                                 args.domain_id, args.xvla_noise_seed)
     else:
         from transformers import AutoModel, AutoProcessor
         from client.vla_cpp_client import _xr0_prompt
@@ -178,7 +231,9 @@ def main():
         fixture_sha256=hashlib.sha256(args.fixture.read_bytes()).hexdigest(),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         torch=torch.__version__, transformers=transformers.__version__, numpy=np.__version__,
-        python_precision=({"policy":"bf16", "vision":args.xr0_vision_dtype if args.arch == "xr0" else "bf16"}
+        python_precision=({"policy":args.xvla_precision if args.arch == "xvla" else "bf16",
+                           "vision":args.xr0_vision_dtype if args.arch == "xr0" else
+                           args.xvla_precision if args.arch == "xvla" else "bf16"}
                           if args.backend == "python" else None),
         server_samples=server_samples, vram_samples_mib=sampler.samples_mib, vram_sources=sources,
         gpu_uuids=sorted(set(sampler.gpu_uuids)),

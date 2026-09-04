@@ -2,7 +2,8 @@
 
 > 对标 `eval/SMOLVLA_TECHNICAL_REPORT_ZH.md` 的结构，汇总 XR0（Xiaomi-Robotics-0）、
 > TurboVLA、X-VLA 三个 runtime 的移植验证结果。数据来源为本分支既有评测产物
-> （2026-08-18 ~ 09-03），未做新的重跑；各表注明测量日期与协议。
+> （2026-08-18 ~ 09-03）。V2 复核补入同机 20 回合对照，并撤回错误的 X-VLA 权重/性能结论；
+> [复核报告](v2_followup_20260903.md)与[原始证据摘要](v2_followup_20260903_evidence.json)为更正依据。
 
 ## 一、项目概述
 
@@ -31,16 +32,17 @@ wall-clock 与显存样本。所有评测在本地/服务器 RTX 4090 或标注�
 | X-VLA | 2toINF/X-VLA-Libero | xvla-libero.gguf | F32 存储 902 张量 |
 
 TurboVLA 单一 joint checkpoint 跨四 suite 复用（官方 PyTorch 参考同法）。
-X-VLA 历史 HF 快照与主 GGUF 的张量级一致性经 Codex 审计（872/902 直接一致，
-差异集中于 30 个 bias 的读取伪影与 2 个 per-domain 转置，见 §X-VLA）。
+X-VLA 现存 HF 与历史主 GGUF **权重不同**：生产转换映射下 902 个张量仅 1 个完全一致，
+901 个不同，独立 F32 原始字节抽查也不同。此前“872/902 一致，其余为读取伪影”的说法撤回。
 
 ### 3.2 转换过程没有替换模型
 
 - XR0：616/616 主模型张量 + 316/316 vision 张量与 HF 快照逐字节一致
   （`xr0-source-audit-bytes.json`，修正 uint16 视角误报后的正确结果）。
 - TurboVLA：上传 `object.pth` 与本地哈希一致；与 GGUF 的 669 张量全匹配。
-- X-VLA：转换器 f32 路径存在 30 个 bias NaN 缺陷（已定位，重转产物废弃）；
-  正确 F32 配置为主 GGUF + `VLA_XVLA_F32_WEIGHTS=1`。
+- X-VLA：本次源权重与转换映射检查均为有限数值，**未复现**“30 个 NaN bias”转换器缺陷。
+  可疑旧产物不恢复使用，但其原因不能据误读认定。F32 计算需要
+  `VLA_XVLA_F32_WEIGHTS=1` 并核对服务器实际日志，不能只看文件名。
 
 ### 3.3 运行时架构分发
 
@@ -53,7 +55,8 @@ Q4_K 转换经 215 张量逐一离线验证，最大误差 0.067）。
 复用仓库通用基础设施（proto/ZMQ、LIBERO client、GGUF 转换链、parity 工具）；
 模型专用实现（DaViT/BERT 融合、flow-matching unrolled 图、CLIP+F16 vision）
 在各 `models/*.cpp`。CUDA graph allocator 生命周期已统一提升至模型对象
-（修复逐请求释放导致的 150–300 ms 周期尖峰：turbo p99 223→27 ms、XR0 258→67、xvla 248→94）。
+（100 次同输入批次的 p99：TurboVLA 223→28 ms、XR0 258→64、X-VLA 248→94）。
+另有 500 请求持续运行验证，不将有限样本解释为任意负载下永久无长尾。
 
 ## 五、端到端流程完整性
 
@@ -64,14 +67,19 @@ Q4_K 转换经 215 张量逐一离线验证，最大误差 0.067）。
 
 ### 5.2 LIBERO 成功率（C++ 与官方 PyTorch 双侧）
 
-**XR0**（50 ep/task，2000 total/档；官方 PyTorch seed7）：
+**XR0 历史归档**（50 ep/task，2000 total/档；官方 PyTorch seed 7，归档 C++ 种子未记录）：
 
 | Suite | 官方 PyTorch | C++ bf16 | C++ q8_0 | C++ q4_k |
 |---|---:|---:|---:|---:|
 | object | 99.4% | 99.4% | 99.4% | 100.0% |
 | spatial | 99.0% | 98.2% | 98.6% | 98.8% |
 | goal | 97.4% | 98.4% | 98.4% | 98.0% |
-| **总** | — | **98.05%** | 97.90% | 97.85% |
+| libero_10 | 97.2% | 97.8% | 96.2% | 97.4% |
+| **总** | **98.25%** | **98.45%** | 98.15% | 98.55% |
+
+另一次 seed 42 产物复点数：BF16 1961/2000（98.05%）、Q8_0 1958/2000（97.90%）、
+Q4_K 1957/2000（97.85%）。此前本表将历史逐 suite 行与新批次总数混在一起，现已分开；
+逐项数据见 [XR0 报告](xr0_libero.md)。
 
 **TurboVLA**（10 ep/task，400 total/档；seed7 批次，256px）：
 
@@ -114,23 +122,22 @@ TurboVLA 满长指令（SEP@20）mask 缺陷修复后，短/满长指令 parity 
 
 ### 5.4 C++ 与官方 PyTorch 的 wall-clock 样本和显存
 
-口径：C++ = LIBERO 闭环 client 逐 environment-step 摊销 wall（日志
-"Average inference time per step"，全量 log 提取）；Python 官方 = 评测 episode
-总 wall ÷ env steps（TurboVLA 为 8/23 本地 4060 Laptop 样本，**与 4090 C++ 不同机，
-比值仅作量级参考**）。VRAM 为 nvidia-smi 进程峰值（双侧同口径）。
+严格区分公共 `get_action()`、episode 总 wall、固定观测前向与完整输入/输出测速。
+前两种即使除以同样的步数也不等价；同机只是必要条件，不是充分条件。
 
-| 模型 | C++ 闭环 ms/step（bf16/q8/q4）| Python 官方 ms/step | 进程显存 C++ / Python |
-|---|---|---|---|
-| XR0 | 17.83 / 15.07 / 14.88（Q4_K）| 官方 2000ep 产物无时间戳记录，per-step 需重跑评测计时 | 8824 / 9790 MiB |
-| TurboVLA | 5.75 / 5.82 / 2.24*（Q4_K）| 64.5（4060 Laptop，**不同机**）| 880 / 待测 |
-| X-VLA | f32 常驻 4.90（object）；bf16 全量 log 待归档提取 | 官方无 LIBERO evaluator（固定 obs：115.9 ms/forward，4090 同机）| 2370 / 9790 MiB |
+新补 TurboVLA 公共闭环：RTX 4090、同权重 BF16、seed 42、spatial task 0/4 各 10 回合，
+双方均 20/20 成功。相同 `get_action()` 边界下，按环境步数加权 C++ **2.147**、
+Python **3.637 ms/step**，约低 41%。这是两任务修复版对照，不替换 seed 7 主表。
+XR0 历史官方 2000 回合缺时间戳，无法推算 per-step；X-VLA 缺匹配权重对照。
 
-*TurboVLA Q4_K 的 2.24 受失败 episode 早停偏置，不与 bf16 直接比较。
-X-VLA Python 无官方 LIBERO evaluator，其延迟采用固定观测前向样本并如实标注。
-
-端到端部署口径（固定观测 → 动作块，100 calls，4090 同机，p99 干净）：
-XR0 69.5 ms（0.48）/ TurboVLA 29.8 ms（1.05，小模型对称开销主导，模型层 13 ms）/
-X-VLA 101.2 ms（0.87）。详见 `docs/results/three_model_final_matrix.md`。
+固定原始 CPU 观测 → 完整 CPU 动作块（5 warmup + 100 calls，同卡 RTX 4090）：
+XR0 双侧 BF16 policy/F16 vision：C++ **53.56**、Python **143.63 ms**；
+TurboVLA 双侧 BF16：C++ **27.24**、Python **28.39 ms**。
+进程采样峰值分别 8824/9790、880/924 MiB。
+X-VLA C++ BF16 为 **84.41 ms / 2370 MiB**，Python 比值 **Pending**。
+115.9 ms 旧 Python 短测只有 20 次前向且不含预处理/读回，日志的 3.437 GiB
+为 allocator 峰值，不能把 XR0 的 9790 MiB 套给它。
+完整 std/p50/p95/p99、抽样限制与原始来源见[复核报告](v2_followup_20260903.md)。
 
 ### 5.5 构建与测试
 
@@ -149,8 +156,8 @@ parity 回归（SEP@10/13/18/20 mask 用例）、真实 symlink 安装测试全�
 
 1. XR0 官方 Python 闭环 per-step：官方 2000ep 产物仅含 rollout 视频/JSON，**无时间戳
    记录**，per-step 不可推算——如需该口径需重跑官方评测并显式计时（后续工作）。
-2. TurboVLA 官方 Python 的 4090 同机闭环样本（需 turbo_git evaluate 依赖链）。
-3. ~~三模型 client 的 action-noise seed 派生~~ **已完成**：client 新增
-   `--derive-episode-noise` opt-in（对齐 SmolVLA per-episode 派生机制；默认关闭以保持
-   既有矩阵的 noise 序列可比性）。
+2. TurboVLA 同机公共闭环最小对照已补，完整 Python 四 suite 重跑未补。
+3. XR0/X-VLA 的 `--derive-episode-noise` 现已真正控制请求噪声并有回归测试，
+   默认关闭保留历史序列；新协议全量成功率未重跑。TurboVLA ACT 无 action-noise 输入，
+   LingBot 使用独立噪声选项，均不接受此开关。
 4. TurboVLA Q4 档 goal 敏感：如需 4bit 可用，方向为 imatrix/敏感层高保真量化（后续工作）。

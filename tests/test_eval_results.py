@@ -67,7 +67,7 @@ class ResultTests(unittest.TestCase):
     def test_profile_result_counts_requests_not_queued_actions(self):
         profiler = LiberoSuiteProfiler(
             output_path=Path("unused.json"), model_label="test", backbone_label="test",
-            arch="xvla", suite="libero_object", replay_chunk_size=30, expected_episodes=1,
+            arch="xvla", suite="libero_object", replay_chunk_size=10, expected_episodes=1,
             server_address="tcp://localhost:5555", server_pid=1,
             vram_interval_s=0.25, warmup_requests=1,
         )
@@ -76,14 +76,19 @@ class ResultTests(unittest.TestCase):
                 "sequence": sequence, "server_total_ms": sequence * 10,
                 "model_chunk_size": 30,
             })
-            for _ in range(30):
+            for _ in range(10):
                 profiler.capture_inference(client)
                 profiler.record_step(1)
         profiler.episodes.append({"success": True, "skipped": False})
         result = profiler.result(complete=True)
         self.assertEqual(result["inf_ms"]["n"], 1)
         self.assertEqual(result["inf_ms"]["mean"], 20)
-        self.assertEqual(result["step_ms"]["n"], 30)
+        self.assertEqual(result["inf_ms"]["samples"], [20.0])
+        self.assertEqual(result["inf_ms"]["std"], 0.0)
+        self.assertEqual(result["inf_ms"]["p99"], 20.0)
+        self.assertEqual(result["step_ms"]["n"], 10)
+        self.assertEqual(result["generated_action_step_ms"]["mean"], 0.667)
+        self.assertEqual(result["model_step_ms"]["mean"], 2.0)
         self.assertFalse(result["table_ready"])  # no GPU memory measurement
 
     def test_turbovla_total_and_graph_window_stay_distinct(self):
@@ -108,14 +113,37 @@ class ResultTests(unittest.TestCase):
         result = profiler.result(complete=True)
         inf = result["inf_ms"]
         self.assertEqual(inf["mean"], 11.0)                    # from latency_ms_total
+        self.assertEqual(inf["samples"], [10.0, 12.0])
+        self.assertEqual(inf["std"], 1.0)
+        self.assertEqual(inf["p50"], 11.0)
+        self.assertEqual(inf["p95"], 11.9)
+        self.assertEqual(inf["p99"], 11.98)
         self.assertEqual(inf["action_inference_mean"], 8.5)    # from latency_ms_inference
+        self.assertEqual(inf["phases"]["action_inference_ms"]["samples"], [8.0, 9.0])
         self.assertNotEqual(inf["mean"], inf["action_inference_mean"])
         self.assertIsNone(inf["vision_mean"])                  # unmeasured -> null, not 0.0
+        self.assertEqual(inf["phases"]["vision_ms"]["samples"], [])
         self.assertIsNone(inf["prefill_mean"])
         self.assertIsNone(inf["denoise_mean"])
+        self.assertEqual(result["generated_action_step_ms"]["samples"], [10 / 12, 1.0])
+        self.assertEqual(result["generated_action_step_ms"]["mean"], 0.917)
         self.assertIn("latency_ms_total", inf["definition"])
         self.assertIn("latency_ms_inference", inf["definition"])
         self.assertIn("not an action-head-only", inf["definition"])
+
+    def test_profile_does_not_promote_a_warmup_to_a_measurement(self):
+        profiler = LiberoSuiteProfiler(
+            output_path=Path("unused.json"), model_label="test", backbone_label="test",
+            arch="xr0", suite="libero_object", replay_chunk_size=10,
+            expected_episodes=1, server_address="tcp://localhost:5555", server_pid=1,
+            vram_interval_s=0.25, warmup_requests=1,
+        )
+        profiler.record_inference(30.0, model_chunk_size=30)
+        result = profiler.result(complete=True)
+        self.assertEqual(result["inf_ms"]["n"], 0)
+        self.assertEqual(result["inf_ms"]["samples"], [])
+        self.assertEqual(result["generated_action_step_ms"]["samples"], [])
+        self.assertFalse(result["table_ready"])
 
 
 if __name__ == "__main__":
