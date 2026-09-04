@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import gguf
 
 QTYPES = {"q8_0": gguf.GGMLQuantizationType.Q8_0, "q4_0": gguf.GGMLQuantizationType.Q4_0,
-          "q6_k": gguf.GGMLQuantizationType.Q6_K}
+          "q6_k": gguf.GGMLQuantizationType.Q6_K, "q4_k": gguf.GGMLQuantizationType.Q4_K}
 FILE_TYPES = {"q8_0": gguf.LlamaFileType.MOSTLY_Q8_0, "q4_0": gguf.LlamaFileType.MOSTLY_Q4_0,
               "q6_k": gguf.LlamaFileType.MOSTLY_Q6_K}
 EXCLUDE = ("token_emb", "pos_emb", "norm", ".bias", ".emb", "conv", "patch_embed",
@@ -69,7 +69,9 @@ def quantize_file(source: Path, output: Path, outtype: str, min_rows: int = 128,
                     continue
                 subtype = field.types[1] if len(field.types) > 1 else None
                 writer.add_key_value(key, field.contents(), field.types[0], subtype)
-            writer.add_file_type(FILE_TYPES[outtype])
+            file_type = FILE_TYPES.get(outtype)
+            if file_type is not None:
+                writer.add_file_type(file_type)
             for tensor in reader.tensors:
                 if tensor.name in selected:
                     values = gguf.dequantize(tensor.data, tensor.tensor_type)
