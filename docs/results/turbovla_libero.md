@@ -36,19 +36,21 @@ Q6 storage still loads as BF16 and is not a native 6-bit inference result.
 After the attention-mask / padding-metadata / rendering fixes, a full 1200-episode
 re-run with per-variant GGUF files reproduced the reference within ~1 pp:
 
-| Suite | BF16 file | Q8_0 file | Q4_0 file | Q4_K file |
-|---|---:|---:|---:|---:|
-| spatial | 98/100 | 97/100 | 96/100 | 100/100 |
-| object | 99/100 | 100/100 | 97/100 | 98/100 |
-| goal | 97/100 | 97/100 | 83/100 | 68/100 |
-| libero_10 | 88/100 | 85/100 | 87/100 | 86/100 |
-| **total** | **382/400 (95.50%)** | **379/400 (94.75%)** | **363/400 (90.75%)** | **352/400 (88.00%)** |
+| Suite | BF16 file | Q8_0 file | Q4_0 file | Q4_K file | Q6_K file |
+|---|---:|---:|---:|---:|---:|
+| spatial | 98/100 | 97/100 | 96/100 | 100/100 | 96/100 |
+| object | 99/100 | 100/100 | 97/100 | 98/100 | 100/100 |
+| goal | 97/100 | 97/100 | 83/100 | 86/100 | 98/100 |
+| libero_10 | 88/100 | 85/100 | 87/100 | 86/100 | 85/100 |
+| **total** | **382/400 (95.50%)** | **379/400 (94.75%)** | **363/400 (90.75%)** | **370/400 (92.50%)** | **379/400 (94.75%)** |
 
-Q4_K post-handoff: all 215 quantized tensors verified against BF16 offline
-(runtime kernel, max err 0.067 — conversion is clean); the goal-suite loss is
-genuine 4-bit sensitivity on longer "turn on ... and put ..." instructions
-(action sign flips, not load defects). **Q8_0 remains the recommended quantized
-configuration; Q4_K is not recommended for TurboVLA.**
+The goal-suite losses recorded on 09-03 (Q4_K 68%, Q6_K 69%) were caused by the
+same missing per-instruction padding metadata as the BF16 goal regression, not
+by quantization. With the builtin padding-layout fallback
+(`models/turbo_builtin_pad_layout.inc`) every variant's goal suite recovers
+(97/97/83/86/98). Quantization-accuracy ordering is now monotonic in bit width:
+Q8_0 and Q6_K are statistically identical to BF16 and are the recommended
+quantized configurations; Q4_0 and Q4_K carry a bounded goal/q4 cost.
 
 These Q8_0/Q4_0 files are dequantized to **BF16 residency**; they do not imply
 native low-bit execution or lower runtime VRAM. Q4_0 has a material goal-suite
