@@ -1170,7 +1170,8 @@ std::unique_ptr<ModelArchBase> turbovla_create(const std::string & mmproj_path,
         // arbitrary TurboVLA weights would silently change text truncation and
         // padding behavior.
         const char * builtin_ok = std::getenv("VLA_TURBOVLA_BUILTIN_PAD_LAYOUT");
-        if (!builtin_ok || builtin_ok[0] == '\0') {
+        const bool opt_in = builtin_ok != nullptr && std::strcmp(builtin_ok, "1") == 0;
+        if (!opt_in) {
             std::fprintf(stderr, "vla(turbovla): missing instruction padding metadata; "
                                  "reconvert with scripts/convert_turbovla_to_gguf.py or set "
                                  "VLA_TURBOVLA_BUILTIN_PAD_LAYOUT=1 to opt in to the builtin "
@@ -1179,8 +1180,16 @@ std::unique_ptr<ModelArchBase> turbovla_create(const std::string & mmproj_path,
         }
         for (size_t i = 0; i < kTurboBuiltinPadLayoutN; ++i) {
             auto tokens = m->tokenizer.encode(kTurboBuiltinPadLayout[i].text);
-            if (tokens.empty()) continue;
-            m->text_padding_lengths.emplace(std::move(tokens), kTurboBuiltinPadLayout[i].length);
+            const int64_t length = kTurboBuiltinPadLayout[i].length;
+            if (tokens.empty() || length < 3 || length > m->text_len) {
+                std::fprintf(stderr, "vla(turbovla): invalid builtin instruction padding length\n");
+                return nullptr;
+            }
+            auto inserted = m->text_padding_lengths.emplace(std::move(tokens), length);
+            if (!inserted.second && inserted.first->second != length) {
+                std::fprintf(stderr, "vla(turbovla): conflicting tokenized instruction lengths\n");
+                return nullptr;
+            }
         }
         std::fprintf(stderr, "vla(turbovla): instruction padding layouts (builtin) = %zu\n",
                      m->text_padding_lengths.size());

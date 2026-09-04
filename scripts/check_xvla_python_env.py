@@ -67,14 +67,28 @@ def main() -> int:
         print(f"  AutoModel.load: FAIL ({exc})")
         failures.append("model_load")
 
-    print("[4/4] denoise equivalence artifact present")
+    print("[4/4] denoise equivalence artifact content")
+    import json  # noqa: PLC0415
     import os  # noqa: PLC0415
 
     ev = "/home/xuling/yangzhixiao/xvla_denoise_equiv.json"
-    if os.path.exists(ev):
-        print(f"  {ev}: OK")
-    else:
+    try:
+        d = json.loads(open(ev).read())
+        errs = [d.get("max_abs_error"), d.get("mean_abs_error")]
+        if None in errs:
+            raise ValueError("missing error fields")
+        if not d.get("finite"):
+            raise ValueError("non-finite output recorded")
+        if list(d.get("shape", [])) != [30, 20]:
+            raise ValueError(f"unexpected shape {d.get('shape')}")
+        if float(errs[0]) > 0.01:
+            raise ValueError(f"max_abs_error {errs[0]} exceeds 0.01")
+        print(f"  {ev}: OK (max {errs[0]:.6g}, mean {errs[1]:.6g}, shape 30x20)")
+    except FileNotFoundError:
         print(f"  {ev}: MISSING (run scripts/verify_xvla_denoise_equiv.py)")
+        failures.append("denoise_evidence")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  {ev}: INVALID ({exc})")
         failures.append("denoise_evidence")
 
     if failures:
