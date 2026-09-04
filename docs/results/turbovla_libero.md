@@ -33,8 +33,11 @@ Q6 storage still loads as BF16 and is not a native 6-bit inference result.
 
 ### Post-fix re-validation (seed 42, per-variant GGUF files, 256 px)
 
-After the attention-mask / padding-metadata / rendering fixes, a full 1200-episode
-re-run with per-variant GGUF files reproduced the reference within ~1 pp:
+After the attention-mask / padding-metadata / rendering fixes, the three
+original variants were re-run over 1200 episodes and, after the builtin
+padding-layout fallback landed, all five variants' goal suites were re-run
+again (goal rows below use those corrected numbers; per-variant totals are
+400 episodes each, 2000 across the five variants):
 
 | Suite | BF16 file | Q8_0 file | Q4_0 file | Q4_K file | Q6_K file |
 |---|---:|---:|---:|---:|---:|
@@ -49,8 +52,11 @@ same missing per-instruction padding metadata as the BF16 goal regression, not
 by quantization. With the builtin padding-layout fallback
 (`models/turbo_builtin_pad_layout.inc`) every variant's goal suite recovers
 (97/97/83/86/98). Quantization-accuracy ordering is now monotonic in bit width:
-Q8_0 and Q6_K are statistically identical to BF16 and are the recommended
-quantized configurations; Q4_0 and Q4_K carry a bounded goal/q4 cost.
+Q8_0 and Q6_K show no detectable difference against BF16 in this sample
+(goal 97 vs 98; a paired exact test on the corrected-layout Q6 run gives
+p = 0.424, which means the difference was not resolved, not that the
+variants are equivalent) and are the recommended quantized configurations;
+Q4_0 and Q4_K carry a bounded goal/q4 cost.
 
 These Q8_0/Q4_0 files are dequantized to **BF16 residency**; they do not imply
 native low-bit execution or lower runtime VRAM. Q4_0 has a material goal-suite
