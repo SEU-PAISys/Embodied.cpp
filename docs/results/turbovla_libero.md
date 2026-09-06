@@ -95,6 +95,9 @@ reference. The authoritative baseline is the official 97.7% average.
 1. C++ bf16 reaches **96.25%**, within ~1 pp of both the local PyTorch
    sweep and the official paper average; q8_0 is statistically identical
    (**96.50%**) and is the recommended quantized configuration.
+   (Phrasing kept from the original seed-7 run; the paired exact test on the
+   corrected-layout comparison is reported in the post-fix section above and
+   should be read as "difference not resolved", not as proof of equivalence.)
 2. q4_k loses ~10 pp concentrated in goal/object; not recommended for
    this model.
 3. The residual gap vs the references concentrates in libero_10
