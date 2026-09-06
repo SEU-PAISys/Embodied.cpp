@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import io
 from pathlib import Path
 import sys
@@ -159,6 +160,124 @@ class ResultTests(unittest.TestCase):
         self.assertEqual(result["inf_ms"]["samples"], [])
         self.assertEqual(result["generated_action_step_ms"]["samples"], [])
         self.assertFalse(result["table_ready"])
+
+
+class FullMatrixGateTests(unittest.TestCase):
+    """Suite-coverage gate for published full-matrix runs (the 394/400
+    lesson: spatial_t3 duplicated and 10_t3 missing still summed to a
+    plausible line count). Duplicates raise in aggregate(); the gate adds
+    missing/unexpected tasks and unexpected suites as hard failures."""
+
+    @staticmethod
+    def _bucket(suites=("spatial", "object", "goal", "10"), tasks=range(10)):
+        return {"xvla": {"run:official-f32": {
+            suite: {task: {"success": 1, "total": 10, "rate": 100.0,
+                           "skipped": 0, "latency_ms": 5.0,
+                           "source": f"x/{suite}/task_{task}"}
+                    for task in tasks}
+            for suite in suites}}}
+
+    def test_complete_unique_set_passes(self):
+        self.assertTrue(summary.validate_full_matrix(self._bucket()))
+
+    def test_missing_task_fails(self):
+        bucket = self._bucket(tasks=range(9))
+        with self.assertRaisesRegex(ValueError, "missing task ids \\[9\\]"):
+            summary.validate_full_matrix(bucket)
+
+    def test_unexpected_task_fails(self):
+        bucket = self._bucket(tasks=range(11))
+        with self.assertRaisesRegex(ValueError, "unexpected task ids \\[10\\]"):
+            summary.validate_full_matrix(bucket)
+
+    def test_unexpected_suite_fails(self):
+        bucket = self._bucket(suites=("spatial", "object", "goal", "10", "90"))
+        with self.assertRaisesRegex(ValueError, "unexpected suite '90'"):
+            summary.validate_full_matrix(bucket)
+
+    def test_gate_reports_every_problem_bucket(self):
+        buckets = self._bucket(tasks=range(8))
+        buckets["xvla"]["run:bf16"] = {"spatial": {0: buckets["xvla"]["run:official-f32"]["spatial"][0]}}
+        with self.assertRaises(ValueError) as ctx:
+            summary.validate_full_matrix(buckets)
+        text = str(ctx.exception)
+        self.assertIn("run:official-f32", text)
+        self.assertIn("run:bf16", text)
+
+
+class RunEpisodeGateTests(unittest.TestCase):
+    """Per-episode release gate (runbook P3): task-dir completeness alone must
+    not pass; every planned episode needs a terminal state and consistent
+    summary counts."""
+
+    @staticmethod
+    def _make_run(tmp, *, suites=("spatial",), episodes=10, successes=8,
+                  counted=None, skipped=0, with_summary=True, eps_ids=None,
+                  arch="xvla"):
+        root = Path(tmp) / "run"
+        for suite in suites:
+            for t in range(10):
+                td = root / suite / arch / f"libero_{suite}" / f"task_{t}"
+                td.mkdir(parents=True)
+                c = episodes if counted is None else counted
+                ids = list(range(episodes)) if eps_ids is None else eps_ids
+                eps = [{"episode": i, "noise_seed": 7, "success": i < successes,
+                        "skipped": False, "environment_steps": 5,
+                        "average_step_ms": 1.0} for i in ids]
+                (td / "result.json").write_text(json.dumps({
+                    "episodes": eps, "episodes_counted": c,
+                    "episodes_requested": episodes, "skipped": skipped,
+                    "successes": min(successes, c)}), encoding="utf-8")
+                if with_summary:
+                    (td / "summary.txt").write_text(
+                        f"Success rate: 80.00%  ({min(successes, c)}/{c})", encoding="utf-8")
+        return root
+
+    def test_complete_run_passes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(summary.validate_run_episodes(
+                self._make_run(tmp), suites=("spatial",)))
+
+    def test_missing_result_json_fails(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp)
+            (root / "spatial" / "xvla" / "libero_spatial" / "task_0" / "result.json").unlink()
+            with self.assertRaisesRegex(ValueError, "result.json missing"):
+                summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_single_episode_run_fails(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp, eps_ids=[0], counted=1, successes=1)
+            with self.assertRaisesRegex(ValueError, "episode ids"):
+                summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_all_aborted_fails(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp, counted=0, skipped=10, successes=0)
+            with self.assertRaisesRegex(ValueError, "incomplete sweep"):
+                summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_summary_json_contradiction_fails(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp)
+            td = root / "spatial" / "xvla" / "libero_spatial" / "task_3"
+            td.joinpath("summary.txt").write_text("Success rate: 100.00%  (10/10)", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "contradicts result.json"):
+                summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_missing_task_dir_fails(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp)
+            import shutil
+            shutil.rmtree(root / "spatial" / "xvla" / "libero_spatial" / "task_9")
+            with self.assertRaisesRegex(ValueError, "task dirs"):
+                summary.validate_run_episodes(root, suites=("spatial",))
 
 
 if __name__ == "__main__":

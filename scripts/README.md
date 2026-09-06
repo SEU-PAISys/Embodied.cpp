@@ -307,3 +307,33 @@ Confirm that the generated files are in the expected `checkpoints/` directory,
 then load them with the matching server from the top-level README. For a
 simulator-level check, use the configuration in `eval/conf/` for the target
 model and benchmark.
+
+## X-VLA checkpoint provenance (2026-09-05)
+
+The X-VLA baseline for all current work is the official release, not the
+previously used server snapshot (`3f16a4b6…`, quarantined as an
+unknown-origin package — see `docs/results/xvla_checkpoint_gate_a_20260905.md`):
+
+- Source: Hugging Face `2toINF/X-VLA-Libero` (revision `129e7146`,
+  accessed 2026-09-05), `model.safetensors` SHA-256
+  `260cc58869125b826e93bcaa60bca3ea37bcc7aaf893d368a991ca14fde9f0c8`
+  (official claim: 98.1% LIBERO; local official-protocol control 10/10).
+- Conversion to GGUF (F32 storage, ~3.5 GB, both precisions served from this
+  one file: default BF16 residency, `VLA_XVLA_F32_WEIGHTS=1` for F32):
+
+  ```bash
+  python scripts/convert_xvla_to_gguf.py \
+    --hf-dir <official_libero_dir> \
+    --output xvla-libero-official.gguf
+  # GGUF SHA-256 2c828fe612c76db99ebf0fe66d1baec7ffcfcea0be904721dcad415b22e8d9b3
+  ```
+
+- Quantized variants derive from that GGUF with `quantize_vla_gguf.py`
+  (`--outtype q8_0|q6_k|q4_0|q4_k`); SHA-256 values are recorded in the
+  phase-2 manifest under `/tmp/xvla_gatea/phase2/manifest.json`.
+- Weights are not committed; the repo carries this provenance record only.
+  The GGUF is regenerable from the HF source with the command above.
+- The evaluation protocol for matched Python/C++ runs is
+  `--seed 42 --noise-seed 42 --derive-episode-noise` (identical
+  episode-derived noise on both sides; per-request `noise_checksum` in the
+  run records must match across sides).

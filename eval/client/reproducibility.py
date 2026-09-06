@@ -31,3 +31,10 @@ def generate_action_noise(
     return np.ascontiguousarray(
         rng.standard_normal((chunk_size, action_dim), dtype=np.float32)
     )
+
+
+def noise_checksum(noise: np.ndarray) -> str:
+    """Stable short fingerprint of the exact noise payload sent to a model."""
+    return hashlib.sha256(
+        np.ascontiguousarray(noise, dtype=np.float32).tobytes()
+    ).hexdigest()[:16]

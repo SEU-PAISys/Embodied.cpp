@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from PIL import Image
 import zmq
 
-from client.reproducibility import generate_action_noise
+from client.reproducibility import generate_action_noise, noise_checksum
 import json
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 os.environ.setdefault("LANG", "C.UTF-8")
@@ -502,6 +502,7 @@ class VlaCppClient:
         self._action_queue.clear()
         self._step = 0
         self._last_inference_profile = None
+        self._noise_meta = None
         self._episode_noise_seed = noise_seed
         resolved_seed = self._initial_noise_seed if noise_seed is None else noise_seed
         self._noise_rng = (
@@ -702,6 +703,7 @@ class VlaCppClient:
             "model_chunk_size": int(resp.chunk_size),
             "model_action_dim": int(resp.action_dim),
             "replay_chunk_size": int(self.n_action_steps),
+            **(getattr(self, "_noise_meta", None) or {}),
         }
         return chunk
 
@@ -781,14 +783,22 @@ class VlaCppClient:
         action_noise = observations.get("action_noise")
         if action_noise is not None:
             noise = np.ascontiguousarray(action_noise, dtype=np.float32).reshape(-1)
+            noise_mode = "explicit"
         elif self._episode_noise_seed is not None:
             noise = generate_action_noise(
                 self._noise_rng, self.preset_chunk, self.max_state_dim
             ).reshape(-1)
+            noise_mode = "derived"
         else:
             seed = _xr0_hash_seed("xvla", state, images_u8, task)
             torch.manual_seed(seed)
             noise = torch.randn(1, self.preset_chunk, self.max_state_dim).numpy().reshape(-1)
+            noise_mode = "observation_hash"
+        self._noise_meta = {
+            "noise_mode": noise_mode,
+            "noise_seed": self._episode_noise_seed,
+            "noise_checksum": noise_checksum(noise),
+        }
         req.noise.extend(noise.tolist())
 
         return self._request_chunk(req)
@@ -863,9 +873,16 @@ class VlaCppClient:
         if action_noise is not None:
             noise = np.ascontiguousarray(action_noise, dtype=np.float32).reshape(-1)
         elif self._episode_noise_seed is not None:
-            noise = generate_action_noise(
-                self._noise_rng, self.preset_chunk, self.max_state_dim
-            ).reshape(-1)
+            # XR0 pairing: the model draws its flow start from
+            # torch.manual_seed(seed) on CUDA, so the explicit noise sent to
+            # C++ must come from the same torch channel (CPU fallback keeps
+            # offline tests runnable); numpy generators would diverge.
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            generator = torch.Generator(device=device)
+            generator.manual_seed(self._episode_noise_seed)
+            noise = torch.randn(1, self.preset_chunk, self.max_state_dim,
+                                generator=generator, device=device,
+                                dtype=torch.bfloat16).float().cpu().numpy().reshape(-1)
         else:
             seed = _xr0_hash_seed("libero_all", state, images_u8, language_raw)
             torch.manual_seed(seed)

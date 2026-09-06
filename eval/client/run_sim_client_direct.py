@@ -168,15 +168,25 @@ def build_client(args):
         args.n_action_steps = args.n_action_steps if args.n_action_steps is not None else 1
 
     if args.implementation == "python":
-        if args.arch != "xvla":
-            raise ValueError("--implementation python currently supports xvla only")
-        if not args.hf_dir:
-            raise ValueError("--implementation python requires --hf-dir")
-        from scripts.rollout_xvla_reference import XVLAReferenceClient
-        return LIBEROSimAdapter(XVLAReferenceClient(
-            Path(args.hf_dir), precision=args.xvla_precision,
-            n_action_steps=args.n_action_steps, noise_seed=args.noise_seed,
-        ))
+        if args.arch == "xvla":
+            if not args.hf_dir:
+                raise ValueError("--implementation python requires --hf-dir")
+            from scripts.rollout_xvla_reference import XVLAReferenceClient
+            return LIBEROSimAdapter(XVLAReferenceClient(
+                Path(args.hf_dir), precision=args.xvla_precision,
+                n_action_steps=args.n_action_steps, noise_seed=args.noise_seed,
+            ))
+        if args.arch == "xr0":
+            if not args.hf_dir:
+                raise ValueError("--implementation python requires --hf-dir")
+            from scripts.rollout_xr0_reference import XR0ReferenceClient
+            return LIBEROSimAdapter(XR0ReferenceClient(
+                Path(args.hf_dir), vision_dtype=args.xr0_vision_dtype,
+                policy_precision=args.xr0_policy_precision,
+                n_action_steps=args.n_action_steps, noise_seed=args.noise_seed,
+            ))
+        raise ValueError(
+            f"--implementation python supports xvla and xr0 only, got {args.arch!r}")
 
     default_lerobot_image_keys = ["observation.images.image", "observation.images.image2"]
     lingbot_image_keys = (
@@ -331,6 +341,7 @@ def run_one_task(
             "skipped": aborted,
             "environment_steps": steps,
             "average_step_ms": round(1000 * avg_t, 2),
+            **(first_noise_meta or {}),
         })
 
     if args.arch == "lingbot_va" and args.lingbot_noise_mode == "torch_cuda_seed":
@@ -361,6 +372,7 @@ def run_one_task(
         run_times, step_id = [], 0
         inference_requests: list[dict[str, float | int]] = []
         last_inference_sequence: int | None = None
+        first_noise_meta: dict[str, str | int | None] | None = None
         episode_aborted = False
         done = False
         truncated = False
@@ -499,6 +511,12 @@ def run_one_task(
                             }
                         )
                         last_inference_sequence = sequence
+                        if first_noise_meta is None and \
+                                inference_profile.get("noise_checksum"):
+                            first_noise_meta = {
+                                key: inference_profile[key]
+                                for key in ("noise_mode", "noise_seed", "noise_checksum")
+                            }
                 if profiler is not None:
                     profiler.capture_inference(client)
                     profiler.record_step(1000.0 * action_dt)
@@ -659,6 +677,10 @@ def parse_args(argv=None):
         help="Official Hugging Face checkpoint directory for --implementation python.")
     parser.add_argument("--xvla-precision", choices=("bf16", "f32"), default="bf16",
         help="Official Python X-VLA compute precision.")
+    parser.add_argument("--xr0-vision-dtype", choices=("bf16", "f16"), default="f16",
+        help="Official Python XR0 vision tower dtype (f16 matches the deployed mmproj).")
+    parser.add_argument("--xr0-policy-precision", choices=("bf16", "f32"), default="bf16",
+        help="Official Python XR0 policy-side compute precision (f32 mirrors VLA_XR0_F32_WEIGHTS).")
     parser.add_argument("--vla-addr", type=str, default="tcp://localhost:5555",
         help="ZMQ address of the C++ inference daemon, for example vla-server or vla-server.")
     parser.add_argument("--tokenizer", type=str, default=None,

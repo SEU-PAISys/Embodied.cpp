@@ -196,7 +196,7 @@ class ConfigTests(unittest.TestCase):
             runner.build_client(runner.parse_args([
                 "--arch", "xvla", "--implementation", "python", "--task-id", "0",
             ]))
-        with self.assertRaisesRegex(ValueError, "supports xvla only"):
+        with self.assertRaisesRegex(ValueError, "supports xvla and xr0 only"):
             runner.build_client(runner.parse_args([
                 "--arch", "turbovla", "--implementation", "python", "--hf-dir", "/model",
                 "--task-id", "0",
@@ -697,10 +697,15 @@ class ClientTests(unittest.TestCase):
                 client.reset(noise_seed=7)
                 first, second = payload(), payload()
                 self.assertEqual(first.size, client.preset_chunk * client.max_state_dim)
-                self.assertFalse(np.array_equal(first, second))
+                if arch == "xr0":
+                    # XR0's seed-channel pairing: the model regenerates the
+                    # same flow start for the same seed on every query, so the
+                    # explicit C++ noise must be identical per query too.
+                    np.testing.assert_array_equal(second, first)
+                else:
+                    self.assertFalse(np.array_equal(first, second))
                 client.reset(noise_seed=7)
                 np.testing.assert_array_equal(payload(), first)
-                np.testing.assert_array_equal(payload(), second)
                 client.reset(noise_seed=8)
                 self.assertFalse(np.array_equal(payload(), first))
                 obs["action_noise"] = explicit
@@ -723,6 +728,72 @@ class ClientTests(unittest.TestCase):
                     generator=torch.Generator().manual_seed(123),
                 ).numpy().reshape(-1)
                 np.testing.assert_array_equal(client.pb.PredictRequest().noise, expected)
+
+    def test_xvla_reference_default_reset_uses_observation_hash_noise(self):
+        """The Python reference client must mirror the C++ noise gate: a
+        constructor-time noise_seed never pins the RNG, so a bare reset()
+        (runner no-derive mode) falls through to observation-hash noise."""
+        from scripts.rollout_xvla_reference import XVLAReferenceClient
+        import torch
+        client = XVLAReferenceClient.__new__(XVLAReferenceClient)
+        client._initial_noise_seed = 42
+        client._queue = deque()
+        client._last_inference_profile = None
+        client._inference_sequence = 0
+        client.n_action_steps = 30
+        client.reset(noise_seed=99)
+        client.reset()  # opt-in must not leak into the next legacy episode
+        obs = {"task": "pick up the bowl", "domain_id": 3}
+        images = [np.full((256, 256, 3), 200, dtype=np.uint8),
+                  np.full((256, 256, 3), 100, dtype=np.uint8)]
+        state = np.linspace(-0.5, 0.5, 20, dtype=np.float32)
+        with patch("scripts.rollout_xvla_reference._xr0_hash_seed",
+                   return_value=123) as hashed:
+            noise, mode = client._resolve_noise(obs, images, state, "pick up the bowl")
+        hashed.assert_called_once()
+        self.assertEqual(mode, "observation_hash")
+        expected = torch.randn(
+            (30, 20), generator=torch.Generator(device="cpu").manual_seed(123),
+        ).numpy()
+        np.testing.assert_array_equal(noise, expected)
+
+    def test_xvla_reference_derived_seed_matches_cpp_client_elementwise(self):
+        """Codex gate (2026-09-05): with --derive-episode-noise both sides
+        must consume the same first 30x20 noise payload, element-wise."""
+        from scripts.rollout_xvla_reference import XVLAReferenceClient
+        from client.reproducibility import generate_action_noise as gen
+        cpp, obs_cpp = fake_client("xvla")
+        obs_cpp.pop("action_noise")
+        cpp.reset(noise_seed=7)
+        cpp._predict_chunk(obs_cpp)
+        cpp_noise = np.array(cpp.pb.PredictRequest().noise, dtype=np.float32)
+
+        py = XVLAReferenceClient.__new__(XVLAReferenceClient)
+        py._initial_noise_seed = None
+        py._queue = deque()
+        py._last_inference_profile = None
+        py._inference_sequence = 0
+        py.n_action_steps = 30
+        py.reset(noise_seed=7)
+        obs = {"task": "pick up the bowl", "domain_id": 3}
+        images = [np.zeros((256, 256, 3), dtype=np.uint8) for _ in range(2)]
+        state = np.zeros(20, dtype=np.float32)
+        noise, mode = py._resolve_noise(obs, images, state, "pick up the bowl")
+        self.assertEqual(mode, "derived")
+        np.testing.assert_array_equal(noise.reshape(-1), cpp_noise)
+        np.testing.assert_array_equal(noise, gen(np.random.default_rng(7), 30, 20))
+
+    def test_xvla_reference_profile_reports_noise_metadata(self):
+        client, obs = fake_client("xvla")
+        obs.pop("action_noise")
+        client.reset(noise_seed=11)
+        client._predict_chunk(obs)
+        profile = client.get_last_inference_profile()
+        self.assertEqual(profile["noise_mode"], "derived")
+        self.assertEqual(profile["noise_seed"], 11)
+        from client.reproducibility import noise_checksum
+        sent = np.array(client.pb.PredictRequest().noise, dtype=np.float32)
+        self.assertEqual(profile["noise_checksum"], noise_checksum(sent))
 
     def test_success_profiles_and_queue_replay_for_all_three_models(self):
         for arch in ("xr0", "turbovla", "xvla"):

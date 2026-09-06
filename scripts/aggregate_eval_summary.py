@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import re
 import sys
 from collections import defaultdict
@@ -209,12 +210,117 @@ def to_markdown(data):
     return "\n".join(lines)
 
 
+def validate_full_matrix(buckets, *, suites=("spatial", "object", "goal", "10"),
+                         tasks=tuple(range(10))):
+    """Hard gate for a published full-matrix run: every (model, variant)
+    bucket must contain exactly the expected unique (suite, task) set.
+
+    Duplicates already raise in aggregate(); this adds missing tasks,
+    unexpected tasks, and unexpected suites as hard failures so an
+    incomplete or polluted sweep can never pass silently (the 394/400
+    lesson: spatial_t3 duplicated, 10_t3 missing, line count looked fine).
+    """
+    problems = []
+    for model in sorted(buckets):
+        for variant in sorted(buckets[model]):
+            label = f"{model}/{variant}"
+            found_suites = set(buckets[model][variant])
+            for suite in sorted(found_suites - set(suites)):
+                problems.append(f"{label}: unexpected suite {suite!r} "
+                                f"(tasks {sorted(buckets[model][variant][suite])})")
+            for suite in suites:
+                found = buckets[model][variant].get(suite, {})
+                unexpected = sorted(set(found) - set(tasks))
+                missing = sorted(set(tasks) - set(found))
+                if unexpected:
+                    problems.append(f"{label}/{suite}: unexpected task ids {unexpected}")
+                if missing:
+                    problems.append(f"{label}/{suite}: missing task ids {missing}")
+    if problems:
+        raise ValueError(
+            "full-matrix coverage validation FAILED "
+            f"(expected suites {list(suites)} x tasks {list(tasks)}):\n  "
+            + "\n  ".join(problems))
+    return True
+
+
+def validate_run_episodes(run_dir, *, arch="xvla", suites=("spatial", "object", "goal", "10"),
+                          tasks=tuple(range(10)), episodes=10, require_no_skips=True):
+    """Per-episode release gate for one run directory (runbook P3).
+
+    Layout: <run_dir>/<suite>/<arch>/libero_<suite>/task_<t>/result.json (+summary.txt).
+    Fails unless every task has exactly the planned episode ids, all terminal,
+    counted/planned/skipped relations hold, and summary.txt agrees with
+    result.json. Catches the "40 full-looking task dirs, zero valid episodes"
+    and "1-of-10 episodes" failure modes that key-set validation cannot see.
+    """
+    problems = []
+    seen = set()
+    for suite in suites:
+        suite_dir = Path(run_dir) / suite / arch / f"libero_{suite}"
+        if not suite_dir.is_dir():
+            problems.append(f"{suite}: missing suite directory {suite_dir}")
+            continue
+        task_dirs = sorted(suite_dir.glob("task_*"))
+        ids = sorted(int(d.name.split("_")[1]) for d in task_dirs if d.name.split("_")[1].isdigit())
+        if ids != list(tasks):
+            problems.append(f"{suite}: task dirs {ids} != expected {list(tasks)}")
+        for task_dir in task_dirs:
+            key = (suite, task_dir.name)
+            if key in seen:
+                problems.append(f"{key}: duplicate task directory")
+            seen.add(key)
+            res = task_dir / "result.json"
+            if not res.is_file():
+                problems.append(f"{key}: result.json missing")
+                continue
+            try:
+                data = json.loads(res.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                problems.append(f"{key}: result.json unreadable: {exc}")
+                continue
+            eps = data.get("episodes", [])
+            got_ids = [e.get("episode") for e in eps]
+            if got_ids != list(range(episodes)):
+                problems.append(f"{key}: episode ids {got_ids} != 0..{episodes - 1}")
+                continue
+            for e in eps:
+                if not isinstance(e.get("success"), bool):
+                    problems.append(f"{key} ep{e.get('episode')}: no terminal success state")
+            counted = int(data.get("episodes_counted", -1))
+            requested = int(data.get("episodes_requested", -1))
+            skipped = int(data.get("skipped", -1))
+            successes = int(data.get("successes", -1))
+            if not (0 <= successes <= counted <= requested):
+                problems.append(f"{key}: invalid relations success={successes} "
+                                f"counted={counted} requested={requested}")
+            if counted != requested or (require_no_skips and skipped != 0):
+                problems.append(f"{key}: incomplete sweep counted={counted} "
+                                f"requested={requested} skipped={skipped}")
+            summary = task_dir / "summary.txt"
+            if summary.is_file():
+                m = RATE_RE.search(summary.read_text(encoding="utf-8", errors="replace"))
+                if m and (int(m.group(2)) != successes or int(m.group(3)) != counted):
+                    problems.append(f"{key}: summary {m.group(2)}/{m.group(3)} "
+                                    f"contradicts result.json {successes}/{counted}")
+            else:
+                problems.append(f"{key}: summary.txt missing")
+    if problems:
+        raise ValueError("per-episode coverage validation FAILED:\n  "
+                         + "\n  ".join(problems[:40]))
+    return True
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     default_outputs = os.path.join(here, os.pardir, "outputs")
     ap = argparse.ArgumentParser()
     ap.add_argument("--outputs", default=os.path.normpath(default_outputs))
     ap.add_argument("--out-dir", default=None)
+    ap.add_argument("--require-full-matrix", action="store_true",
+                    help="hard-fail unless every bucket covers exactly the "
+                         "4 LIBERO suites x tasks 0..9 (duplicates, missing, "
+                         "and unexpected entries are all failures)")
     args = ap.parse_args()
 
     out_dir = args.out_dir or os.path.join(here, os.pardir, "docs", "results")
@@ -224,6 +330,8 @@ def main():
     buckets, hits = aggregate(args.outputs)
     if not hits:
         raise SystemExit(f"no summary.txt matched under {args.outputs}")
+    if args.require_full_matrix:
+        validate_full_matrix(buckets)
     data = build(buckets)
 
     jpath = os.path.join(out_dir, "eval_summary.json")

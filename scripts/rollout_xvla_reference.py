@@ -32,7 +32,7 @@ from PIL import Image
 import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
 from adapter.sim.libero import _rotate6d_to_axisangle
 from sim.libero.libero_env import LiberoEnv, TASK_SUITE_MAX_STEPS
-from client.reproducibility import generate_action_noise
+from client.reproducibility import generate_action_noise, noise_checksum
 from client.vla_cpp_client import _xr0_hash_seed
 
 LIBERO_SUITE_ALIASES = {
@@ -101,6 +101,28 @@ class XVLAReferenceClient:
                 self._queue.append(np.ascontiguousarray(row, dtype=np.float32))
         return self._queue.popleft()
 
+    def _resolve_noise(self, observations, images, state, task):
+        """Noise priority mirrors VlaCppClient's X-VLA path: explicit
+        observation noise, then the episode-derived seed passed to reset(),
+        then the observation-hash protocol. A constructor-time noise_seed
+        never pins the RNG on its own (matches the C++ client, which gates
+        on _episode_noise_seed), so a bare reset() in runner no-derive mode
+        uses observation-hash noise on both sides."""
+        explicit_noise = observations.get("action_noise")
+        if explicit_noise is not None:
+            noise = np.ascontiguousarray(explicit_noise, dtype=np.float32)
+            if noise.shape != (30, 20):
+                raise ValueError(f"X-VLA action_noise must be [30,20], got {noise.shape}")
+            return noise, "explicit"
+        if self._episode_noise_seed is not None:
+            return generate_action_noise(self._noise_rng, 30, 20), "derived"
+        hash_images = [np.ascontiguousarray(
+            Image.fromarray(image).resize((224, 224), Image.BICUBIC), dtype=np.uint8
+        ) for image in images]
+        seed = _xr0_hash_seed("xvla", state, hash_images, task)
+        generator = torch.Generator(device="cpu").manual_seed(seed)
+        return torch.randn((30, 20), generator=generator).numpy(), "observation_hash"
+
     def _predict_chunk(self, observations):
         images = []
         for key in ("observation.images.image", "observation.images.image2"):
@@ -120,20 +142,7 @@ class XVLAReferenceClient:
                       domain_id=torch.tensor([domain_id], dtype=torch.long))
         inputs = {key: value.to(self.device, dtype=self.dtype if value.is_floating_point()
                                 else value.dtype) for key, value in inputs.items()}
-        explicit_noise = observations.get("action_noise")
-        if explicit_noise is not None:
-            noise = np.ascontiguousarray(explicit_noise, dtype=np.float32)
-            if noise.shape != (30, 20):
-                raise ValueError(f"X-VLA action_noise must be [30,20], got {noise.shape}")
-        elif self._noise_rng is not None:
-            noise = generate_action_noise(self._noise_rng, 30, 20)
-        else:
-            hash_images = [np.ascontiguousarray(
-                Image.fromarray(image).resize((224, 224), Image.BICUBIC), dtype=np.uint8
-            ) for image in images]
-            seed = _xr0_hash_seed("xvla", state, hash_images, task)
-            generator = torch.Generator(device="cpu").manual_seed(seed)
-            noise = torch.randn((30, 20), generator=generator).numpy()
+        noise, noise_mode = self._resolve_noise(observations, images, state, task)
         x1 = torch.from_numpy(noise[None]).to(self.device, dtype=self.dtype)
 
         if self.device.type == "cuda":
@@ -160,6 +169,8 @@ class XVLAReferenceClient:
             "server_vision_ms": None, "server_prefill_ms": None,
             "server_denoise_ms": None, "model_chunk_size": 30,
             "model_action_dim": 20, "replay_chunk_size": self.n_action_steps,
+            "noise_mode": noise_mode, "noise_seed": self._episode_noise_seed,
+            "noise_checksum": noise_checksum(noise),
         }
         return output
 

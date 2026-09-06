@@ -246,7 +246,9 @@ int main(int argc, char ** argv) {
             zmq::poll(poll, 1, std::chrono::milliseconds(200));
         } catch (const zmq::error_t & e) {
             if (e.num() == EINTR) continue;
-            throw;
+            std::fprintf(stderr, "vla-server: poll error errno=%d (%s); continuing\n",
+                         e.num(), e.what());
+            continue;
         }
         if (!(poll[0].revents & ZMQ_POLLIN)) continue;
 
@@ -256,7 +258,9 @@ int main(int argc, char ** argv) {
             if (!rr) continue;
         } catch (const zmq::error_t & e) {
             if (e.num() == EINTR) continue;
-            throw;
+            std::fprintf(stderr, "vla-server: recv error errno=%d (%s); continuing\n",
+                         e.num(), e.what());
+            continue;
         }
 
         vla::PredictRequest req;
