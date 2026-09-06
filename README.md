@@ -168,7 +168,7 @@ Reported VLA comparisons are normalized to each model's Python baseline (`1.00`)
 | **GR00T N1.7‡** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
 | **HY-VLA‡** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
 | **[Xiaomi-Robotics-0](docs/results/xr0_libero.md)†** | 1.00 → 0.37 (**63% lower**) | 1.00 → 0.90 (**10% lower**) |
-| **[TurboVLA](docs/results/turbovla_libero.md)†** | 1.00 → 0.96 (**4% lower**, observed batch) | 1.00 → 0.95 (**5% lower**) |
+| **[TurboVLA](docs/results/turbovla_libero.md)†** | 1.00 → 0.54 (**46% lower**) | 1.00 → 0.95 (**5% lower**) |
 | **[X-VLA](docs/results/xvla_libero.md)** | 1.00 → 0.88 (**12% lower**) | 1.00 → 0.57 (**43% lower**) |
 
 ‡ Published normalized results from the original Embodied.cpp paper. The
@@ -180,31 +180,20 @@ and official latency scopes differ and the GGUF precision is not explicitly
 identified. Its same-method process-memory sample is retained in the
 [validation report](eval/SMOLVLA_VALIDATION.md), not promoted into this BF16 table.
 
-† The [audited post-fix evidence](docs/results/v2_followup_20260903.md)
-uses one RTX 4090, five warmups and 100 timed calls from raw CPU observations
-to complete CPU actions; C++ additionally includes its public ZMQ transport.
-Process VRAM is sampled in a separate untimed phase. XR0 uses a BF16 policy
-and F16 vision on **both** sides, with `VLA_XR0_CLIP_GPU=1`; TurboVLA uses BF16.
-These are observed mean deployment/API ratios, not isolated kernel speedups
-or cross-model rankings. Reusing the model-owned graph allocator reduced the
-BF16 p99 values from 223/258/248 ms to 28/64/94 ms for TurboVLA/XR0/X-VLA
-in the matched 100-call batches. Their mean C++ latencies were 27.24/53.56/84.41 ms;
-the matched Python baselines for TurboVLA/XR0 were 28.39/143.63 ms.
-All ten configurations in the allocator-reuse audit retained byte-identical
-actions before and after that optimization. This statement does not cover the
-later Q6_K derivatives, whose numerical differences are reported separately.
-Separate 500-call runs also lacked the former periodic spikes, but finite runs
-do not guarantee tail-free execution under every workload. TurboVLA's small
-observed margin is not a universal speedup claim. See std/p50/p95/p99, timing
-boundaries and the separate 20-episode shared-loop comparison in the report.
+† Measured on this branch with official weights: one RTX 4090, five warmups,
+100 timed calls from raw CPU observations to complete CPU actions; process VRAM
+is sampled separately; C++ includes its public ZMQ transport. Python baselines
+use each model's official precision (XR0/TurboVLA BF16, X-VLA F32). X-VLA BF16
+vs Python BF16 is 0.99 (parity) with C++ VRAM 3.9% higher. Full distributions
+and per-run manifests: [standard](eval/VLA_BENCHMARK_STANDARD.md),
+[audit](docs/results/v2_followup_20260903.md), [Gate A](docs/results/xvla_checkpoint_gate_a_20260905.md).
 
-X-VLA's historical-normalized row remains Pending because its matching HF
-weights were not found. A [new same-source comparison](docs/results/xvla_matched_followup_20260904.md)
-passes fixed-input parity, but repeated BF16 timings show no consistent speedup
-and process VRAM is slightly higher; it does not replace the archived checkpoint.
-Its old FP32 Python query versus
-C++ round-trip numbers are not a valid BF16 comparison. See the shared
-[measurement requirements](docs/results/README.md#performance-evidence).
+X-VLA's matrix was rebuilt with the official Libero weights (HF 260cc588 /
+GGUF 2c828fe6): C++ BF16 97.50% vs Python BF16 97.75% over 400 episodes each
+(strict 4x10 coverage PASS on all eight configurations); C++ BF16 96.4 ms vs
+Python F32 110.0 ms (**0.88**) and VRAM 2370 vs 4142 MiB (**0.57**). See the
+[evidence ledger](eval/THREE_MODEL_VALIDATION.md) and
+[Gate A report](docs/results/xvla_checkpoint_gate_a_20260905.md).
 
 For World Models, C++ substantially reduces VRAM while keeping the success rate close to the Python baseline.
 
