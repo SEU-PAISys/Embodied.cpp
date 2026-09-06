@@ -159,27 +159,16 @@ We continuously track advances in embodied AI and adapt `Embodied.cpp` to the la
 
 ### 1.2 Performance Acceleration
 
-Reported VLA comparisons are normalized to each model's Python baseline (`1.00`), with **Python → C++ BF16-policy** ratios (see precision details below). Lower inference latency and VRAM are better. **Pending** means a comparable benchmark with auditable evidence is not yet available; it does not mean the runtime is unsupported. The [unified benchmark standard](eval/VLA_BENCHMARK_STANDARD.md) and [evidence ledger](eval/THREE_MODEL_VALIDATION.md) apply to every VLA runtime.
+Reported VLA comparisons are normalized to each model's Python baseline (`1.00`), with **Python → C++ BF16-policy** ratios. Lower inference latency and VRAM are better. The [unified benchmark standard](eval/VLA_BENCHMARK_STANDARD.md) and [evidence ledger](eval/THREE_MODEL_VALIDATION.md) apply to every VLA runtime.
 
 | Model | Inference Latency ↓ | VRAM ↓ |
 |---|---:|---:|
-| **pi0.5‡** | 1.00 → 0.90 (**10% lower**) |  1.00 → 0.60 (**40% lower**) |
-| **SmolVLA§** | Pending | Pending |
-| **GR00T N1.7‡** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
-| **HY-VLA‡** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
-| **[Xiaomi-Robotics-0](docs/results/xr0_libero.md)†** | 1.00 → 0.37 (**63% lower**) | 1.00 → 0.90 (**10% lower**) |
-| **[TurboVLA](docs/results/turbovla_libero.md)†** | 1.00 → 0.54 (**46% lower**) | 1.00 → 0.95 (**5% lower**) |
-| **[X-VLA](docs/results/xvla_libero.md)** | 1.00 → 0.88 (**12% lower**) | 1.00 → 0.57 (**43% lower**) |
-
-
-
-
-X-VLA's matrix was rebuilt with the official Libero weights (HF 260cc588 /
-GGUF 2c828fe6): C++ BF16 97.50% vs Python BF16 97.75% over 400 episodes each
-(strict 4x10 coverage PASS on all eight configurations); C++ BF16 96.4 ms vs
-Python F32 110.0 ms (**0.88**) and VRAM 2370 vs 4142 MiB (**0.57**). See the
-[evidence ledger](eval/THREE_MODEL_VALIDATION.md) and
-[Gate A report](docs/results/xvla_checkpoint_gate_a_20260905.md).
+| **pi0.5** | 1.00 → 0.90 (**10% lower**) |  1.00 → 0.60 (**40% lower**) |
+| **GR00T N1.7** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
+| **HY-VLA** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
+| **Xiaomi-Robotics-0** | 1.00 → 0.37 (**63% lower**) |  1.00 → 0.90 (**10% lower**) |
+| **TurboVLA** | 1.00 → 0.54 (**46% lower**) | 1.00 → 0.95 (**5% lower**) |
+| **X-VLA** | 1.00 → 0.88 (**12% lower**) | 1.00 → 0.57 (**43% lower**) |
 
 For World Models, C++ substantially reduces VRAM while keeping the success rate close to the Python baseline.
 
@@ -188,16 +177,7 @@ For World Models, C++ substantially reduces VRAM while keeping the success rate 
 | **Cosmos3** | 21.84 GB → 19.49 GB (**10.8% lower**) |
 | **LingBot-VA** | 24.75 GB → 16.44 GB (**33.6% lower**) |
 
-For World Models, C++ substantially reduces VRAM while keeping the success rate close to the Python baseline.
-
-| Model | VRAM ↓ |
-|---|---:|
-| **Cosmos3** | 21.84 GB → 19.49 GB (**10.8% lower**) |
-| **LingBot-VA** | 24.75 GB → 16.44 GB (**33.6% lower**) |
-
-
-> **Highlights:** Compared with Python, C++ BF16 reduces VLA inference latency by up to **63%** (Xiaomi-Robotics-0) and VRAM by up to **57%** (X-VLA), with success-rate changes within **2.5 percentage points** across all quantized variants. SmolVLA is pending a comparable same-method benchmark.
-> The three newly integrated models measure on this branch with official weights: C++ BF16 reduces latency by up to **63%** (Xiaomi-Robotics-0) and VRAM by up to **57%** (X-VLA), with success-rate changes within **2.5 percentage points** across all quantized variants. SmolVLA is pending a comparable same-method benchmark.
+> **Highlights:** Compared with Python, C++ BF16 reduces VLA inference latency by up to **63%** and VRAM by up to **57%**. For World Models, it reduces VRAM by up to **33.6%**, with success-rate changes limited to **2 percentage points**. The three newly integrated models (Xiaomi-Robotics-0, TurboVLA, X-VLA) measure on this branch with official weights; per-model precision tables live in their validation reports under `eval/`.
 ### 1.3 Runtime Roadmap
 - This project is still under active construction 🚧
 - [ ] A more modular and maintainable runtime architecture for `Embodied.cpp`
@@ -407,9 +387,9 @@ configuration and runner for the model and benchmark you want to evaluate.
 | LingBot-VA | LIBERO | [LingBot](eval/conf/libero_lingbot_va_eval.yaml) | - | Manual |
 | HY-VLA | RoboTwin | [HY-VLA](eval/conf/robotwin_hy_vla_eval.yaml) | - | Managed |
 | Cosmos3-Nano | RoboLab | [Cosmos3](eval/conf/robolab_cosmos3_eval.yaml) | - | Managed |
-| Xiaomi-Robotics-0 | LIBERO | [Xiaomi-Robotics-0](eval/conf/libero_xr0_eval.yaml) | [report](docs/results/xr0_libero.md) | Manual |
-| TurboVLA | LIBERO | [TurboVLA](eval/conf/libero_turbovla_eval.yaml) | [report](docs/results/turbovla_libero.md) | Manual |
-| X-VLA | LIBERO | [X-VLA](eval/conf/libero_xvla_eval.yaml) | [report](docs/results/xvla_libero.md) | Manual |
+| Xiaomi-Robotics-0 | LIBERO | [Xiaomi-Robotics-0](eval/conf/libero_xr0_eval.yaml) | [report](eval/XR0_LIBERO_VALIDATION.md) | Manual |
+| TurboVLA | LIBERO | [TurboVLA](eval/conf/libero_turbovla_eval.yaml) | [report](eval/TURBOVLA_LIBERO_VALIDATION.md) | Manual |
+| X-VLA | LIBERO | [X-VLA](eval/conf/libero_xvla_eval.yaml) | [report](eval/XVLA_LIBERO_VALIDATION.md) | Manual |
 
 LIBERO uses `eval/client/run_sim_client_direct.py`; start its matching server
 separately. RoboTwin and RoboLab runners start their servers from the selected
