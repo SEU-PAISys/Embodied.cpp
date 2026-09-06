@@ -14,7 +14,7 @@ The acceptance rules are in [VLA_BENCHMARK_STANDARD.md](VLA_BENCHMARK_STANDARD.m
 | SmolVLA | Historical 400-vs-400 LIBERO comparison: 284/400 C++ vs 265/400 official; final seed protocol only has a 12-vs-12 smoke | Pending: recorded latency scopes differ; a same-method process-memory sample is 1117 vs 1385 MiB | One unlabelled GGUF configuration | Upstream reference limitation: final-protocol full scale and an explicit precision manifest are absent; not a work item for this three-model PR |
 | Xiaomi-Robotics-0 | Historical 2000 episodes per BF16/Q8_0/Q4_K variant; paired BF16/Q6_K task-0 gate is 10/10 each under the final seed protocol | Matched BF16 policy + F16 vision: C++ 53.56 ms vs Python 143.63 ms; Q6_K is 69.33 ms and 4476 MiB vs BF16 8824 MiB | BF16, Q8_0, Q4_K full historical results; Q6_K fixed-boundary + one-task evidence | Q6_K misses strict `atol=0.005` parity by 1/960 values and lacks a full suite; historical full runs predate the final explicit seed manifest |
 | TurboVLA | Fresh 400 episodes per BF16/Q8/Q4 storage variant; shared-loop two-task Python/C++ control is 20/20 on both sides; correct-layout Q6 378/400 vs BF16 382/400 | Matched BF16: C++ 27.24 ms vs Python 28.39 ms, 5 warm-ups + 100 samples | BF16, Q8_0, Q4_0 and Q6_K storage sweeps; Q6 has BF16 residency and no runtime-memory saving | Full matched Python success sweep remains pending; the old-layout 350/400 run is retained only as configuration-failure evidence |
-| X-VLA | Historical four-suite results plus repaired-source F32 object-suite 100/100; historical-source Q6 392/400 under legacy observation-derived noise; explicit-noise paired gate 10/10 each | New same-source F32/BF16 parity and repeated timings available; no consistent BF16 latency advantage, 3.9% higher process VRAM | BF16, Q8_0, Q4_0 and repaired-source F32 C++ results; historical-source Q6 full integration observation, not matched non-inferiority | Historical-source normalized row remains Pending; the new HF pair still needs matched full success comparisons; Q6 noise protocol differs from the paired gate |
+| X-VLA | Historical four-suite results plus repaired-source F32 object-suite 100/100; historical-source Q6 392/400 under legacy observation-derived noise; explicit-noise paired gate 10/10 each. **Gate A (2026-09-05)**: the interim HF snapshot package `3f16a4b6…` (weights + config + locally modified remote code, loaded together) is not a valid release baseline for the tested LIBERO protocol — 901/903 tensors differ from official `2toINF/X-VLA-Libero` and it scores 0/10 under the official evaluator where the official package scores 10/10 (package-level A/B; pure-weight attribution not claimed); with official weights both the C++ server (official-derived GGUF `2c828fe6…`) and the Python public entry score 10/10 independently (see [gate-A report](../docs/results/xvla_checkpoint_gate_a_20260905.md)) | New same-source F32/BF16 parity and repeated timings available; no consistent BF16 latency advantage, 3.9% higher process VRAM — **but all of these used the invalid snapshot package and must be redone against official weights before any release claim** | BF16, Q8_0, Q4_0 and repaired-source F32 C++ results; historical-source Q6 full integration observation, not matched non-inferiority | Historical-source normalized row remains Pending; matched full success comparisons must be rerun on official weights (`260cc588…` / GGUF `2c828fe6…`) under the derive-episode-noise protocol; Q6 noise protocol differs from the paired gate |
 
 ## Published baseline values
 
@@ -45,13 +45,21 @@ cost of producing one action across different output horizons, use the new
    from fixed-input parity and repeated deployment timings to matched success
    comparisons. It has no consistent BF16 latency or memory advantage; the
    historical checkpoint's normalized row remains Pending.
-   **Partial gate progress (2026-09-04)**: a standalone copy of the denoise loop
+   **Root cause closed (2026-09-05)**: the interim HF snapshot package
+   `3f16a4b6…` (weights + config + locally modified remote code, loaded
+   together via `trust_remote_code`) is NOT a valid release baseline for the
+   tested LIBERO protocol (901/903 tensors differ from official
+   `2toINF/X-VLA-Libero`; 0/10 official-evaluator episodes vs 10/10 for the
+   official package; package-level A/B, pure-weight attribution not
+   claimed). All snapshot-derived parity/timing/VRAM numbers are quarantined;
+   matched full comparisons must be rerun on official weights
+   (`260cc588…` / GGUF `2c828fe6…`) under the derive-episode-noise protocol —
+   see
+   [gate-A report](../docs/results/xvla_checkpoint_gate_a_20260905.md).
+   Historical partial progress below is retained for the audit trail: a
+   standalone copy of the denoise loop
    is bit-exact against official `generate_actions()` with the same seed/inputs
-   (`scripts/verify_xvla_denoise_equiv.py`, max abs error 0.0). This does NOT
-   yet cover the actual reference client (eager attention, use_fast=False
-   processor, 256->224 handling); a same-observation comparison through the
-   real client vs official path vs C++ is required before the 400+400 run
-   (Codex audit round 2).
+   (`scripts/verify_xvla_denoise_equiv.py`, max abs error 0.0).
 2. The corrected-layout TurboVLA Q6 full sweep is now complete at 378/400
    against same-protocol BF16 382/400. The [artifact audit](../docs/results/q6_artifact_audit_20260904.md)
    identifies why the earlier 350/400 run is not that result. X-VLA's 392/400 full integration

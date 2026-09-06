@@ -169,7 +169,7 @@ Reported VLA comparisons are normalized to each model's Python baseline (`1.00`)
 | **HY-VLA‡** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
 | **[Xiaomi-Robotics-0](docs/results/xr0_libero.md)†** | 1.00 → 0.37 (**63% lower**) | 1.00 → 0.90 (**10% lower**) |
 | **[TurboVLA](docs/results/turbovla_libero.md)†** | 1.00 → 0.96 (**4% lower**, observed batch) | 1.00 → 0.95 (**5% lower**) |
-| **[X-VLA](docs/results/xvla_libero.md)** | Pending | Pending |
+| **[X-VLA](docs/results/xvla_libero.md)** | 1.00 → 0.88 (**12% lower**) | 1.00 → 0.57 (**43% lower**) |
 
 ‡ Published normalized results from the original Embodied.cpp paper. The
 absolute raw samples and complete rerun manifests are not stored in this
