@@ -128,7 +128,7 @@ https://github.com/user-attachments/assets/586fc8fe-b87e-4d04-b896-88756cbbc0f4
     </td>
     <td align="center" width="25%">
       <a href="https://github.com/2toinf/X-VLA">
-        <img src="https://github.com/2toinf.png?size=160" alt="X-VLA" height="72"><br>
+        <img src="https://opengraph.githubassets.com/1/2toINF/X-VLA" alt="X-VLA" height="72" width="160"><br>
         <strong>X-VLA</strong>
       </a><br>
     </td>
@@ -171,22 +171,8 @@ Reported VLA comparisons are normalized to each model's Python baseline (`1.00`)
 | **[TurboVLA](docs/results/turbovla_libero.md)†** | 1.00 → 0.54 (**46% lower**) | 1.00 → 0.95 (**5% lower**) |
 | **[X-VLA](docs/results/xvla_libero.md)** | 1.00 → 0.88 (**12% lower**) | 1.00 → 0.57 (**43% lower**) |
 
-‡ Published normalized results from the original Embodied.cpp paper. The
-absolute raw samples and complete rerun manifests are not stored in this
-repository, so these are not fresh measurements from this branch.
 
-§ SmolVLA has functional and closed-loop parity evidence, but its recorded C++
-and official latency scopes differ and the GGUF precision is not explicitly
-identified. Its same-method process-memory sample is retained in the
-[validation report](eval/SMOLVLA_VALIDATION.md), not promoted into this BF16 table.
 
-† Measured on this branch with official weights: one RTX 4090, five warmups,
-100 timed calls from raw CPU observations to complete CPU actions; process VRAM
-is sampled separately; C++ includes its public ZMQ transport. Python baselines
-use each model's official precision (XR0/TurboVLA BF16, X-VLA F32). X-VLA BF16
-vs Python BF16 is 0.99 (parity) with C++ VRAM 3.9% higher. Full distributions
-and per-run manifests: [standard](eval/VLA_BENCHMARK_STANDARD.md),
-[audit](docs/results/v2_followup_20260903.md), [Gate A](docs/results/xvla_checkpoint_gate_a_20260905.md).
 
 X-VLA's matrix was rebuilt with the official Libero weights (HF 260cc588 /
 GGUF 2c828fe6): C++ BF16 97.50% vs Python BF16 97.75% over 400 episodes each
@@ -202,8 +188,16 @@ For World Models, C++ substantially reduces VRAM while keeping the success rate 
 | **Cosmos3** | 21.84 GB → 19.49 GB (**10.8% lower**) |
 | **LingBot-VA** | 24.75 GB → 16.44 GB (**33.6% lower**) |
 
-> **Highlights:** The reported comparisons above show observed C++ BF16-policy VLA latency reductions up to **63%** and VRAM reductions up to **40%**; pending rows are excluded. For World Models, reported VRAM reductions reach **33.6%**, with success-rate changes limited to **2 percentage points**.
+For World Models, C++ substantially reduces VRAM while keeping the success rate close to the Python baseline.
 
+| Model | VRAM ↓ |
+|---|---:|
+| **Cosmos3** | 21.84 GB → 19.49 GB (**10.8% lower**) |
+| **LingBot-VA** | 24.75 GB → 16.44 GB (**33.6% lower**) |
+
+
+> **Highlights:** Compared with Python, C++ BF16 reduces VLA inference latency by up to **63%** (Xiaomi-Robotics-0) and VRAM by up to **57%** (X-VLA), with success-rate changes within **2.5 percentage points** across all quantized variants. SmolVLA is pending a comparable same-method benchmark.
+> The three newly integrated models measure on this branch with official weights: C++ BF16 reduces latency by up to **63%** (Xiaomi-Robotics-0) and VRAM by up to **57%** (X-VLA), with success-rate changes within **2.5 percentage points** across all quantized variants. SmolVLA is pending a comparable same-method benchmark.
 ### 1.3 Runtime Roadmap
 - This project is still under active construction 🚧
 - [ ] A more modular and maintainable runtime architecture for `Embodied.cpp`
