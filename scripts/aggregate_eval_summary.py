@@ -291,6 +291,18 @@ def validate_run_episodes(run_dir, *, arch="xvla", suites=("spatial", "object", 
             requested = int(data.get("episodes_requested", -1))
             skipped = int(data.get("skipped", -1))
             successes = int(data.get("successes", -1))
+            # Recompute from the per-episode records: a summary that claims
+            # 10/10 while every episode failed must fail here.
+            ep_success = sum(1 for e in data.get("episodes", [])
+                             if e.get("success") is True)
+            ep_terminal = sum(1 for e in data.get("episodes", [])
+                              if isinstance(e.get("success"), bool))
+            if ep_terminal != counted:
+                problems.append(f"{key}: {ep_terminal} terminal episode records "
+                                f"!= counted={counted}")
+            if ep_success != successes:
+                problems.append(f"{key}: recomputed successes={ep_success} "
+                                f"!= summary successes={successes}")
             if not (0 <= successes <= counted <= requested):
                 problems.append(f"{key}: invalid relations success={successes} "
                                 f"counted={counted} requested={requested}")
@@ -331,6 +343,8 @@ def main():
     if not hits:
         raise SystemExit(f"no summary.txt matched under {args.outputs}")
     if args.require_full_matrix:
+        if not validate_run_episodes(args.run_dir):
+            sys.exit(2)
         validate_full_matrix(buckets)
     data = build(buckets)
 

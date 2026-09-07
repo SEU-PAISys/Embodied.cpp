@@ -247,6 +247,12 @@ int main(int argc, char ** argv) {
         } catch (const zmq::error_t & e) {
             if (e.num() == EINTR) continue;
             std::fprintf(stderr, "vla-server: poll error errno=%d (%s); continuing\n",
+            if (e.num() == ETERM || e.num() == ENOTSOCK) {
+                std::fprintf(stderr, "vla-server: unrecoverable poll error errno=%d (%s); stopping
+",
+                             e.num(), e.what());
+                break;
+            }
                          e.num(), e.what());
             continue;
         }
@@ -258,6 +264,12 @@ int main(int argc, char ** argv) {
             if (!rr) continue;
         } catch (const zmq::error_t & e) {
             if (e.num() == EINTR) continue;
+            if (e.num() == ETERM || e.num() == ENOTSOCK) {
+                std::fprintf(stderr, "vla-server: unrecoverable recv error errno=%d (%s); stopping
+",
+                             e.num(), e.what());
+                break;
+            }
             std::fprintf(stderr, "vla-server: recv error errno=%d (%s); continuing\n",
                          e.num(), e.what());
             continue;

@@ -141,6 +141,13 @@ class XR0ReferenceClient:
         """
         explicit_noise = observations.get("action_noise")
         if explicit_noise is not None:
+            # XR0's head only accepts a seed; the flow start is drawn inside
+            # the model via randn_like, so an arbitrary explicit noise cannot
+            # be injected. Reject it loudly instead of silently ignoring it.
+            raise ValueError(
+                "XR0ReferenceClient cannot inject arbitrary action_noise: the "
+                "XR0 head seeds its internal randn_like with --noise-seed. "
+                "Use noise_seed instead of action_noise for this model.")
             seed = int(self._episode_noise_seed) if self._episode_noise_seed is not None else 0
             noise = np.ascontiguousarray(explicit_noise, dtype=np.float32).reshape(-1)
             return seed, "explicit", noise_checksum(noise)
@@ -195,7 +202,7 @@ class XR0ReferenceClient:
         inputs = self.processor(text=[prompt], images=images_u8, videos=None,
                                 padding=True, return_tensors="pt").to(self.device)
 
-        seed, noise_mode, cksum = self._resolve_noise(observations, state_padded, language_raw)
+        seed, noise_mode, cksum = self._resolve_noise(observations, state, language_raw)
 
         started = time.perf_counter()
         with torch.inference_mode():
@@ -250,8 +257,12 @@ def main() -> None:
         "--output-dir", str(options.output_dir), "--no-video", "--control-mode", "absolute",
     ])
     options.output_dir.mkdir(parents=True, exist_ok=True)
+    # The simulator returns raw observations; wrap the client in the same
+    # adapter the public --implementation python path uses, so image/state
+    # conversion and action parsing are identical.
+    adapter = LIBEROSimAdapter(client)
     for task_id in options.task_ids:
-        run_one_task(runner_args, client, runner_args.task, task_id, implementation="pytorch")
+        run_one_task(runner_args, adapter, runner_args.task, task_id, implementation="pytorch")
 
 
 if __name__ == "__main__":

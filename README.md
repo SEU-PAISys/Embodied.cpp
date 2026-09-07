@@ -177,6 +177,8 @@ For World Models, C++ substantially reduces VRAM while keeping the success rate 
 | **Cosmos3** | 21.84 GB → 19.49 GB (**10.8% lower**) |
 | **LingBot-VA** | 24.75 GB → 16.44 GB (**33.6% lower**) |
 
+Precision note: XR0 and TurboVLA baselines are the official BF16 implementations; X-VLA's is the official **F32** deployment (BF16-vs-BF16 X-VLA parity is 0.99 latency / 1.04 VRAM).
+
 > **Highlights:** Compared with Python, C++ BF16 reduces VLA inference latency by up to **63%** and VRAM by up to **57%**. For World Models, it reduces VRAM by up to **33.6%**, with success-rate changes limited to **2 percentage points**. The three newly integrated models (Xiaomi-Robotics-0, TurboVLA, X-VLA) measure on this branch with official weights; per-model precision tables live in their validation reports under `eval/`.
 ### 1.3 Runtime Roadmap
 - This project is still under active construction 🚧
