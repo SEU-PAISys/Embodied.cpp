@@ -142,3 +142,22 @@ and do not propagate to decoded actions.
 - Serving: `serving/vla-server` (WordPiece tokenizer built in)
 - Parity: `scripts/parity_turbovla_cpp.py`, `scripts/parity_turbovla_reference.py`
 - Closed-loop client: `eval/client/run_sim_client_direct.py --arch turbovla`
+
+
+## Same-weight rebuild (2026-09-08)
+
+Earlier rows mixed two checkpoints: the historical BF16 GGUF came from
+`object.pth` while the Python reference uses `turbovla_libero.pth`
+(472/669 mapped tensors differed). All three variants were rebuilt from
+`turbovla_libero.pth` and re-measured with seed 42, 400 episodes each
+(strict 4x10 coverage PASS):
+
+| Variant | C++ success | Python (same weights) |
+|---|---:|---:|
+| BF16 | 375/400 (93.75%) | 385/400 (96.25%) |
+| Q8_0 | 380/400 (95.00%) | — |
+| Q4_K | 371/400 (92.75%) | — |
+
+The C++/Python BF16 difference (2.5 pp) is reported as-is; it is the first
+same-weight comparison for this model. Quantized variants sit within the BF16
+band, so no quantization-specific loss is claimed.
