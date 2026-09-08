@@ -31,8 +31,8 @@ The archived Xiaomi-Robotics-0 and TurboVLA latency runs use one RTX
 precision, five warm-ups, 100 timed requests, complete CPU action read-back,
 and a separate process-memory phase. Their raw samples, hashes, and commands are
 summarized in
-[the 2026-09-03 follow-up](../docs/results/v2_followup_20260903.md) and its
-[machine-readable evidence](../docs/results/v2_followup_20260903_evidence.json).
+[the 2026-09-03 follow-up](v2_followup_20260903.md) and its
+[machine-readable evidence](v2_followup_20260903_evidence.json).
 
 These request-level measurements are not cross-model rankings. To compare the
 cost of producing one action across different output horizons, use the new
@@ -50,8 +50,8 @@ cost of producing one action across different output horizons, use the new
 4. Publish unified tables only after raw evidence, source/weight fingerprints,
    protocol identity, numerical checks and coverage have been reconciled.
 
-The [current audit](../docs/results/release_audit_20260907.md) and
-[independently checked completed runs](../docs/results/completed_runs_audit_20260908.json)
+The current audit (artifact not retained) and
+independently checked completed runs (artifact not retained)
 supersede outdated task-status descriptions in historical follow-up reports.
 Historical interim X-VLA snapshot measurements remain quarantined; official
 phase2 records are a different evidence set, not rehabilitation of that snapshot.

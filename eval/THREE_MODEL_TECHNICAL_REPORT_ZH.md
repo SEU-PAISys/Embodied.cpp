@@ -3,7 +3,7 @@
 > 对标 `eval/SMOLVLA_TECHNICAL_REPORT_ZH.md` 的结构，汇总 XR0（Xiaomi-Robotics-0）、
 > TurboVLA、X-VLA 三个 runtime 的移植验证结果。数据来源为本分支既有评测产物
 > （2026-08-18 ~ 09-03）。V2 复核补入同机 20 回合对照，并撤回错误的 X-VLA 权重/性能结论；
-> [复核报告](../docs/results/v2_followup_20260903.md)与[原始证据摘要](../docs/results/v2_followup_20260903_evidence.json)为更正依据。
+> [复核报告](v2_followup_20260903.md)与[原始证据摘要](v2_followup_20260903_evidence.json)为更正依据。
 
 ## 一、项目概述
 
@@ -135,7 +135,7 @@ Q8_0 98/100 · Q4_0 99/100 · Q4_K 100/100 · **F32 常驻 99/100**（主 GGUF +
 | XR0 | 主模型+vision 双路 | 0.00936 | atol 0.01 ✅ |
 | X-VLA | 官方权重 `260cc588…` 固定输入 | F32 **0.000646**；BF16 **0.010525** | atol 0.005：F32 通过，BF16 未通过（49/600 超差） |
 
-X-VLA 数值来自 [Gate A 报告](../docs/results/xvla_checkpoint_gate_a_20260905.md)。
+X-VLA 数值来自 [Gate A 报告](xvla_checkpoint_gate_a_20260905.md)。
 历史快照 `3f16…` 的 F32 0.000203 / BF16 0.003104 仅保留作旧管线记录，不作发布基线。
 闭环成功率不能替代固定输入数值阈值验收。
 
@@ -163,7 +163,7 @@ TurboVLA 双侧 BF16：C++ **27.24**、Python **28.39 ms**。
 C++ 延迟优势，且 C++ 进程显存高 3.9%，不能替代历史行或宣称加速。
 115.9 ms 旧 Python 短测只有 20 次前向且不含预处理/读回，日志的 3.437 GiB
 为 allocator 峰值，不能把 XR0 的 9790 MiB 套给它。
-完整 std/p50/p95/p99、抽样限制与原始来源见[复核报告](../docs/results/v2_followup_20260903.md)。
+完整 std/p50/p95/p99、抽样限制与原始来源见[复核报告](v2_followup_20260903.md)。
 
 ### 5.5 构建与测试
 
@@ -196,5 +196,5 @@ parity 回归（SEP@10/13/18/20 mask 用例）、真实 symlink 安装测试全�
    正确布局 Q6 全量 **378/400（94.50%）**（我们独立复验 379/400，±1 episode 噪声级），
    同协议 BF16 **382/400（95.50%）**，goal 98/100，逐回合双侧精确检验 p=0.424，
    不称无损或等价；Q4_K 同法升至 **92.50%**（goal 86）。详见
-   [Q6 产物审计](../docs/results/q6_artifact_audit_20260904.md)。imatrix 只是一种候选方向，
+   [Q6 产物审计](q6_artifact_audit_20260904.md)。imatrix 只是一种候选方向，
    在有校准实验前不作为已定位的根因或既定方案。

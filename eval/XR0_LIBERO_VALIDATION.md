@@ -11,15 +11,15 @@ control, seed 42, derived episode noise and 10-action replay, the current
 public entry completed **C++ 396/400 (99.0%)** and **Python 393/400 (98.25%)**.
 All four suites have ten unique tasks × ten episodes with zero skips;
 all 400 paired first-request noise seeds/checksums/dtypes/device labels match.
-See the [independent audit](../docs/results/completed_runs_audit_20260908.json)
-and [shared release ledger](../docs/results/release_audit_20260907.md).
+See the [independent audit](completed_runs_audit_20260908.json)
+and [shared release ledger](release_audit_20260907.md).
 This validates the repaired rollout protocol, not a new latency claim.
 
-The [V2 post-allocator benchmark](../docs/results/v2_followup_20260903.md) records matched
+The [V2 post-allocator benchmark](v2_followup_20260903.md) records matched
 CPU-input-to-CPU-actions means of C++ 53.56 vs Python 143.63 ms, with
 std/p50/p95/p99 and the same BF16 policy/F16 vision precision on both sides.
 This fixed-input performance evidence is separate from historical success rates.
-The [2026-09-04 Q6_K follow-up](../docs/results/xr0_q6_followup_20260904.md) adds a matched
+The [2026-09-04 Q6_K follow-up](xr0_q6_followup_20260904.md) adds a matched
 100-call memory/performance result and a paired 10-episode task gate. Q6_K saves
 49.27% process VRAM versus BF16 but is 29.44% slower in the fixed-boundary run;
 it misses the strict 0.005 parity tolerance by one of 960 values.
@@ -39,7 +39,7 @@ Recounted existing seed-42 results (not a new 6000-episode rerun):
 Source runs: `rerun_results/xr0-bf16`, `xr0-q8_0`, `xr0-q4_k`; all records have
 zero skipped episodes. They remain distinct from the older archive below.
 The current HF snapshot reproduces all 616 main-model tensors/metadata and all
-316 vision tensors in the deployed files. The [takeover report](../docs/results/takeover_20260903.md)
+316 vision tensors in the deployed files. The [takeover report](takeover_20260903.md)
 records hashes, a 30×32-action timing protocol, and GPU vision settings.
 Do not reuse the handoff's 42.53/148.19 latency ratio: it compared different
 timing boundaries and Python 10-step output against C++ 30-step output.

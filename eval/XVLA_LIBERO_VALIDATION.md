@@ -22,15 +22,15 @@ Conversion now preserves F32 values; a regression checks both matrix transposes.
 The historical source HF snapshot was not found in the Windows workspace,
 WSL project/cache or server project/cache. The current server HF snapshot is
 a different set of weights. Consequently **Python-normalized performance
-remains Pending**. See the [controlled repair and evidence](../docs/results/takeover_20260903.md).
+remains Pending**. See the [controlled repair and evidence](takeover_20260903.md).
 The following seed-7 archive is retained separately, not relabelled as this run.
 
-The [Q6_K follow-up](../docs/results/turbovla_xvla_q6_followup_20260904.md) compares the
+The [Q6_K follow-up](turbovla_xvla_q6_followup_20260904.md) compares the
 historical GGUF against its own Q6 storage derivative: object task 0 is 10/10
 on both sides, and GPU memory is unchanged. This does not resolve the absent
 historical HF baseline.
 
-A separately approved [new HF/GGUF pair](../docs/results/xvla_matched_followup_20260904.md)
+A separately approved [new HF/GGUF pair](xvla_matched_followup_20260904.md)
 now passes F32 and BF16 fixed-input Python/C++ parity and has repeated matched
 deployment measurements. It does not show a consistent BF16 latency advantage
 or a BF16 process-memory reduction, and is not a full success-rate rerun.

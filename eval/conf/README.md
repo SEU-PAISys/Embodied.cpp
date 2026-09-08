@@ -62,7 +62,7 @@ These are per-model defaults rather than full-suite reproductions of the
 committed reports: each selects 10 object tasks, 20 episodes per task and
 seed 42. All three render at 256x256; `image_size` is a separate model-side
 resize (X-VLA: 224). See the shared
-[run and aggregation instructions](../../docs/results/README.md#running-and-aggregating)
+[run and aggregation instructions](../README.md#running-and-aggregating)
 for multi-suite runs and historical protocol differences. XR0 and X-VLA
 also require `--tokenizer` to point to an existing matching HF snapshot;
 the GGUF converter does not create the example tokenizer directories.

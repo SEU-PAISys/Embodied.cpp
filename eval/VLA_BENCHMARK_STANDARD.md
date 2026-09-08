@@ -113,7 +113,7 @@ Each promoted run must keep, without overwriting an earlier run:
 
 Generated logs, videos, and checkpoints stay under ignored `outputs/` and
 `checkpoints/` paths. A compact, auditable summary may be committed under
-`docs/results/`.
+`eval/`.
 
 ## Reference interpretation
 
