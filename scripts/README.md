@@ -32,11 +32,13 @@ to validate paths and tensor mappings before writing a large GGUF file.
 | Cosmos3-Nano | `convert_cosmos3_full_w8_to_gguf.py` | Use the upstream full_w8 bundle |
 | SmolVLA | `convert_smolvla_to_gguf.py`, `convert_smolvla_mmproj_to_gguf.py` | Output type selected during conversion |
 | Xiaomi-Robotics-0 | `convert_xr0_to_gguf.py` | `quantize_xr0_gguf.py` (q8_0/q6_k/q5_k/q4_k) |
-| TurboVLA | `convert_turbovla_to_gguf.py` | `quantize_vla_gguf.py` (q8_0/q6_k/q4_0; storage quantization) |
-| X-VLA | `convert_xvla_to_gguf.py` | `quantize_vla_gguf.py` (q8_0/q6_k/q4_0; storage quantization) |
+| TurboVLA | `convert_turbovla_to_gguf.py` | `quantize_vla_gguf.py` (q8_0/q6_k/q4_0/q4_k; storage quantization) |
+| X-VLA | `convert_xvla_to_gguf.py` | `quantize_vla_gguf.py` (q8_0/q6_k/q4_0/q4_k; storage quantization) |
 
 Place final artifacts under the `checkpoints/` layout shown in the top-level
 README, then use the matching build and evaluation configuration.
+The [shared evaluation entry and results index](../docs/results/README.md)
+describe Python/C++ selection, model-specific precision options and profiling.
 
 ## pi0.5
 
@@ -295,7 +297,7 @@ python scripts/quantize_vla_gguf.py \
 
 The script uses vendored `gguf-py` codecs (and its Python dependencies),
 preserves metadata array types, and refuses existing output paths. Supported
-outputs are `q8_0`, `q4_0`, and `q6_k`; inputs must be original F32/BF16 GGUFs.
+outputs are `q8_0`, `q4_0`, `q6_k`, and `q4_k`; inputs must be original F32/BF16 GGUFs.
 Q6_K reuses the shared GGML quantizer and additionally requires PyTorch and a
 built `libggml-base.so` (override its path with `--ggml-lib`). It selects matrix
 rows divisible by 256; ineligible tensors retain their original type. Q8_0 and

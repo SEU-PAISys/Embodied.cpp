@@ -167,8 +167,8 @@ Reported VLA comparisons are normalized to each model's Python baseline (`1.00`)
 | **GR00T N1.7** | 1.00 → 0.72 (**28% lower**) |  1.00 → 0.93 (**7% lower**) |
 | **HY-VLA** | 1.00 → 0.48 (**52% lower**) | 1.00 → 0.68 (**32% lower**) |
 | **Xiaomi-Robotics-0** | 1.00 → 0.37 (**63% lower**) |  1.00 → 0.90 (**10% lower**) |
-| **TurboVLA** | 1.00 → 0.54 (**46% lower**) | 1.00 → 0.95 (**5% lower**) |
-| **X-VLA** | 1.00 → 0.88 (**12% lower**) | 1.00 → 0.57 (**43% lower**) |
+| **TurboVLA** | 1.00 → 0.96 (**4% lower**) | 1.00 → 0.95 (**5% lower**) |
+| **X-VLA** | Pending matched-precision evidence | Pending matched-precision evidence |
 
 For World Models, C++ substantially reduces VRAM while keeping the success rate close to the Python baseline.
 
@@ -177,9 +177,9 @@ For World Models, C++ substantially reduces VRAM while keeping the success rate 
 | **Cosmos3** | 21.84 GB → 19.49 GB (**10.8% lower**) |
 | **LingBot-VA** | 24.75 GB → 16.44 GB (**33.6% lower**) |
 
-Precision note: XR0 and TurboVLA baselines are the official BF16 implementations; X-VLA's is the official **F32** deployment (BF16-vs-BF16 X-VLA parity is 0.99 latency / 1.04 VRAM).
+Evidence scope: pi0.5, GR00T and HY-VLA retain the original project's reported comparisons; they were not rerun here. XR0 and TurboVLA use the [archived matched-boundary measurements](docs/results/v2_followup_20260903.md): raw CPU observations to a complete CPU action chunk, including preprocessing/transfers and C++ transport, 5 warmups + 100 calls on RTX 4090. Latencies are 53.56/143.63 ms and 27.24/28.39 ms (C++/Python); sampled process peaks are 8824/9790 MiB and 880/924 MiB. XR0 uses BF16 policy/F16 vision on both sides. These are batch observations, not guaranteed speedups or a rerun of the current source tree. X-VLA's reported BF16-C++/F32-Python comparison is cross-precision and is excluded from this table; numerical parity, latency and memory ratios are separate metrics.
 
-> **Highlights:** Compared with Python, C++ BF16 reduces VLA inference latency by up to **63%** and VRAM by up to **57%**. For World Models, it reduces VRAM by up to **33.6%**, with success-rate changes limited to **2 percentage points**. The three newly integrated models (Xiaomi-Robotics-0, TurboVLA, X-VLA) measure on this branch with official weights; per-model precision tables live in their validation reports under `eval/`.
+> **Highlights:** The reported VLA rows above show up to **63% lower latency** and **40% lower VRAM**, within their stated measurement scopes. For World Models, reported VRAM savings reach **33.6%**, with success-rate changes limited to **2 percentage points**. Per-model validation reports and the evidence ledger distinguish historical measurements, matched comparisons and pending checks.
 ### 1.3 Runtime Roadmap
 - This project is still under active construction 🚧
 - [ ] A more modular and maintainable runtime architecture for `Embodied.cpp`

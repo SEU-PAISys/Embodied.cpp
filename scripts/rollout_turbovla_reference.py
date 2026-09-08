@@ -12,6 +12,7 @@ from collections import deque
 import json
 from pathlib import Path
 import sys
+import time
 
 import numpy as np
 import torch
@@ -29,18 +30,28 @@ from client.run_sim_client_direct import parse_args, resolve_task_ids, run_one_t
 
 class TurboReferenceClient:
     """CPU CHW float01 images + 8-D state -> 12 x 7 CPU actions."""
-    def __init__(self, model, norm_arrays, precision="bf16"):
+    def __init__(self, model, norm_arrays, precision="bf16", n_action_steps=12):
+        if precision not in ("bf16", "fp32") or not 1 <= n_action_steps <= 12:
+            raise ValueError("TurboVLA requires bf16/fp32 and replay steps in [1,12]")
         self.model = model
         self.mean, self.std, self.action_min, self.action_max = norm_arrays
         self.device = next(model.parameters()).device
         self.dtype = torch.bfloat16 if precision == "bf16" else torch.float32
         self.queue = deque()
+        self.n_action_steps = n_action_steps
+        self._inference_sequence = 0
+        self._last_inference_profile = None
 
     def get_arch(self):
         return "turbovla"
 
     def reset(self, **_kwargs):
         self.queue.clear()
+        self._inference_sequence = 0
+        self._last_inference_profile = None
+
+    def get_last_inference_profile(self):
+        return dict(self._last_inference_profile) if self._last_inference_profile else None
 
     def has_queued_action(self):
         return bool(self.queue)
@@ -55,6 +66,9 @@ class TurboReferenceClient:
         pixels = (images - np.array([.485, .456, .406], dtype=np.float32)[None, :, None, None])
         pixels /= np.array([.229, .224, .225], dtype=np.float32)[None, :, None, None]
         state = (np.asarray(obs["observation.state"], dtype=np.float32) - self.mean) / (self.std + 1e-6)
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        started = time.perf_counter()
         with torch.inference_mode():
             output = self.model(
                 [str(obs["task"])],
@@ -66,11 +80,20 @@ class TurboReferenceClient:
             raise ValueError("reference returned an invalid action chunk")
         chunk[:, :6] = .5 * (chunk[:, :6] + 1) * (self.action_max[:6] - self.action_min[:6]) + self.action_min[:6]
         chunk[:, 6] = np.where(chunk[:, 6] >= 0, 1, -1)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        self._inference_sequence += 1
+        self._last_inference_profile = {
+            "sequence": self._inference_sequence,
+            "server_total_ms": elapsed_ms, "server_inference_ms": elapsed_ms,
+            "server_vision_ms": None, "server_prefill_ms": None, "server_denoise_ms": None,
+            "model_chunk_size": 12, "model_action_dim": 7,
+            "replay_chunk_size": self.n_action_steps,
+        }
         return chunk
 
     def get_action(self, obs):
         if not self.queue:
-            self.queue.extend(self._predict_chunk(obs))
+            self.queue.extend(self._predict_chunk(obs)[:self.n_action_steps])
         return self.get_action_from_queue()
 
 

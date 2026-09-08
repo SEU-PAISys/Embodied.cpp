@@ -68,6 +68,38 @@ LIBERO success rates may be compared only within the same LIBERO task scope.
 HY-VLA RoboTwin results, for example, do not belong in a LIBERO success table.
 A smoke run proves integration, not a suite success rate.
 
+### XR0 action-noise identity
+
+Both public implementations generate noise of shape `(1, 30, 32)` with an
+isolated PyTorch generator. Match the RNG device (CPU or CUDA) and
+`--xr0-policy-precision bf16|f32`, not just the seed. Profiles record
+`noise_seed`, `noise_mode`, `noise_checksum`, `noise_device`, and `noise_dtype`.
+Identical seeds on different devices/dtypes do not guarantee identical noise.
+For C++ F32 comparisons also set `VLA_XR0_F32_WEIGHTS=1` on the server.
+
+Use `--noise-seed 42 --derive-episode-noise` on both public runs; the standalone
+XR0 reference wrapper forwards `--noise-seed` with derivation enabled. Without
+derivation, both clients hash the raw observation. The C++ client's previous
+CPU/F32 default has changed to match the available RNG device and policy dtype;
+historical runs are not automatically matched to this revised protocol.
+The official Python model accepts a seed, not an explicit `action_noise` array;
+the reference client rejects that unsupported input instead of ignoring it.
+
+### Strict result aggregation
+
+```bash
+python scripts/aggregate_eval_summary.py --outputs outputs/RUN \
+  --out-dir outputs/RUN-summary --require-full-matrix --episodes-per-task 10
+```
+
+The gate checks every discovered model/run bucket for exactly four suites ×
+ten unique tasks and recounts successes, skips, and episode IDs from JSON,
+cross-checking `summary.txt`. Use `--episodes-per-task 50` for a 2000-episode
+plan; the default is 10 (400 episodes). Mixed plans require separate commands.
+This validates discovered buckets, not an external list of all planned models,
+precisions or runs: reconcile that list separately before declaring the whole
+experiment complete. Coverage is not proof of matching weights or protocols.
+
 ## Evidence package
 
 Each promoted run must keep, without overwriting an earlier run:

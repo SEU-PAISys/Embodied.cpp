@@ -102,12 +102,18 @@ def classify(rel: str):
         return m.group("model"), "smoke", m.group("suite"), int(m.group("task"))
     m = RUN_LAYOUT.fullmatch(rel)
     if m:
-        return (m.group("model"), "run:" + (m.group("run") or "unlabelled"),
+        run = m.group("run") or ""
+        # Sweep drivers optionally place one suite directory above the model.
+        # It belongs to the same run, not a separate variant per suite.
+        parts = run.split("/") if run else []
+        if parts and parts[-1] in (m.group("suite"), "libero_" + m.group("suite")):
+            run = "/".join(parts[:-1])
+        return (m.group("model"), "run:" + (run or "unlabelled"),
                 m.group("suite"), int(m.group("task")))
     return None
 
 
-def aggregate(outputs_dir: str):
+def aggregate(outputs_dir: str, *, strict=False):
     # buckets[model][variant][suite][task] = stats
     buckets = defaultdict(
         lambda: defaultdict(lambda: defaultdict(dict))
@@ -119,11 +125,15 @@ def aggregate(outputs_dir: str):
         rel = os.path.relpath(os.path.join(root, SUMMARY_NAME), outputs_dir)
         info = classify(rel)
         if info is None:
+            if strict:
+                raise ValueError(f"unrecognized result path: {rel}")
             print(f"warning: unrecognized result path: {rel}", file=sys.stderr)
             continue
         model, variant, suite, task = info
         stats = parse_summary(os.path.join(root, SUMMARY_NAME))
         if stats is None:
+            if strict:
+                raise ValueError(f"unreadable result: {rel}")
             print(f"warning: unreadable result: {rel}", file=sys.stderr)
             continue
         if task in buckets[model][variant][suite]:
@@ -221,6 +231,8 @@ def validate_full_matrix(buckets, *, suites=("spatial", "object", "goal", "10"),
     lesson: spatial_t3 duplicated, 10_t3 missing, line count looked fine).
     """
     problems = []
+    if not buckets or not any(buckets.values()):
+        problems.append("no result buckets")
     for model in sorted(buckets):
         for variant in sorted(buckets[model]):
             label = f"{model}/{variant}"
@@ -245,7 +257,8 @@ def validate_full_matrix(buckets, *, suites=("spatial", "object", "goal", "10"),
 
 
 def validate_run_episodes(run_dir, *, arch="xvla", suites=("spatial", "object", "goal", "10"),
-                          tasks=tuple(range(10)), episodes=10, require_no_skips=True):
+                          tasks=tuple(range(10)), episodes=10, require_no_skips=True,
+                          task_paths=None):
     """Per-episode release gate for one run directory (runbook P3).
 
     Layout: <run_dir>/<suite>/<arch>/libero_<suite>/task_<t>/result.json (+summary.txt).
@@ -254,17 +267,22 @@ def validate_run_episodes(run_dir, *, arch="xvla", suites=("spatial", "object", 
     result.json. Catches the "40 full-looking task dirs, zero valid episodes"
     and "1-of-10 episodes" failure modes that key-set validation cannot see.
     """
+    if type(episodes) is not int or episodes <= 0:
+        raise ValueError("episodes must be a positive integer")
     problems = []
     seen = set()
     for suite in suites:
-        suite_dir = Path(run_dir) / suite / arch / f"libero_{suite}"
-        if not suite_dir.is_dir():
-            problems.append(f"{suite}: missing suite directory {suite_dir}")
-            continue
-        task_dirs = sorted(suite_dir.glob("task_*"))
-        ids = sorted(int(d.name.split("_")[1]) for d in task_dirs if d.name.split("_")[1].isdigit())
-        if ids != list(tasks):
-            problems.append(f"{suite}: task dirs {ids} != expected {list(tasks)}")
+        if task_paths is None:
+            suite_dir = Path(run_dir) / suite / arch / f"libero_{suite}"
+            if not suite_dir.is_dir():
+                problems.append(f"{suite}: missing suite directory {suite_dir}")
+                continue
+            task_dirs = sorted(suite_dir.glob("task_*"))
+        else:
+            task_dirs = [Path(p) for p in task_paths.get(suite, [])]
+        names = sorted(d.name for d in task_dirs)
+        if names != sorted(f"task_{t}" for t in tasks):
+            problems.append(f"{suite}: task dirs {names} != expected {list(tasks)}")
         for task_dir in task_dirs:
             key = (suite, task_dir.name)
             if key in seen:
@@ -279,42 +297,64 @@ def validate_run_episodes(run_dir, *, arch="xvla", suites=("spatial", "object", 
             except (OSError, json.JSONDecodeError) as exc:
                 problems.append(f"{key}: result.json unreadable: {exc}")
                 continue
+            if not isinstance(data, dict):
+                problems.append(f"{key}: result.json must be an object")
+                continue
             eps = data.get("episodes", [])
+            if not isinstance(eps, list) or any(not isinstance(e, dict) for e in eps):
+                problems.append(f"{key}: episodes must be a list of objects")
+                continue
             got_ids = [e.get("episode") for e in eps]
-            if got_ids != list(range(episodes)):
+            if any(type(i) is not int for i in got_ids) or sorted(got_ids) != list(range(episodes)):
                 problems.append(f"{key}: episode ids {got_ids} != 0..{episodes - 1}")
                 continue
             for e in eps:
-                if not isinstance(e.get("success"), bool):
-                    problems.append(f"{key} ep{e.get('episode')}: no terminal success state")
-            counted = int(data.get("episodes_counted", -1))
-            requested = int(data.get("episodes_requested", -1))
-            skipped = int(data.get("skipped", -1))
-            successes = int(data.get("successes", -1))
+                if type(e.get("success")) is not bool or type(e.get("skipped")) is not bool:
+                    problems.append(f"{key} ep{e.get('episode')}: success/skipped must be boolean")
+                if e.get("success") is True and e.get("skipped") is True:
+                    problems.append(f"{key} ep{e.get('episode')}: skipped episode cannot succeed")
+            fields = ("episodes_counted", "episodes_requested", "skipped", "successes")
+            if any(type(data.get(f)) is not int for f in fields):
+                problems.append(f"{key}: counts must be integers")
+                continue
+            counted, requested, skipped, successes = (data[f] for f in fields)
             # Recompute from the per-episode records: a summary that claims
             # 10/10 while every episode failed must fail here.
             ep_success = sum(1 for e in data.get("episodes", [])
                              if e.get("success") is True)
-            ep_terminal = sum(1 for e in data.get("episodes", [])
-                              if isinstance(e.get("success"), bool))
-            if ep_terminal != counted:
-                problems.append(f"{key}: {ep_terminal} terminal episode records "
+            ep_skipped = sum(e.get("skipped") is True for e in eps)
+            ep_counted = sum(type(e.get("success")) is bool and e.get("skipped") is False
+                             for e in eps)
+            if ep_counted != counted:
+                problems.append(f"{key}: {ep_counted} counted episode records "
                                 f"!= counted={counted}")
+            if ep_skipped != skipped:
+                problems.append(f"{key}: recomputed skipped={ep_skipped} != skipped={skipped}")
+            if requested != episodes or counted + skipped != requested:
+                problems.append(f"{key}: requested/count/skipped disagree with planned {episodes}")
             if ep_success != successes:
                 problems.append(f"{key}: recomputed successes={ep_success} "
                                 f"!= summary successes={successes}")
             if not (0 <= successes <= counted <= requested):
                 problems.append(f"{key}: invalid relations success={successes} "
                                 f"counted={counted} requested={requested}")
-            if counted != requested or (require_no_skips and skipped != 0):
+            if require_no_skips and (counted != requested or skipped != 0):
                 problems.append(f"{key}: incomplete sweep counted={counted} "
                                 f"requested={requested} skipped={skipped}")
             summary = task_dir / "summary.txt"
             if summary.is_file():
-                m = RATE_RE.search(summary.read_text(encoding="utf-8", errors="replace"))
-                if m and (int(m.group(2)) != successes or int(m.group(3)) != counted):
+                text = summary.read_text(encoding="utf-8", errors="replace")
+                m = RATE_RE.search(text)
+                if not m:
+                    problems.append(f"{key}: summary has no valid success rate")
+                elif (int(m.group(2)) != successes or int(m.group(3)) != counted):
                     problems.append(f"{key}: summary {m.group(2)}/{m.group(3)} "
                                     f"contradicts result.json {successes}/{counted}")
+                elif abs(float(m.group(1)) - 100 * successes / max(1, counted)) > 0.011:
+                    problems.append(f"{key}: summary percentage contradicts counts")
+                sm = SKIP_RE.search(text)
+                if sm and (int(sm.group(1)), int(sm.group(2))) != (skipped, requested):
+                    problems.append(f"{key}: summary skipped count contradicts result.json")
             else:
                 problems.append(f"{key}: summary.txt missing")
     if problems:
@@ -329,24 +369,33 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--outputs", default=os.path.normpath(default_outputs))
     ap.add_argument("--out-dir", default=None)
+    ap.add_argument("--episodes-per-task", type=int, default=10,
+                    help="planned episodes per task for --require-full-matrix (default: 10)")
     ap.add_argument("--require-full-matrix", action="store_true",
                     help="hard-fail unless every bucket covers exactly the "
                          "4 LIBERO suites x tasks 0..9 (duplicates, missing, "
                          "and unexpected entries are all failures)")
     args = ap.parse_args()
+    if args.episodes_per_task <= 0:
+        ap.error("--episodes-per-task must be positive")
 
     out_dir = args.out_dir or os.path.join(here, os.pardir, "docs", "results")
     out_dir = os.path.normpath(out_dir)
-    os.makedirs(out_dir, exist_ok=True)
-
-    buckets, hits = aggregate(args.outputs)
+    buckets, hits = aggregate(args.outputs, strict=args.require_full_matrix)
     if not hits:
         raise SystemExit(f"no summary.txt matched under {args.outputs}")
     if args.require_full_matrix:
-        if not validate_run_episodes(args.run_dir):
-            sys.exit(2)
         validate_full_matrix(buckets)
+        for arch, variants in buckets.items():
+            for variant, suites in variants.items():
+                paths = {suite: [Path(args.outputs) / stat["source"] for stat in tasks.values()]
+                         for suite, tasks in suites.items()}
+                validate_run_episodes(
+                    args.outputs, arch=arch, episodes=args.episodes_per_task,
+                    task_paths={suite: [p.parent for p in entries] for suite, entries in paths.items()},
+                )
     data = build(buckets)
+    os.makedirs(out_dir, exist_ok=True)
 
     jpath = os.path.join(out_dir, "eval_summary.json")
     mpath = os.path.join(out_dir, "eval_summary.md")

@@ -88,9 +88,9 @@ element-identical episode-derived noise (unit-tested; per-request
    episodes vs 10/10 for the official package, with 901/903 tensors
    differing. This is a package-level A/B — the experiment does NOT isolate
    weights from config/code, and pure-weight attribution is not claimed.
-   Statistically, if the snapshot truly matched the official 98.1%
-   per-episode success rate, observing 10 consecutive failures has
-   probability (1 − 0.981)^10 ≈ 6.1 × 10⁻¹⁸.
+   The ten selected tasks are not independent identical draws from the
+   published aggregate success rate; no probability-of-failure claim is
+   inferred from that rate.
 2. Gate A verdict per the review stands: stop all noise-side investigation
    of the old 0% results and switch the baseline to official weights.
 3. The snapshot and its derived GGUF (`02941fd1…`) are quarantined; all
@@ -143,8 +143,9 @@ documented as non-identical (C++ keeps F32 activations and normalization with
 BF16 matrix weights, Python uses full-BF16 tensors), so the fixed-input
 divergence magnitude is weight-dependent. A synthetic-noise fixture gave
 0.0167 and the real-observation fixture 0.0105 — the same order, so this is
-not fixture pathology. Both BF16 sides pass 10/10 closed-loop, which rules
-out protocol-level breakage (a mapping bug produces O(1) errors). The BF16
+not sufficient by itself to establish the cause. Both BF16 sides pass
+10/10 closed-loop, a targeted integration observation that does not rule out
+protocol bugs or satisfy the fixed-input parity gate. The BF16
 divergence is recorded here and flagged for the reviewer to re-confirm or
 re-calibrate the BF16 gate; the F32 gate passes with a wide margin.
 

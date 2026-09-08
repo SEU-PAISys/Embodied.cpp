@@ -85,7 +85,7 @@ def load_reference_model(args):
     config.text.local_files_only = True
     config.vision.model_name_or_path = "offline-dinov3-vitb16"
     config.vision.local_files_only = True
-    config.vision.compute_precision = "bf16" if args.precision == "bf16" else "bf16_autocast"
+    config.vision.compute_precision = args.precision
 
     bert_config = BertConfig.from_pretrained(args.bert_path, local_files_only=True)
     dino_config = DINOv3ViTConfig(

@@ -23,7 +23,7 @@ import torch.nn.functional as F
 from PIL import Image
 import zmq
 
-from client.reproducibility import generate_action_noise, noise_checksum
+from client.reproducibility import generate_action_noise, generate_xr0_noise, noise_checksum
 import json
 os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
 os.environ.setdefault("LANG", "C.UTF-8")
@@ -383,7 +383,11 @@ class VlaCppClient:
         recv_timeout_ms: int = DEFAULT_RECV_TIMEOUT_MS,
         n_action_steps: int | None = None,
         noise_seed: int | None = None,
+        xr0_noise_dtype: str = "bf16",
     ):
+        if xr0_noise_dtype not in ("bf16", "f32"):
+            raise ValueError("xr0_noise_dtype must be bf16 or f32")
+        self.xr0_noise_dtype = xr0_noise_dtype
         if arch not in ARCH_PRESETS:
             raise ValueError(f"unknown arch {arch!r}; expected one of {sorted(ARCH_PRESETS)}")
         preset = ARCH_PRESETS[arch]
@@ -872,21 +876,25 @@ class VlaCppClient:
         action_noise = observations.get("action_noise")
         if action_noise is not None:
             noise = np.ascontiguousarray(action_noise, dtype=np.float32).reshape(-1)
-        elif self._episode_noise_seed is not None:
-            # XR0 pairing: the model draws its flow start from
-            # torch.manual_seed(seed) on CUDA, so the explicit noise sent to
-            # C++ must come from the same torch channel (CPU fallback keeps
-            # offline tests runnable); numpy generators would diverge.
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            generator = torch.Generator(device=device)
-            generator.manual_seed(self._episode_noise_seed)
-            noise = torch.randn(1, self.preset_chunk, self.max_state_dim,
-                                generator=generator, device=device,
-                                dtype=torch.bfloat16).float().cpu().numpy().reshape(-1)
+            if noise.size != self.preset_chunk * self.max_state_dim or not np.isfinite(noise).all():
+                raise ValueError("XR0 action_noise must contain 960 finite values")
+            seed, noise_mode = None, "explicit"
+            noise_device, noise_dtype = "explicit", "f32"
         else:
-            seed = _xr0_hash_seed("libero_all", state, images_u8, language_raw)
-            torch.manual_seed(seed)
-            noise = torch.randn(1, self.preset_chunk, self.max_state_dim).numpy().reshape(-1)
+            seed = self._episode_noise_seed
+            noise_mode = "derived" if seed is not None else "observation_hash"
+            if seed is None:
+                seed = _xr0_hash_seed("libero_all", state, images_u8, language_raw)
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            noise_dtype = getattr(self, "xr0_noise_dtype", "bf16")
+            dtype = torch.float32 if noise_dtype == "f32" else torch.bfloat16
+            noise = generate_xr0_noise(seed, device=device, dtype=dtype).reshape(-1)
+            noise_device = device
+        self._noise_meta = {
+            "noise_mode": noise_mode, "noise_seed": seed,
+            "noise_checksum": noise_checksum(noise),
+            "noise_device": noise_device, "noise_dtype": noise_dtype,
+        }
         req.noise.extend(noise.tolist())
 
         return self._request_chunk(req)

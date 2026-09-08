@@ -52,7 +52,7 @@ def xvla_predictor(model, processor, images, state, task, noise, domain_id, seed
                                    dtype=np.uint8) for im in images]
         inputs = processor(images=raw, language_instruction=task)
         proprio = np.zeros((1, 20), np.float32)
-        proprio[0, :8] = state
+        proprio[0, :state.size] = state
         inputs.update(proprio=torch.from_numpy(proprio),
                       domain_id=torch.tensor([domain_id], dtype=torch.long))
         inputs = {key: value.to(device=device, dtype=dtype if value.is_floating_point() else value.dtype)
@@ -91,6 +91,8 @@ def main():
                         help="Python X-VLA only; C++ precision is selected by its server environment")
     parser.add_argument("--xvla-noise-seed", type=int, default=42,
                         help="Python X-VLA requires a fixture matching this seed/device/dtype")
+    parser.add_argument("--xr0-policy-precision", choices=("bf16", "f32"), default="bf16")
+    parser.add_argument("--turbovla-precision", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--xr0-vision-dtype", choices=("bf16", "f16"), default="bf16",
                         help="Python XR0 only: select vision precision independently of the BF16 policy.")
     args = parser.parse_args()
@@ -119,8 +121,9 @@ def main():
         raise ValueError("fixture requires two finite 256px CHW images")
     if args.arch != "xr0" and (not np.issubdtype(images.dtype, np.floating) or images.min() < 0 or images.max() > 1):
         raise ValueError("TurboVLA/X-VLA fixtures must use float images in [0, 1]")
-    if state.shape != (8,) or not np.isfinite(state).all():
-        raise ValueError("fixture requires a finite 8-D raw state")
+    state_shapes = ((8,), (20,)) if args.arch == "xvla" else ((8,),)
+    if state.shape not in state_shapes or not np.isfinite(state).all():
+        raise ValueError(f"{args.arch} requires finite state with shape in {state_shapes}")
     if args.arch == "xr0" and (noise is None or noise.shape != (1, 30, 32) or not np.isfinite(noise).all()):
         raise ValueError("XR0 requires fixed 30x32 noise generated with the reference's seed/dtype/device")
     if args.arch == "xvla" and (noise is None or noise.shape != (1, 30, 20) or not np.isfinite(noise).all()):
@@ -147,9 +150,9 @@ def main():
         cleanup = client.close
     elif args.arch == "turbovla":
         from rollout_turbovla_reference import TurboReferenceClient, load_reference_model, load_norm_arrays
-        args.precision, args.device = "bf16", "cuda"
+        args.precision, args.device = args.turbovla_precision, "cuda"
         model, _ = load_reference_model(args)
-        client = TurboReferenceClient(model, load_norm_arrays(args.norm_gguf))
+        client = TurboReferenceClient(model, load_norm_arrays(args.norm_gguf), args.precision)
         predict = lambda: client._predict_chunk(obs)
     elif args.arch == "xvla":
         from transformers import AutoImageProcessor, AutoModel, AutoProcessor
@@ -163,40 +166,19 @@ def main():
         predict = xvla_predictor(model, processor, images, state, task, noise,
                                  args.domain_id, args.xvla_noise_seed)
     else:
-        from transformers import AutoModel, AutoProcessor
-        from client.vla_cpp_client import _xr0_prompt
-        model = AutoModel.from_pretrained(args.hf_dir, trust_remote_code=True,
-                                        torch_dtype=torch.bfloat16).to("cuda").eval()
-        if args.xr0_vision_dtype == "f16":
-            # Match the deployed F16 mmproj without editing upstream code.
-            # The official model casts visual outputs to the text dtype.
-            model.vlm.visual.to(dtype=torch.float16)
-        processor = AutoProcessor.from_pretrained(args.hf_dir, trust_remote_code=True)
-        config = processor.action_config["libero_all"]
-        # This snapshot's normalization repeats ten identical rows. Extend the
-        # same statistics to the GGUF's 30-step chunk, not a 10-vs-30 comparison.
-        for value in config.values():
-            if not torch.equal(value, value[:, :1].expand_as(value)):
-                raise ValueError("time-dependent normalization cannot be extended to 30 actions")
-        mean, std = (config[k][:, :1].to("cuda") for k in ("mean", "std"))
-        mask = (std > 1e-5).to(torch.bfloat16).expand(1, 30, 32).contiguous()
-        torch.manual_seed(42)
-        actual_noise = torch.randn_like(mask).float().cpu().numpy()
-        if not np.array_equal(noise, actual_noise):
-            raise ValueError("fixture noise differs from official seed=42 CUDA BF16 noise")
-
-        def predict():
-            raw = [(np.clip(im, 0, 1) * 255).astype(np.uint8).transpose(1, 2, 0)
-                   if np.issubdtype(im.dtype, np.floating) else im.transpose(1, 2, 0) for im in images]
-            inputs = processor(text=[_xr0_prompt(task.capitalize() + ".", 2, 1)],
-                               images=raw, videos=None, padding=True, return_tensors="pt").to("cuda")
-            padded = np.zeros(32, np.float32)
-            padded[:8] = state
-            with torch.inference_mode():
-                output = model(**dict(inputs), state=torch.from_numpy(padded).to("cuda", torch.bfloat16)[None, None],
-                               action_mask=mask, num_steps=5, seed=42)
-                return (output.actions.float() * std + mean)[0].cpu().numpy().copy()
-
+        from rollout_xr0_reference import XR0ReferenceClient
+        from client.reproducibility import generate_xr0_noise
+        reference = XR0ReferenceClient(args.hf_dir, vision_dtype=args.xr0_vision_dtype,
+                                       policy_precision=args.xr0_policy_precision)
+        expected_noise = generate_xr0_noise(42, device=reference.device,
+                                            dtype=reference._action_mask.dtype)
+        if not np.array_equal(noise, expected_noise):
+            raise ValueError("fixture noise differs from XR0 seed=42/device/policy dtype")
+        # The official model accepts a seed, not explicit noise. Verify the
+        # supplied fixture once, then use the public reference implementation.
+        reference.reset(noise_seed=42)
+        reference_obs = {key: value for key, value in obs.items() if key != "action_noise"}
+        predict = lambda: reference._predict_chunk(reference_obs)
     sampler = VramSampler(args.server_pid if args.backend == "cpp" else os.getpid(), .02)
     samples, server_samples = [], []
     try:
@@ -231,9 +213,11 @@ def main():
         fixture_sha256=hashlib.sha256(args.fixture.read_bytes()).hexdigest(),
         script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         torch=torch.__version__, transformers=transformers.__version__, numpy=np.__version__,
-        python_precision=({"policy":args.xvla_precision if args.arch == "xvla" else "bf16",
+        fixture_state_dim=int(state.size),
+        python_precision=({"policy":args.xvla_precision if args.arch == "xvla" else
+                           args.xr0_policy_precision if args.arch == "xr0" else args.turbovla_precision,
                            "vision":args.xr0_vision_dtype if args.arch == "xr0" else
-                           args.xvla_precision if args.arch == "xvla" else "bf16"}
+                           args.xvla_precision if args.arch == "xvla" else args.turbovla_precision}
                           if args.backend == "python" else None),
         server_samples=server_samples, vram_samples_mib=sampler.samples_mib, vram_sources=sources,
         gpu_uuids=sorted(set(sampler.gpu_uuids)),

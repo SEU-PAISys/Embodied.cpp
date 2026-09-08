@@ -3,7 +3,7 @@
 > 对标 `eval/SMOLVLA_TECHNICAL_REPORT_ZH.md` 的结构，汇总 XR0（Xiaomi-Robotics-0）、
 > TurboVLA、X-VLA 三个 runtime 的移植验证结果。数据来源为本分支既有评测产物
 > （2026-08-18 ~ 09-03）。V2 复核补入同机 20 回合对照，并撤回错误的 X-VLA 权重/性能结论；
-> [复核报告](v2_followup_20260903.md)与[原始证据摘要](v2_followup_20260903_evidence.json)为更正依据。
+> [复核报告](../docs/results/v2_followup_20260903.md)与[原始证据摘要](../docs/results/v2_followup_20260903_evidence.json)为更正依据。
 
 ## 一、项目概述
 
@@ -14,12 +14,13 @@ wall-clock 与显存样本。所有评测在本地/服务器 RTX 4090 或标注�
 
 ## 二、系统组成与数据流
 
-- 服务端：`serving/vla-server`（单进程多 arch：xr0/turbovla/xvla），GGUF 权重加载
-  （F32/BF16 常驻；k-quant 文件经 `ggml_get_type_traits()->to_float` 反量化后常驻 BF16）。
+- 服务端：共享 `vla-server`，每个进程加载一个模型。TurboVLA/X-VLA 量化文件加载时
+  反量化，默认 BF16 常驻；XR0 保留受支持主模型矩阵的原生量化存储，vision 单独加载。
 - 客户端：`eval/client/run_sim_client_direct.py --arch <arch>` 驱动 LIBERO 闭环
-  （robosuite），动作以 open-loop chunk 回放（turbo 12 步、xr0 30 步、xvla 30 步）。
-- 精度档：GGUF 存储精度（Q8_0/Q4_0/Q4_K）≠ 常驻计算精度（反量化后 BF16 常驻），
-  除 XR0 F32 档与 X-VLA `VLA_XVLA_F32_WEIGHTS=1` 的 F32 常驻配置。
+  （robosuite），默认回放 turbo 12 步、xr0 10 步、xvla 30 步；XR0 生成 30×32 的动作块，
+  生成长度与回放长度不能混用。
+- 精度档分别记录磁盘存储、常驻张量与计算 dtype；低比特文件不自动代表低比特计算。
+  F32 配置需同时核对客户端参数和服务端环境变量，不能只凭文件名判定。
 
 ## 三、模型架构与权重转换
 
@@ -47,8 +48,9 @@ X-VLA 现存 HF 与历史主 GGUF **权重不同**：生产转换映射下 902 �
 ### 3.3 运行时架构分发
 
 `serving/vla-server` 按 GGUF `general.architecture` 分发至 `models/{xr0,turbovla,xvla}.cpp`；
-k-quant 源文件统一经 `ggml_get_type_traits()->to_float` 反量化（Q8_0/Q4_0/Q4_K/Q6_K 全支持；
-Q4_K 转换经 215 张量逐一离线验证，最大误差 0.067）。
+TurboVLA/X-VLA 的量化源张量经 `ggml_get_type_traits()->to_float` 反量化；
+XR0 的原生量化路径不属于这一常驻 BF16 分类。Q4_K 的历史 215 张量离线验证
+（最大误差 0.067）是转换检查，不是闭环精度或无损量化证明。
 
 ## 四、实现设计与复用边界
 
@@ -79,7 +81,7 @@ Q4_K 转换经 215 张量逐一离线验证，最大误差 0.067）。
 
 另一次 seed 42 产物复点数：BF16 1961/2000（98.05%）、Q8_0 1958/2000（97.90%）、
 Q4_K 1957/2000（97.85%）。此前本表将历史逐 suite 行与新批次总数混在一起，现已分开；
-逐项数据见 [XR0 报告](xr0_libero.md)。
+逐项数据见 [XR0 报告](XR0_LIBERO_VALIDATION.md)。
 
 **TurboVLA**（10 ep/task，400 total/档；seed7 批次，256px）：
 
@@ -115,12 +117,13 @@ mask/padding/渲染修复后的 seed42 复验（1200 episodes）：95.50/94.75/9
 | C++ Q8_0 | 388/400 (97.00%) | | C++ Q6_K | 393/400 (98.25%) |
 | C++ Q4_0 | 391/400 (97.75%) | | C++ Q4_K | 393/400 (98.25%) |
 
-历史 seed7 批次互相印证（差异 ≤1.7pp）。性能（官方权重，同卡 4090）：
+上述为既有报告中的重建矩阵，本轮未重新验证其逐回合原始产物。
+历史 seed7 与重建矩阵权重/噪声协议不同，不作配对等价性结论。报告中的跨精度性能为：
 C++ BF16 96.4 ms vs Python F32 110.0 ms（**0.88**）；VRAM 2370 vs 4142 MiB
 （**0.57**）；C++ F32 115.0 ms（1.05）。历史快照（3f16…）派生的
 parity/延迟/显存数字全部隔离作废。
 
-X-VLA 修复后 seed42 复验：bf16 387/400（96.75%，256px 口径）；object 精度探针
+历史源 X-VLA 修复后 seed42 复验（非上述官方重建矩阵）：bf16 387/400（96.75%，256px 口径）；object 精度探针
 Q8_0 98/100 · Q4_0 99/100 · Q4_K 100/100 · **F32 常驻 99/100**（主 GGUF +
 `VLA_XVLA_F32_WEIGHTS=1`）。mask/padding 修复与 256 口径影响见 takeover 报告。
 
@@ -130,9 +133,11 @@ Q8_0 98/100 · Q4_0 99/100 · Q4_K 100/100 · **F32 常驻 99/100**（主 GGUF +
 |---|---|---:|---|
 | TurboVLA | 8 阶段中间层 + 最终动作 | **0.00418**（短指令）/ 0.00281–0.00530（修复后复验）| atol 0.01 ✅ |
 | XR0 | 主模型+vision 双路 | 0.00936 | atol 0.01 ✅ |
-> **隔离说明**：下表 parity 数值来自历史快照权重（`3f16…`，Gate A 判定无效发布基线），仅作管线验证记录保留；官方权重（`260cc588…`）的 fixed-input parity 见 Gate A 报告。
+| X-VLA | 官方权重 `260cc588…` 固定输入 | F32 **0.000646**；BF16 **0.010525** | atol 0.005：F32 通过，BF16 未通过（49/600 超差） |
 
-| X-VLA | 新同源 HF/GGUF 固定输入 | F32 **0.000203**；BF16 **0.003104** | atol 0.005 ✅ |
+X-VLA 数值来自 [Gate A 报告](../docs/results/xvla_checkpoint_gate_a_20260905.md)。
+历史快照 `3f16…` 的 F32 0.000203 / BF16 0.003104 仅保留作旧管线记录，不作发布基线。
+闭环成功率不能替代固定输入数值阈值验收。
 
 TurboVLA 满长指令（SEP@20）mask 缺陷修复后，短/满长指令 parity 全部通过；
 逐层 dump 定位记录于 takeover 报告（文本塔为误差爆点，视觉塔次之）。
@@ -146,7 +151,8 @@ TurboVLA 满长指令（SEP@20）mask 缺陷修复后，短/满长指令 parity 
 双方均 20/20 成功。相同 `get_action()` 边界下，按环境步数加权 C++ **2.147**、
 Python **3.637 ms/step**，约低 41%。这是两任务修复版对照，不替换 seed 7 主表。
 XR0 历史官方 2000 回合缺时间戳，无法推算 per-step；历史 X-VLA 缺匹配权重，
-另建的新同源 HF/GGUF 对照已有固定输入 parity 和重复性能测试，但没有完整成功率对照。
+不能用另一份权重的 Python 数字补齐。官方权重 phase2 的完整结果已单独审核，
+与历史缺失权重和无效中间快照不是同一组证据，见[当前台账](THREE_MODEL_VALIDATION.md)。
 
 固定原始 CPU 观测 → 完整 CPU 动作块（5 warmup + 100 calls，同卡 RTX 4090）：
 XR0 双侧 BF16 policy/F16 vision：C++ **53.56**、Python **143.63 ms**；
@@ -157,7 +163,7 @@ TurboVLA 双侧 BF16：C++ **27.24**、Python **28.39 ms**。
 C++ 延迟优势，且 C++ 进程显存高 3.9%，不能替代历史行或宣称加速。
 115.9 ms 旧 Python 短测只有 20 次前向且不含预处理/读回，日志的 3.437 GiB
 为 allocator 峰值，不能把 XR0 的 9790 MiB 套给它。
-完整 std/p50/p95/p99、抽样限制与原始来源见[复核报告](v2_followup_20260903.md)。
+完整 std/p50/p95/p99、抽样限制与原始来源见[复核报告](../docs/results/v2_followup_20260903.md)。
 
 ### 5.5 构建与测试
 
@@ -177,14 +183,18 @@ parity 回归（SEP@10/13/18/20 mask 用例）、真实 symlink 安装测试全�
 
 1. XR0 官方 Python 闭环 per-step：官方 2000ep 产物仅含 rollout 视频/JSON，**无时间戳
    记录**，per-step 不可推算——如需该口径需重跑官方评测并显式计时（后续工作）。
-2. TurboVLA 同机公共闭环最小对照已补，完整 Python 四 suite 重跑未补。
-3. XR0/X-VLA 的 `--derive-episode-noise` 现已真正控制请求噪声并有回归测试，
-   默认关闭保留历史序列；新协议全量成功率未重跑。TurboVLA ACT 无 action-noise 输入，
+2. TurboVLA 公共 Python 四 suite 重跑已完成：真正 FP32 **386/400**、BF16
+   **385/400**，均零跳过。历史 392/400 的“FP32”实际用了 BF16-autocast 视觉塔，
+   不能与真正 FP32 混称。四种量化副本已从完整元数据的同源 GGUF 重建，等待全量补验。
+3. XR0/X-VLA 的 `--derive-episode-noise` 控制请求噪声。当前 XR0 两端统一按设备和
+   policy dtype 生成噪声，修正了 C++ 客户端原先 CPU/F32 的默认序列；旧数据不自动
+   成为当前协议的对照。新协议 F32/F16 双端全量已完成：C++ **396/400**、Python
+   **393/400**，400 对首请求噪声完全匹配；BF16/量化补验已排队。TurboVLA ACT 无 action-noise 输入，
    LingBot 使用独立噪声选项，均不接受此开关。
 4. TurboVLA Q4/Q6 档的 goal 损失源于 GGUF 缺失逐指令 padding 元数据（与 BF16
    的 goal 回归同源），并非量化固有退化。runtime 内置 padding 表修复后：
    正确布局 Q6 全量 **378/400（94.50%）**（我们独立复验 379/400，±1 episode 噪声级），
    同协议 BF16 **382/400（95.50%）**，goal 98/100，逐回合双侧精确检验 p=0.424，
    不称无损或等价；Q4_K 同法升至 **92.50%**（goal 86）。详见
-   [Q6 产物审计](q6_artifact_audit_20260904.md)。imatrix 只是一种候选方向，
+   [Q6 产物审计](../docs/results/q6_artifact_audit_20260904.md)。imatrix 只是一种候选方向，
    在有校准实验前不作为已定位的根因或既定方案。

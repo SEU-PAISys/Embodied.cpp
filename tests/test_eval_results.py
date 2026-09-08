@@ -9,6 +9,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
@@ -230,7 +231,8 @@ class RunEpisodeGateTests(unittest.TestCase):
                     "successes": min(successes, c)}), encoding="utf-8")
                 if with_summary:
                     (td / "summary.txt").write_text(
-                        f"Success rate: 80.00%  ({min(successes, c)}/{c})", encoding="utf-8")
+                        f"Success rate: {100 * min(successes, c) / max(1, c):.2f}%  "
+                        f"({min(successes, c)}/{c})\nSkipped: {skipped}/{episodes}\n", encoding="utf-8")
         return root
 
     def test_complete_run_passes(self):
@@ -278,6 +280,64 @@ class RunEpisodeGateTests(unittest.TestCase):
             shutil.rmtree(root / "spatial" / "xvla" / "libero_spatial" / "task_9")
             with self.assertRaisesRegex(ValueError, "task dirs"):
                 summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_hidden_skips_and_false_successes_fail(self):
+        for mutation, message in (("skipped", "recomputed skipped"),
+                                  ("success", "recomputed successes")):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                root = self._make_run(tmp)
+                path = root / "spatial/xvla/libero_spatial/task_0/result.json"
+                data = json.loads(path.read_text())
+                for ep in data["episodes"]:
+                    ep[mutation] = mutation == "skipped"
+                path.write_text(json.dumps(data))
+                with self.assertRaisesRegex(ValueError, message):
+                    summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_malformed_summary_and_wrong_percentage_fail(self):
+        for text in ("not a result", "Success rate: 100.00% (8/10)",
+                     "Success rate: 80.00% (8/10)\nSkipped: 1/10"):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                root = self._make_run(tmp)
+                (root / "spatial/xvla/libero_spatial/task_0/summary.txt").write_text(text)
+                with self.assertRaisesRegex(ValueError, "summary"):
+                    summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_cli_checks_every_model_and_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for arch in ("xr0", "turbovla", "xvla"):
+                for run in ("cpp", "python"):
+                    self._make_run(Path(tmp) / arch / run, arch=arch, suites=summary.SUITE_ORDER)
+            dest = Path(tmp) / "report"
+            argv = ["aggregate", "--outputs", tmp, "--out-dir", str(dest), "--require-full-matrix"]
+            with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()):
+                summary.main()
+            data = json.loads((dest / "eval_summary.json").read_text())
+            self.assertEqual(set(data["models"]), {"xr0", "turbovla", "xvla"})
+            for variants in data["models"].values():
+                self.assertEqual(len(variants), 2)
+                for run in variants.values():
+                    self.assertEqual(run["overall_episodes"], 400)
+
+    def test_cli_rejects_partial_episodes_without_creating_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp, suites=summary.SUITE_ORDER, episodes=1, successes=1)
+            dest = Path(tmp) / "report"
+            argv = ["aggregate", "--outputs", str(root), "--out-dir", str(dest), "--require-full-matrix"]
+            with patch.object(sys, "argv", argv), self.assertRaisesRegex(ValueError, "episode ids"):
+                summary.main()
+            self.assertFalse(dest.exists())
+
+    def test_cli_accepts_explicit_fifty_episode_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp, arch="xr0", suites=summary.SUITE_ORDER, episodes=50)
+            dest = Path(tmp) / "report"
+            argv = ["aggregate", "--outputs", str(root), "--out-dir", str(dest),
+                    "--require-full-matrix", "--episodes-per-task", "50"]
+            with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()):
+                summary.main()
+            data = json.loads((dest / "eval_summary.json").read_text())
+            self.assertEqual(data["models"]["xr0"]["run:unlabelled"]["overall_episodes"], 2000)
 
 
 if __name__ == "__main__":

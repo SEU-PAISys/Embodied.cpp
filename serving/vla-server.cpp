@@ -240,15 +240,17 @@ int main(int argc, char ** argv) {
     zmq::pollitem_t poll[] = {{ static_cast<void*>(sock), 0, ZMQ_POLLIN, 0 }};
 
     uint64_t served = 0;
+    int exit_status = 0;
     while (!g_shutdown.load(std::memory_order_relaxed)) {
 
         try {
             zmq::poll(poll, 1, std::chrono::milliseconds(200));
         } catch (const zmq::error_t & e) {
-            if (e.num() == EINTR) continue;
-            std::fprintf(stderr, "vla-server: poll error errno=%d (%s); continuing\n",
+            if (e.num() == EINTR || e.num() == EAGAIN) continue;
+            std::fprintf(stderr, "vla-server: fatal poll error errno=%d (%s); stopping\n",
                          e.num(), e.what());
-            continue;
+            exit_status = 1;
+            break;
         }
         if (!(poll[0].revents & ZMQ_POLLIN)) continue;
 
@@ -257,10 +259,11 @@ int main(int argc, char ** argv) {
             auto rr = sock.recv(req_msg, zmq::recv_flags::none);
             if (!rr) continue;
         } catch (const zmq::error_t & e) {
-            if (e.num() == EINTR) continue;
-            std::fprintf(stderr, "vla-server: recv error errno=%d (%s); continuing\n",
+            if (e.num() == EINTR || e.num() == EAGAIN) continue;
+            std::fprintf(stderr, "vla-server: fatal recv error errno=%d (%s); stopping\n",
                          e.num(), e.what());
-            continue;
+            exit_status = 1;
+            break;
         }
 
         vla::PredictRequest req;
@@ -557,5 +560,5 @@ int main(int argc, char ** argv) {
     zctx.close();
     vla::model_free(model);
     google::protobuf::ShutdownProtobufLibrary();
-    return 0;
+    return exit_status;
 }

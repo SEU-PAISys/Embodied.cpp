@@ -20,6 +20,68 @@ def load_script(name):
 
 
 class EvidenceToolTests(unittest.TestCase):
+    def test_turbo_benchmark_records_actual_requested_vision_precision(self):
+        module = load_script("bench_vla_boundary")
+        import rollout_turbovla_reference as reference
+        for precision in ("fp32", "bf16"):
+            with tempfile.TemporaryDirectory() as tmp:
+                fixture, output = Path(tmp)/"fixture.npz", Path(tmp)/"result.json"
+                np.savez(fixture, images_chw=np.zeros((2,3,256,256), np.float32),
+                         state=np.zeros(8, np.float32), instruction="pick")
+                client = SimpleNamespace(_predict_chunk=lambda _: np.zeros((12,7), np.float32))
+                sampler = SimpleNamespace(ident=None, sources=[], samples_mib=[], gpu_uuids=[])
+                argv = ["bench", "--arch", "turbovla", "--backend", "python",
+                        "--fixture", str(fixture), "--output", str(output),
+                        "--checkpoint", tmp, "--official-root", tmp, "--bert-path", tmp,
+                        "--norm-gguf", tmp, "--turbovla-precision", precision,
+                        "--warmup", "1", "--n", "1", "--memory-requests", "0"]
+                with patch("sys.argv", argv), patch.object(module, "VramSampler", return_value=sampler), \
+                     patch.object(reference, "load_reference_model", return_value=(None, None)), \
+                     patch.object(reference, "load_norm_arrays", return_value=None), \
+                     patch.object(reference, "TurboReferenceClient", return_value=client) as create:
+                    module.main()
+                self.assertEqual(create.call_args.args[2], precision)
+                self.assertEqual(json.loads(output.read_text())["python_precision"],
+                                 {"policy": precision, "vision": precision})
+
+    def test_xr0_benchmark_forwards_policy_precision(self):
+        import sys
+        import torch
+        module = load_script("bench_vla_boundary")
+        import rollout_xr0_reference
+        for precision, dtype in (("bf16", torch.bfloat16), ("f32", torch.float32)):
+            with self.subTest(precision=precision), tempfile.TemporaryDirectory() as tmp:
+                seen = []
+                class Reference:
+                    device = torch.device("cpu")
+                    _action_mask = torch.zeros((1, 30, 32), dtype=dtype)
+                    def __init__(self, path, **kwargs):
+                        seen.append(kwargs)
+                    def reset(self, **kwargs):
+                        seen.append(kwargs)
+                    def _predict_chunk(self, obs):
+                        self_test.assertNotIn("action_noise", obs)
+                        return np.zeros((30, 32), np.float32)
+                self_test = self
+                fixture, output = Path(tmp)/"fixture.npz", Path(tmp)/"result.json"
+                noise = torch.randn((1,30,32), dtype=dtype,
+                                    generator=torch.Generator().manual_seed(42)).float().numpy()
+                np.savez(fixture, images_chw=np.zeros((2,3,256,256),np.float32),
+                         state=np.zeros(8,np.float32), instruction="pick", action_noise=noise)
+                sampler = SimpleNamespace(ident=None, sources=[], samples_mib=[], gpu_uuids=[])
+                argv = ["bench", "--arch", "xr0", "--backend", "python", "--hf-dir", tmp,
+                        "--fixture", str(fixture), "--output", str(output),
+                        "--xr0-policy-precision", precision, "--xr0-vision-dtype", "f16",
+                        "--warmup", "1", "--n", "1", "--memory-requests", "0"]
+                with patch.object(sys, "argv", argv), \
+                     patch.object(rollout_xr0_reference, "XR0ReferenceClient", Reference), \
+                     patch.object(module, "VramSampler", return_value=sampler):
+                    module.main()
+                self.assertEqual(seen[0]["policy_precision"], precision)
+                self.assertEqual(seen[0]["vision_dtype"], "f16")
+                self.assertEqual(seen[1], {"noise_seed":42})
+                self.assertEqual(json.loads(output.read_text())["python_precision"]["policy"], precision)
+
     def test_xvla_official_predictor_boundary_and_repeatable_noise(self):
         import torch
         module = load_script("bench_vla_boundary")
@@ -65,6 +127,9 @@ class EvidenceToolTests(unittest.TestCase):
         self.assertEqual(seen[0]["steps"], 10)
         np.testing.assert_array_equal(seen[0]["proprio"].numpy()[0, :8], state)
         self.assertEqual(seen[0]["proprio"][0, 8:].count_nonzero(), 0)
+        full_state = np.arange(20, dtype=np.float32)
+        module.xvla_predictor(Model(), processor, images, full_state, "pick", noise, 3, 42)()
+        np.testing.assert_array_equal(seen[-1]["proprio"].numpy()[0], full_state)
         with self.assertRaisesRegex(ValueError, "fixture noise differs"):
             module.xvla_predictor(Model(), processor, images, state, "pick", noise + 1, 3, 42)
 

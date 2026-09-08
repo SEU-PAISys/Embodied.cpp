@@ -196,9 +196,9 @@ class ConfigTests(unittest.TestCase):
             runner.build_client(runner.parse_args([
                 "--arch", "xvla", "--implementation", "python", "--task-id", "0",
             ]))
-        with self.assertRaisesRegex(ValueError, "supports xvla and xr0 only"):
+        with self.assertRaisesRegex(ValueError, "supports xvla, xr0 and turbovla"):
             runner.build_client(runner.parse_args([
-                "--arch", "turbovla", "--implementation", "python", "--hf-dir", "/model",
+                "--arch", "smolvla", "--implementation", "python", "--hf-dir", "/model",
                 "--task-id", "0",
             ]))
         argv = ["--arch", "xvla", "--implementation", "python", "--hf-dir", "/model",
@@ -727,7 +727,66 @@ class ClientTests(unittest.TestCase):
                     1, client.preset_chunk, client.max_state_dim,
                     generator=torch.Generator().manual_seed(123),
                 ).numpy().reshape(-1)
+                if arch == "xr0":
+                    from client.reproducibility import generate_xr0_noise
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                    expected = generate_xr0_noise(123, device=device, dtype=torch.bfloat16).reshape(-1)
                 np.testing.assert_array_equal(client.pb.PredictRequest().noise, expected)
+
+    def test_xr0_noise_matches_official_draw_and_preserves_rng(self):
+        import torch
+        from client.reproducibility import generate_xr0_noise
+        devices = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
+        for device in devices:
+            for dtype in (torch.bfloat16, torch.float32):
+                with self.subTest(device=device, dtype=dtype):
+                    torch.manual_seed(123)
+                    expected = torch.randn_like(torch.zeros((1, 30, 32), device=device, dtype=dtype))
+                    cpu_before = torch.get_rng_state().clone()
+                    gpu_before = torch.cuda.get_rng_state().clone() if device == "cuda" else None
+                    actual = generate_xr0_noise(123, device=device, dtype=dtype)
+                    np.testing.assert_array_equal(actual, expected.float().cpu().numpy())
+                    self.assertTrue(torch.equal(cpu_before, torch.get_rng_state()))
+                    if gpu_before is not None:
+                        self.assertTrue(torch.equal(gpu_before, torch.cuda.get_rng_state()))
+
+    def test_xr0_reference_and_cpp_noise_metadata_match(self):
+        import torch
+        from scripts.rollout_xr0_reference import XR0ReferenceClient
+        for dtype in (torch.bfloat16, torch.float32):
+            for seed in (None, 7):
+                with self.subTest(dtype=dtype, seed=seed):
+                    cpp, obs = fake_client("xr0")
+                    obs.pop("action_noise")
+                    obs["observation.state"] = np.arange(8, dtype=np.float32)
+                    cpp.xr0_noise_dtype = "f32" if dtype == torch.float32 else "bf16"
+                    cpp.reset(noise_seed=seed)
+                    cpp._predict_chunk(obs)
+                    py = XR0ReferenceClient.__new__(XR0ReferenceClient)
+                    py.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                    py._action_mask = torch.zeros((1, 30, 32), device=py.device, dtype=dtype)
+                    py._episode_noise_seed = seed
+                    py._last_images_u8 = [np.zeros((256, 256, 3), dtype=np.uint8)] * 2
+                    actual_seed, mode, checksum = py._resolve_noise(obs, obs["observation.state"], obs["task"].capitalize())
+                    profile = cpp.get_last_inference_profile()
+                    self.assertEqual((actual_seed, mode, checksum),
+                                     (profile["noise_seed"], profile["noise_mode"], profile["noise_checksum"]))
+                    with self.assertRaisesRegex(ValueError, "cannot inject"):
+                        py._resolve_noise({"action_noise": np.zeros((30, 32))}, np.zeros(8), "task")
+
+    def test_xr0_standalone_forwards_seed_and_wraps_adapter(self):
+        from scripts import rollout_xr0_reference as reference
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(reference, "XR0ReferenceClient") as constructor, \
+             patch.object(runner, "run_one_task") as rollout:
+            constructor.return_value.get_arch.return_value = "xr0"
+            reference.main(["--hf-dir", tmp, "--output-dir", tmp, "--noise-seed", "42"])
+            args, adapter = rollout.call_args.args[:2]
+            self.assertEqual(args.noise_seed, 42)
+            self.assertEqual(args.control_mode, "relative")
+            self.assertTrue(args.derive_episode_noise)
+            self.assertIsInstance(adapter, LIBEROSimAdapter)
+            self.assertIs(adapter._client, constructor.return_value)
 
     def test_xvla_reference_default_reset_uses_observation_hash_noise(self):
         """The Python reference client must mirror the C++ noise gate: a
@@ -881,6 +940,40 @@ class ClientTests(unittest.TestCase):
                 wrist = parsed.model_inputs["observation.images.image2"]
                 expected = pixels if arch == "xvla" else pixels[::-1, ::-1]
                 np.testing.assert_allclose(wrist, expected.transpose(2, 0, 1) / 255, atol=1e-7)
+
+
+class ServerErrorTests(unittest.TestCase):
+    def test_production_transport_error_branches_terminate_or_retry(self):
+        compiler = shutil.which("c++") or shutil.which("g++")
+        if not compiler:
+            self.skipTest("C++ compiler unavailable")
+        source = (REPO / "serving/vla-server.cpp").read_text(encoding="utf-8")
+        # Compile the actual two catch bodies, not a Python reimplementation.
+        bodies = source.split("catch (const zmq::error_t & e) {")[1:3]
+        self.assertEqual(len(bodies), 2)
+        preamble = """#include <cerrno>
+#include <cstdio>
+struct Error { int code; int num() const { return code; }
+const char * what() const { return "injected"; } };
+"""
+        functions = []
+        for index, body in enumerate(bodies):
+            body = body.split("\n        }", 1)[0]
+            functions.append(
+                f"int probe{index}(int code) {{ int exit_status=0, attempts=0; "
+                "for (; attempts<3;) { ++attempts; Error e{code};\n"
+                + body + "\n} return exit_status*10+attempts; }")
+        checks = "".join(
+            f"if(probe{i}(EINTR)!=3 || probe{i}(EAGAIN)!=3 || "
+            f"probe{i}(EBADF)!=11 || probe{i}(EINVAL)!=11) return 1;"
+            for i in range(2))
+        with tempfile.TemporaryDirectory() as tmp:
+            cpp, binary = Path(tmp) / "errors.cpp", Path(tmp) / "errors"
+            cpp.write_text(preamble + "\n".join(functions) +
+                           "\nint main(){" + checks + "return 0;}", encoding="utf-8")
+            subprocess.run([compiler, "-std=c++17", str(cpp), "-o", str(binary)],
+                           check=True, capture_output=True, timeout=60)
+            subprocess.run([str(binary)], check=True, capture_output=True, timeout=10)
 
 
 if __name__ == "__main__":

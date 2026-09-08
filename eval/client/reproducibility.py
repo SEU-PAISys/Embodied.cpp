@@ -38,3 +38,16 @@ def noise_checksum(noise: np.ndarray) -> str:
     return hashlib.sha256(
         np.ascontiguousarray(noise, dtype=np.float32).tobytes()
     ).hexdigest()[:16]
+
+
+def generate_xr0_noise(seed: int, *, device, dtype) -> np.ndarray:
+    """Mirror XR0's contiguous [1,30,32] randn_like(action_mask).
+
+    RNG backend and dtype are part of the protocol, not inferred from the
+    GGUF filename. An isolated generator avoids changing global RNG state.
+    """
+    import torch
+
+    generator = torch.Generator(device=device).manual_seed(seed)
+    return torch.randn((1, 30, 32), generator=generator, device=device,
+                       dtype=dtype).float().cpu().numpy()

@@ -1,12 +1,13 @@
 """Official-PyTorch baseline rollout for Xiaomi-Robotics-0 (XR0) on LIBERO.
 
 Mirrors scripts/rollout_xvla_reference.py: same vendored LiberoEnv, seeds, init
-states, per-suite step caps, queued-chunk replay and absolute ee control, so
+states, per-suite step caps, queued-chunk replay and relative ee control, so
 results pair directly with the C++ server numbers under the shared runner
 (`run_sim_client_direct.py --implementation python --arch xr0`).
 
-Noise protocol matches VlaCppClient's XR0 path: explicit observation noise,
-then the reset-time episode seed, then the observation-hash fallback. XR0's
+Noise protocol matches VlaCppClient's seeded XR0 path: reset-time episode
+seed, then observation-hash fallback, with matching RNG device and dtype. Arbitrary
+explicit observation noise is rejected because this upstream accepts only a seed. XR0's
 action head draws its flow start from `torch.manual_seed(seed)` internally
 (CUDA Philox), so the derived-seed protocol pairs the Python `seed=` channel
 with the C++ explicit CUDA-generated noise of the same seed. A constructor
@@ -33,7 +34,7 @@ import numpy as np
 import torch
 
 import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
-from client.reproducibility import noise_checksum
+from client.reproducibility import generate_xr0_noise, noise_checksum
 from client.vla_cpp_client import _xr0_hash_seed, _xr0_prompt
 
 LIBERO_SUITE_ALIASES = {
@@ -79,17 +80,11 @@ class XR0ReferenceClient:
             for mod in self.model.modules():
                 if getattr(mod, "dtype", None) == torch.bfloat16:
                     mod.dtype = torch.float32
-            if vision_dtype == "f16":
-                self.model.vlm.visual.to(dtype=torch.float16)
-            self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
         else:
             self.model = AutoModel.from_pretrained(
                 model_path, trust_remote_code=True, torch_dtype=self._policy_dtype,
             ).to(self.device).eval()
-            if vision_dtype == "f16":
-                # Match the deployed F16 mmproj without editing upstream code.
-                self.model.vlm.visual.to(dtype=torch.float16)
-            self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+        self.model.vlm.visual.to(dtype=torch.float16 if vision_dtype == "f16" else torch.bfloat16)
         self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
         action_config = self.processor.action_config["libero_all"]
         for value in action_config.values():
@@ -147,10 +142,7 @@ class XR0ReferenceClient:
             raise ValueError(
                 "XR0ReferenceClient cannot inject arbitrary action_noise: the "
                 "XR0 head seeds its internal randn_like with --noise-seed. "
-                "Use noise_seed instead of action_noise for this model.")
-            seed = int(self._episode_noise_seed) if self._episode_noise_seed is not None else 0
-            noise = np.ascontiguousarray(explicit_noise, dtype=np.float32).reshape(-1)
-            return seed, "explicit", noise_checksum(noise)
+                "Use --noise-seed with --derive-episode-noise in the public runner.")
         if self._episode_noise_seed is not None:
             seed = int(self._episode_noise_seed)
             mode = "derived"
@@ -158,14 +150,8 @@ class XR0ReferenceClient:
             images_u8 = getattr(self, "_last_images_u8", None)
             seed = _xr0_hash_seed("libero_all", state, images_u8 or [], language_raw)
             mode = "observation_hash"
-        # Checksum of the equivalent explicit CUDA draw (same shape/dtype as
-        # the model's internal randn_like) without disturbing model RNG use.
-        states = (torch.cuda.get_rng_state(self.device), torch.get_rng_state())
-        torch.manual_seed(seed)
-        probe = torch.randn(1, 30, 32, device=self.device, dtype=torch.bfloat16)
-        torch.cuda.set_rng_state(states[0], self.device)
-        torch.set_rng_state(states[1])
-        return seed, mode, noise_checksum(probe.float().cpu().numpy())
+        probe = generate_xr0_noise(seed, device=self.device, dtype=self._action_mask.dtype)
+        return seed, mode, noise_checksum(probe)
 
     def _predict_chunk(self, observations):
         images_u8 = []
@@ -224,11 +210,13 @@ class XR0ReferenceClient:
             "model_action_dim": 32, "replay_chunk_size": self.n_action_steps,
             "noise_mode": noise_mode, "noise_seed": seed,
             "noise_checksum": cksum,
+            "noise_device": self.device.type,
+            "noise_dtype": "f32" if self._action_mask.dtype == torch.float32 else "bf16",
         }
         return actions
 
 
-def main() -> None:
+def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hf-dir", required=True, type=Path)
     parser.add_argument("--vision-dtype", choices=("bf16", "f16"), default="f16")
@@ -239,11 +227,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--noise-seed", type=int, default=None)
     parser.add_argument("--output-dir", required=True, type=Path)
-    options = parser.parse_args()
+    options = parser.parse_args(argv)
+    if options.noise_seed is not None and options.noise_seed < 0:
+        parser.error("--noise-seed must be non-negative")
 
     from client.run_sim_client_direct import LIBEROSimAdapter, parse_args, run_one_task
-
-    from adapter.sim.libero import LIBEROSimAdapter as _  # noqa: F401  (adapter import parity)
 
     client = XR0ReferenceClient(
         options.hf_dir, vision_dtype=options.vision_dtype,
@@ -254,8 +242,9 @@ def main() -> None:
         "--task-ids", *map(str, options.task_ids), "--n-episodes", str(options.n_episodes),
         "--seed", str(options.seed), "--n-action-steps", "10", "--image-size", "256",
         "--observation-width", "256", "--observation-height", "256",
-        "--output-dir", str(options.output_dir), "--no-video", "--control-mode", "absolute",
-    ])
+        "--output-dir", str(options.output_dir), "--no-video", "--control-mode", "relative",
+    ] + (["--noise-seed", str(options.noise_seed), "--derive-episode-noise"]
+         if options.noise_seed is not None else []))
     options.output_dir.mkdir(parents=True, exist_ok=True)
     # The simulator returns raw observations; wrap the client in the same
     # adapter the public --implementation python path uses, so image/state

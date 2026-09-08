@@ -185,8 +185,28 @@ def build_client(args):
                 policy_precision=args.xr0_policy_precision,
                 n_action_steps=args.n_action_steps, noise_seed=args.noise_seed,
             ))
+        if args.arch == "turbovla":
+            from scripts.rollout_turbovla_reference import (
+                TurboReferenceClient, load_reference_model, load_norm_arrays,
+            )
+            required = ("checkpoint", "official_root", "bert_path", "norm_gguf")
+            missing = [name for name in required if not getattr(args, f"turbovla_{name}")]
+            if missing:
+                raise ValueError("TurboVLA Python requires " + ", ".join(
+                    "--turbovla-" + name.replace("_", "-") for name in missing))
+            import torch
+            reference_args = argparse.Namespace(
+                **{name: Path(getattr(args, f"turbovla_{name}")) for name in required},
+                precision=args.turbovla_precision, checkpoint_key=args.turbovla_checkpoint_key,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+            )
+            model, _ = load_reference_model(reference_args)
+            return LIBEROSimAdapter(TurboReferenceClient(
+                model, load_norm_arrays(reference_args.norm_gguf),
+                precision=args.turbovla_precision, n_action_steps=args.n_action_steps,
+            ))
         raise ValueError(
-            f"--implementation python supports xvla and xr0 only, got {args.arch!r}")
+            f"--implementation python supports xvla, xr0 and turbovla, got {args.arch!r}")
 
     default_lerobot_image_keys = ["observation.images.image", "observation.images.image2"]
     lingbot_image_keys = (
@@ -216,6 +236,7 @@ def build_client(args):
                 recv_timeout_ms=args.recv_timeout_ms,
                 n_action_steps=args.n_action_steps,
                 noise_seed=args.noise_seed,
+                xr0_noise_dtype=args.xr0_policy_precision,
             )
         )
     from client.lingbot_world_client import LingBotWorldClient
@@ -515,7 +536,9 @@ def run_one_task(
                                 inference_profile.get("noise_checksum"):
                             first_noise_meta = {
                                 key: inference_profile[key]
-                                for key in ("noise_mode", "noise_seed", "noise_checksum")
+                                for key in ("noise_mode", "noise_seed", "noise_checksum",
+                                            "noise_device", "noise_dtype")
+                                if key in inference_profile
                             }
                 if profiler is not None:
                     profiler.capture_inference(client)
@@ -672,7 +695,7 @@ def parse_args(argv=None):
     parser.add_argument("--arch", choices=ARCH_CHOICES, default="lingbot_va",
         help="Model/client path. Also namespaces the output dir.")
     parser.add_argument("--implementation", choices=("cpp", "python"), default="cpp",
-        help="Inference implementation; Python currently supports the official X-VLA reference.")
+        help="Inference implementation; Python supports X-VLA, XR0 and TurboVLA references.")
     parser.add_argument("--hf-dir", type=str, default=None,
         help="Official Hugging Face checkpoint directory for --implementation python.")
     parser.add_argument("--xvla-precision", choices=("bf16", "f32"), default="bf16",
@@ -680,7 +703,12 @@ def parse_args(argv=None):
     parser.add_argument("--xr0-vision-dtype", choices=("bf16", "f16"), default="f16",
         help="Official Python XR0 vision tower dtype (f16 matches the deployed mmproj).")
     parser.add_argument("--xr0-policy-precision", choices=("bf16", "f32"), default="bf16",
-        help="Official Python XR0 policy-side compute precision (f32 mirrors VLA_XR0_F32_WEIGHTS).")
+        help="Python XR0 policy and both clients' noise dtype; for C++ f32 also set VLA_XR0_F32_WEIGHTS=1 on the server.")
+    for option in ("checkpoint", "official-root", "bert-path", "norm-gguf"):
+        parser.add_argument(f"--turbovla-{option}", type=str, default=None,
+                            help="TurboVLA Python reference asset (matching checkpoint/source).")
+    parser.add_argument("--turbovla-checkpoint-key", default="model_state_dict")
+    parser.add_argument("--turbovla-precision", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--vla-addr", type=str, default="tcp://localhost:5555",
         help="ZMQ address of the C++ inference daemon, for example vla-server or vla-server.")
     parser.add_argument("--tokenizer", type=str, default=None,
@@ -832,6 +860,12 @@ def main(argv=None):
                 "complete CPU action read-back; image/token preprocessing is excluded"
             )
             vram_target_label = "official Python reference process"
+            if args.arch == "turbovla":
+                inference_definition = (
+                    "official PyTorch forward including internal text tokenization, "
+                    "input transfer, CPU action read-back and action denormalization; "
+                    "host image/state preprocessing is excluded; phase breakdown unavailable"
+                )
         profiler = LiberoSuiteProfiler(
             output_path=Path(args.profile_output),
             model_label=args.profile_model_label or model_default,
