@@ -55,6 +55,10 @@ again (goal rows below use those corrected numbers; per-variant totals are
 | object | 99/100 | 100/100 | 97/100 | 98/100 | 100/100 |
 | goal | 97/100 | 97/100 | 83/100 | 86/100 | 98/100 |
 | libero_10 | 88/100 | 85/100 | 87/100 | 86/100 | 85/100 |
+**Historical (superseded)**: the table below was produced with the `object.pth`-derived
+GGUF while the Python reference uses `turbovla_libero.pth` — it is not a same-weight
+comparison. Use the *Same-weight rebuild* section below for release numbers.
+
 | **total** | **382/400 (95.50%)** | **379/400 (94.75%)** | **363/400 (90.75%)** | **370/400 (92.50%)** | **379/400 (94.75%)** |
 
 The goal-suite losses recorded on 09-03 (Q4_K 68%, Q6_K 69%) were caused by the
