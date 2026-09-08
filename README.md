@@ -20,7 +20,7 @@
 ---
 ## NEWS
 
-- **[2026.09]** Added support for **Xiaomi-Robotics-0**, **TurboVLA**, and **X-VLA** runtimes with full LIBERO evaluations (`docs/results/`).
+- **[2026.09]** Added support for **Xiaomi-Robotics-0**, **TurboVLA**, and **X-VLA** runtimes with full LIBERO evaluations (`eval/`).
 - **[2026.08]** 🔥🔥 Released Embodied.cpp v1.0.
 - **[2026.07]** Added support for **Cosmos3-Nano** and **GR00T N1.7**, the **RoboLab** benchmark, and Isaac Sim.
 - **[2026.06]** Released the initial version of Embodied.cpp with support for **pi0.5**, **HY-VLA**, and **LingBot-VA**, plus the **LIBERO** and **RoboTwin** benchmarks.
@@ -177,7 +177,7 @@ For World Models, C++ substantially reduces VRAM while keeping the success rate 
 | **Cosmos3** | 21.84 GB → 19.49 GB (**10.8% lower**) |
 | **LingBot-VA** | 24.75 GB → 16.44 GB (**33.6% lower**) |
 
-Precision note: XR0 and TurboVLA baselines are the official BF16 implementations; X-VLA's is the official **F32** deployment (BF16-vs-BF16 X-VLA parity is 0.99 latency / 1.04 VRAM). pi0.5, GR00T and HY-VLA keep the original project's reported comparisons and were not rerun here; current-source measurements for XR0/TurboVLA/X-VLA come from [matched-boundary runs](docs/results/v2_followup_20260903.md) and the per-model validation reports under `eval/`.
+Precision note: XR0 and TurboVLA baselines are the official BF16 implementations; X-VLA's is the official **F32** deployment (BF16-vs-BF16 X-VLA parity is 0.99 latency / 1.04 VRAM). pi0.5, GR00T and HY-VLA keep the original project's reported comparisons and were not rerun here; current-source measurements for XR0/TurboVLA/X-VLA come from [matched-boundary runs](eval/v2_followup_20260903.md) and the per-model validation reports under `eval/`.
 
 > **Highlights:** Compared with Python, C++ BF16 reduces VLA inference latency by up to **63%** and VRAM by up to **57%**. For World Models, it reduces VRAM by up to **33.6%**, with success-rate changes limited to **2 percentage points**.
 ### 1.3 Runtime Roadmap
