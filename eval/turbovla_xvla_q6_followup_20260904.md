@@ -85,7 +85,7 @@ does this small gate establish Q6 superiority or full-suite equivalence.
 Local raw evidence: `outputs/vla_unified_20260904/`, including four boundary
 JSONs, complete final action arrays, and the run scripts. Artifacts are created
 in a unique server `/tmp` directory rather than the nearly full `/home` mount.
-The [machine-readable summary](q6_and_xvla_evidence_20260904.json) includes raw
+The machine-readable summary (artifact not retained) includes raw
 latency samples, action comparisons, hashes and all 80 episode records.
 
 Relevant source/build SHA-256:

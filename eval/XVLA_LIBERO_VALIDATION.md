@@ -22,7 +22,7 @@ Conversion now preserves F32 values; a regression checks both matrix transposes.
 The historical source HF snapshot was not found in the Windows workspace,
 WSL project/cache or server project/cache. The current server HF snapshot is
 a different set of weights. Consequently **Python-normalized performance
-remains Pending**. See the [controlled repair and evidence](takeover_20260903.md).
+remains Pending**. See the controlled repair and evidence (artifact not retained).
 The following seed-7 archive is retained separately, not relabelled as this run.
 
 The [Q6_K follow-up](turbovla_xvla_q6_followup_20260904.md) compares the

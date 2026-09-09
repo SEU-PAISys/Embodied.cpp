@@ -37,7 +37,7 @@ to validate paths and tensor mappings before writing a large GGUF file.
 
 Place final artifacts under the `checkpoints/` layout shown in the top-level
 README, then use the matching build and evaluation configuration.
-The [shared evaluation entry and results index](../docs/results/README.md)
+The [shared evaluation entry and results index](../eval/README.md)
 describe Python/C++ selection, model-specific precision options and profiling.
 
 ## pi0.5
@@ -252,7 +252,7 @@ uses the WordPiece vocabulary embedded in its GGUF; it needs no client tokenizer
 X-VLA conversion retains source F32 values and refuses an existing output.
 `VLA_XVLA_F32_WEIGHTS=1` is a **runtime** residency choice, not a converter
 rounding switch. A file named `f32` does not prove F32 computation or correct
-per-domain matrix layout; see the [controlled repair evidence](../docs/results/takeover_20260903.md).
+per-domain matrix layout; see the controlled repair evidence (artifact not retained).
 
 ## Fixed-input deployment timing
 
@@ -314,7 +314,7 @@ model and benchmark.
 
 The X-VLA baseline for all current work is the official release, not the
 previously used server snapshot (`3f16a4b6…`, quarantined as an
-unknown-origin package — see `docs/results/xvla_checkpoint_gate_a_20260905.md`):
+unknown-origin package — see `eval/xvla_checkpoint_gate_a_20260905.md`):
 
 - Source: Hugging Face `2toINF/X-VLA-Libero` (revision `129e7146`,
   accessed 2026-09-05), `model.safetensors` SHA-256

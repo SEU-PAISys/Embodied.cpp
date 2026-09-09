@@ -71,7 +71,7 @@ Python inference used the existing project environment
 `/home/xuling/yangzhixiao/xr0_pyenv2`; the shared C++ client used the existing
 LIBERO environment. Exact Torch/Transformers/NumPy versions, commands, raw
 samples, source hashes, and per-episode Q6 records are in the
-[evidence JSON](q6_and_xvla_evidence_20260904.json).
+evidence JSON (artifact not retained).
 
 The official environment already contains import shims for unused FastAPI,
 uvicorn and json_numpy web-serving imports. The benchmark does not use those

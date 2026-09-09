@@ -2,7 +2,7 @@
 
 This audit supersedes the interpretation appended in commit `6184bd4`, not
 the original raw results. The upstream comparison rules remain those in
-[VLA_BENCHMARK_STANDARD.md](../../eval/VLA_BENCHMARK_STANDARD.md).
+[VLA_BENCHMARK_STANDARD.md](VLA_BENCHMARK_STANDARD.md).
 
 ## What was verified
 

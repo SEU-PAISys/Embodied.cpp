@@ -4,13 +4,13 @@ Runtime: Embodied.cpp C++/GGML direct V+L→A inference · Reference:
 official H-EmbodVis/TurboVLA PyTorch implementation (paper avg **97.7%**).
 
 Current acceptance status is tracked in the [shared results index](README.md)
-and [release audit](release_audit_20260907.md). The historical
+and release audit (artifact not retained). The historical
 Python run labelled FP32 (392/400 in the later audit) used BF16-autocast
 vision. It is a mixed-precision result, not the corrected all-FP32 public
 Python baseline. The corrected public entry has now completed **FP32
 386/400 (96.5%)** and **BF16 385/400 (96.25%)**, with four suites × ten tasks ×
 ten episodes and zero skips; seed 42, native 256px, relative control and
-12-action replay. See the [independent audit](completed_runs_audit_20260908.json).
+12-action replay. See the independent audit (artifact not retained).
 These success rates do not establish performance acceleration.
 
 ## Historical seed 7 primary results and 2026-09-03 follow-up
@@ -78,7 +78,7 @@ loss. The old pre-fix BF16 sweep was 328/400, but the full rerun also changes
 rendering, text-length metadata and quantization tooling; it is not an isolated
 one-variable experiment. Same-360px targeted runs isolate the mask fix.
 
-See the [takeover evidence](takeover_20260903.md) for the defect, three numerical
+See the takeover evidence (artifact not retained) for the defect, three numerical
 parity cases, same-protocol Python controls and measured deployment costs.
 The following seed-7 archive is a separate experiment, not current-code proof.
 
