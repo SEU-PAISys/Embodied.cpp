@@ -59,15 +59,21 @@ bool detect_arch_gguf(const std::string& path, Arch* out) {
         try_str("pi05.architecture",     arch_str) ||
         try_str("lingbot_va.architecture", arch_str) ||
         try_str("hy_vla.architecture",     arch_str) ||
+        try_str("xr0.architecture",        arch_str) ||
+        try_str("turbovla.architecture",   arch_str) ||
+        try_str("xvla.architecture",       arch_str) ||
         try_str("groot_n1.architecture",   arch_str) ||
         try_str("cosmos3.architecture",    arch_str) ||
         try_str("smolvla.architecture",    arch_str)) {
-        if      (arch_str == "pi05")       { *out = Arch::PI05;       ok = true; }
-        else if (arch_str == "lingbot_va") { *out = Arch::LINGBOT_VA; ok = true; }
-        else if (arch_str == "hy_vla")     { *out = Arch::HY_VLA;     ok = true; }
-        else if (arch_str == "groot_n1")   { *out = Arch::GROOT_N1;   ok = true; }
-        else if (arch_str == "cosmos3")    { *out = Arch::COSMOS3;    ok = true; }
-        else if (arch_str == "smolvla")    { *out = Arch::SMOLVLA;    ok = true; }
+        if      (arch_str == "pi05")         { *out = Arch::PI05;       ok = true; }
+    else if (arch_str == "lingbot_va")   { *out = Arch::LINGBOT_VA; ok = true; }
+    else if (arch_str == "hy_vla")       { *out = Arch::HY_VLA;     ok = true; }
+    else if (arch_str == "xr0")          { *out = Arch::XR0;        ok = true; }
+    else if (arch_str == "turbovla")     { *out = Arch::TURBOVLA;   ok = true; }
+    else if (arch_str == "xvla")         { *out = Arch::XVLA;       ok = true; }
+    else if (arch_str == "groot_n1")     { *out = Arch::GROOT_N1;   ok = true; }
+    else if (arch_str == "cosmos3")      { *out = Arch::COSMOS3;    ok = true; }
+    else if (arch_str == "smolvla")      { *out = Arch::SMOLVLA;    ok = true; }
     }
 
     gguf_free(gctx);
@@ -147,6 +153,36 @@ Model* model_load(const std::string& mmproj_path, const std::string& ckpt_path,
                          "(reconfigure with -DMODEL_BUILD_VLA_HY_VLA=ON)\n");
 #endif
             break;
+        case Arch::XR0:
+            std::printf("vla: arch = xr0\n");
+#if MODEL_BUILD_VLA_XR0
+            impl = xr0_create(mmproj_path, ckpt_path, config_path);
+#else
+            std::fprintf(stderr,
+                         "vla: Xiaomi-Robotics-0 support was not built into this binary "
+                         "(reconfigure with -DMODEL_BUILD_VLA_XR0=ON)\n");
+#endif
+            break;
+        case Arch::TURBOVLA:
+            std::printf("vla: arch = turbovla\n");
+#if MODEL_BUILD_VLA_TURBOVLA
+            impl = turbovla_create(mmproj_path, ckpt_path, config_path);
+#else
+            std::fprintf(stderr,
+                         "vla: TurboVLA support was not built into this binary "
+                         "(reconfigure with -DMODEL_BUILD_VLA_TURBOVLA=ON)\n");
+#endif
+            break;
+        case Arch::XVLA:
+            std::printf("vla: arch = xvla\n");
+#if MODEL_BUILD_VLA_XVLA
+            impl = xvla_create(mmproj_path, ckpt_path, config_path);
+#else
+            std::fprintf(stderr,
+                         "vla: X-VLA support was not built into this binary "
+                         "(reconfigure with -DMODEL_BUILD_VLA_XVLA=ON)\n");
+#endif
+                        break;
         case Arch::GROOT_N1:
             std::printf("vla: arch = groot_n1\n");
 #if MODEL_BUILD_VLA_GROOT_N1
@@ -178,6 +214,7 @@ Model* model_load(const std::string& mmproj_path, const std::string& ckpt_path,
 #endif
             break;
     }
+
     if (!impl) return nullptr;
 
     auto* m = new Model();

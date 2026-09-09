@@ -1,0 +1,344 @@
+"""Result aggregation and profiling checks; stdlib only, Python 3.10+."""
+from __future__ import annotations
+
+import contextlib
+import json
+import io
+from pathlib import Path
+import sys
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "scripts"))
+sys.path.insert(0, str(REPO / "eval"))
+import aggregate_eval_summary as summary
+from client.libero_profile import LiberoSuiteProfiler, TURBOVLA_INFERENCE_DEFINITION
+
+
+class ResultTests(unittest.TestCase):
+    def test_current_and_archived_layouts_stay_separate(self):
+        for arch in ("xr0", "turbovla", "xvla", "smolvla", "pi05", "groot_n1", "lingbot_va"):
+            path = f"{arch}_libero_object/{arch}/libero_object/task_0/summary.txt"
+            self.assertEqual(summary.classify(path), (arch, f"run:{arch}_libero_object", "object", 0))
+        self.assertEqual(summary.classify("xr0/libero_object/task_0/summary.txt"),
+                         ("xr0", "smoke", "object", 0))
+        self.assertEqual(summary.classify("xr0/libero2000/bf16/object/shard0/xr0/libero_object/task_0/summary.txt"),
+                         ("xr0", "bf16", "object", 0))
+        self.assertEqual(summary.classify("xvla_full_cpp_Q8_0/object/xvla/libero_object/task_0/summary.txt"),
+                         ("xvla", "Q8_0", "object", 0))
+
+    def test_named_run_aggregates_all_suites_without_precision_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for suite in summary.SUITE_ORDER:
+                path = Path(tmp) / f"new-run/xvla/libero_{suite}/task_0/summary.txt"
+                path.parent.mkdir(parents=True)
+                path.write_text("Success rate: 50.00%  (1/2)\nSkipped: 0/2\n"
+                                "Average inference time per step: 10 ms\n", encoding="utf-8")
+            buckets, hits = summary.aggregate(tmp)
+            data = summary.build(buckets)
+            run = data["models"]["xvla"]["run:new-run"]
+            self.assertEqual(hits, 4)
+            self.assertEqual(run["overall_episodes"], 8)
+            self.assertEqual(run["overall_success"], 4)
+            self.assertEqual(run["suites"]["object"]["task_ids"], [0])
+            self.assertEqual(len(run["suites"]["object"]["sources"]), 1)
+            self.assertNotIn("bf16", data["models"]["xvla"])
+            self.assertIn("not verified precision", summary.to_markdown(data))
+
+    def test_duplicate_shards_are_rejected_instead_of_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for shard in (0, 1):
+                path = Path(tmp) / f"xr0/libero2000/bf16/object/shard{shard}/xr0/libero_object/task_0/summary.txt"
+                path.parent.mkdir(parents=True)
+                path.write_text("Success rate: 50.00% (1/2)\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate task"):
+                summary.aggregate(tmp)
+
+    def test_unknown_results_warn_instead_of_silently_disappearing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "summary.txt").write_text("Success rate: 100.00% (2/2)", encoding="utf-8")
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                _, hits = summary.aggregate(tmp)
+            self.assertEqual(hits, 0)
+            self.assertIn("unrecognized result path", stderr.getvalue())
+
+    def test_profile_result_counts_requests_not_queued_actions(self):
+        profiler = LiberoSuiteProfiler(
+            output_path=Path("unused.json"), model_label="test", backbone_label="test",
+            arch="xvla", suite="libero_object", replay_chunk_size=10, expected_episodes=1,
+            server_address="tcp://localhost:5555", server_pid=1,
+            vram_interval_s=0.25, warmup_requests=1,
+        )
+        for sequence in (1, 2):
+            client = SimpleNamespace(get_last_inference_profile=lambda: {
+                "sequence": sequence, "server_total_ms": sequence * 10,
+                "model_chunk_size": 30,
+            })
+            for _ in range(10):
+                profiler.capture_inference(client)
+                profiler.record_step(1)
+        profiler.episodes.append({"success": True, "skipped": False})
+        result = profiler.result(complete=True)
+        self.assertEqual(result["implementation"], "cpp")
+        self.assertEqual(result["inf_ms"]["n"], 1)
+        self.assertEqual(result["inf_ms"]["mean"], 20)
+        self.assertEqual(result["inf_ms"]["samples"], [20.0])
+        self.assertEqual(result["inf_ms"]["std"], 0.0)
+        self.assertEqual(result["inf_ms"]["p99"], 20.0)
+        self.assertEqual(result["step_ms"]["n"], 10)
+        self.assertEqual(result["generated_action_step_ms"]["mean"], 0.667)
+        self.assertEqual(result["model_step_ms"]["mean"], 2.0)
+        self.assertFalse(result["table_ready"])  # no GPU memory measurement
+
+    def test_python_profile_labels_are_not_server_claims(self):
+        profiler = LiberoSuiteProfiler(
+            output_path=Path("unused.json"), model_label="X-VLA", backbone_label="test",
+            arch="xvla", suite="libero_object", replay_chunk_size=30,
+            expected_episodes=0, server_address="unused", server_pid=1,
+            vram_interval_s=0.25, warmup_requests=0, implementation="python",
+            inference_source_label="official Python model forward",
+        )
+        result = profiler.result(complete=False)
+        self.assertEqual(result["implementation"], "python")
+        self.assertIn("official Python model forward",
+                      result["generated_action_step_ms"]["definition"])
+        self.assertNotIn("server-side", result["model_step_ms"]["definition"])
+
+    def test_turbovla_total_and_graph_window_stay_distinct(self):
+        # inf_ms.mean comes from latency_ms_total (whole server call) while
+        # action_inference_mean comes from latency_ms_inference (fused-graph
+        # execution window). The published definition must keep the two
+        # quantities apart instead of describing both as graph time.
+        profiler = LiberoSuiteProfiler(
+            output_path=Path("unused.json"), model_label="TurboVLA", backbone_label="test",
+            arch="turbovla", suite="libero_object", replay_chunk_size=12,
+            expected_episodes=1, server_address="tcp://localhost:5555", server_pid=1,
+            vram_interval_s=0.25, warmup_requests=0,
+            inference_definition=TURBOVLA_INFERENCE_DEFINITION,
+        )
+        for sequence, total, graph in ((1, 10.0, 8.0), (2, 12.0, 9.0)):
+            client = SimpleNamespace(get_last_inference_profile=lambda s=sequence, t=total, g=graph: {
+                "sequence": s, "server_total_ms": t, "server_vision_ms": None,
+                "server_inference_ms": g, "server_prefill_ms": None,
+                "server_denoise_ms": None, "model_chunk_size": 12,
+            })
+            profiler.capture_inference(client)
+        result = profiler.result(complete=True)
+        inf = result["inf_ms"]
+        self.assertEqual(inf["mean"], 11.0)                    # from latency_ms_total
+        self.assertEqual(inf["samples"], [10.0, 12.0])
+        self.assertEqual(inf["std"], 1.0)
+        self.assertEqual(inf["p50"], 11.0)
+        self.assertEqual(inf["p95"], 11.9)
+        self.assertEqual(inf["p99"], 11.98)
+        self.assertEqual(inf["action_inference_mean"], 8.5)    # from latency_ms_inference
+        self.assertEqual(inf["phases"]["action_inference_ms"]["samples"], [8.0, 9.0])
+        self.assertNotEqual(inf["mean"], inf["action_inference_mean"])
+        self.assertIsNone(inf["vision_mean"])                  # unmeasured -> null, not 0.0
+        self.assertEqual(inf["phases"]["vision_ms"]["samples"], [])
+        self.assertIsNone(inf["prefill_mean"])
+        self.assertIsNone(inf["denoise_mean"])
+        self.assertEqual(result["generated_action_step_ms"]["samples"], [10 / 12, 1.0])
+        self.assertEqual(result["generated_action_step_ms"]["mean"], 0.917)
+        self.assertIn("latency_ms_total", inf["definition"])
+        self.assertIn("latency_ms_inference", inf["definition"])
+        self.assertIn("not an action-head-only", inf["definition"])
+
+    def test_profile_does_not_promote_a_warmup_to_a_measurement(self):
+        profiler = LiberoSuiteProfiler(
+            output_path=Path("unused.json"), model_label="test", backbone_label="test",
+            arch="xr0", suite="libero_object", replay_chunk_size=10,
+            expected_episodes=1, server_address="tcp://localhost:5555", server_pid=1,
+            vram_interval_s=0.25, warmup_requests=1,
+        )
+        profiler.record_inference(30.0, model_chunk_size=30)
+        result = profiler.result(complete=True)
+        self.assertEqual(result["inf_ms"]["n"], 0)
+        self.assertEqual(result["inf_ms"]["samples"], [])
+        self.assertEqual(result["generated_action_step_ms"]["samples"], [])
+        self.assertFalse(result["table_ready"])
+
+
+class FullMatrixGateTests(unittest.TestCase):
+    """Suite-coverage gate for published full-matrix runs (the 394/400
+    lesson: spatial_t3 duplicated and 10_t3 missing still summed to a
+    plausible line count). Duplicates raise in aggregate(); the gate adds
+    missing/unexpected tasks and unexpected suites as hard failures."""
+
+    @staticmethod
+    def _bucket(suites=("spatial", "object", "goal", "10"), tasks=range(10)):
+        return {"xvla": {"run:official-f32": {
+            suite: {task: {"success": 1, "total": 10, "rate": 100.0,
+                           "skipped": 0, "latency_ms": 5.0,
+                           "source": f"x/{suite}/task_{task}"}
+                    for task in tasks}
+            for suite in suites}}}
+
+    def test_complete_unique_set_passes(self):
+        self.assertTrue(summary.validate_full_matrix(self._bucket()))
+
+    def test_missing_task_fails(self):
+        bucket = self._bucket(tasks=range(9))
+        with self.assertRaisesRegex(ValueError, "missing task ids \\[9\\]"):
+            summary.validate_full_matrix(bucket)
+
+    def test_unexpected_task_fails(self):
+        bucket = self._bucket(tasks=range(11))
+        with self.assertRaisesRegex(ValueError, "unexpected task ids \\[10\\]"):
+            summary.validate_full_matrix(bucket)
+
+    def test_unexpected_suite_fails(self):
+        bucket = self._bucket(suites=("spatial", "object", "goal", "10", "90"))
+        with self.assertRaisesRegex(ValueError, "unexpected suite '90'"):
+            summary.validate_full_matrix(bucket)
+
+    def test_gate_reports_every_problem_bucket(self):
+        buckets = self._bucket(tasks=range(8))
+        buckets["xvla"]["run:bf16"] = {"spatial": {0: buckets["xvla"]["run:official-f32"]["spatial"][0]}}
+        with self.assertRaises(ValueError) as ctx:
+            summary.validate_full_matrix(buckets)
+        text = str(ctx.exception)
+        self.assertIn("run:official-f32", text)
+        self.assertIn("run:bf16", text)
+
+
+class RunEpisodeGateTests(unittest.TestCase):
+    """Per-episode release gate (runbook P3): task-dir completeness alone must
+    not pass; every planned episode needs a terminal state and consistent
+    summary counts."""
+
+    @staticmethod
+    def _make_run(tmp, *, suites=("spatial",), episodes=10, successes=8,
+                  counted=None, skipped=0, with_summary=True, eps_ids=None,
+                  arch="xvla"):
+        root = Path(tmp) / "run"
+        for suite in suites:
+            for t in range(10):
+                td = root / suite / arch / f"libero_{suite}" / f"task_{t}"
+                td.mkdir(parents=True)
+                c = episodes if counted is None else counted
+                ids = list(range(episodes)) if eps_ids is None else eps_ids
+                eps = [{"episode": i, "noise_seed": 7, "success": i < successes,
+                        "skipped": False, "environment_steps": 5,
+                        "average_step_ms": 1.0} for i in ids]
+                (td / "result.json").write_text(json.dumps({
+                    "episodes": eps, "episodes_counted": c,
+                    "episodes_requested": episodes, "skipped": skipped,
+                    "successes": min(successes, c)}), encoding="utf-8")
+                if with_summary:
+                    (td / "summary.txt").write_text(
+                        f"Success rate: {100 * min(successes, c) / max(1, c):.2f}%  "
+                        f"({min(successes, c)}/{c})\nSkipped: {skipped}/{episodes}\n", encoding="utf-8")
+        return root
+
+    def test_complete_run_passes(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(summary.validate_run_episodes(
+                self._make_run(tmp), suites=("spatial",)))
+
+    def test_missing_result_json_fails(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp)
+            (root / "spatial" / "xvla" / "libero_spatial" / "task_0" / "result.json").unlink()
+            with self.assertRaisesRegex(ValueError, "result.json missing"):
+                summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_single_episode_run_fails(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp, eps_ids=[0], counted=1, successes=1)
+            with self.assertRaisesRegex(ValueError, "episode ids"):
+                summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_all_aborted_fails(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp, counted=0, skipped=10, successes=0)
+            with self.assertRaisesRegex(ValueError, "incomplete sweep"):
+                summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_summary_json_contradiction_fails(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp)
+            td = root / "spatial" / "xvla" / "libero_spatial" / "task_3"
+            td.joinpath("summary.txt").write_text("Success rate: 100.00%  (10/10)", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "contradicts result.json"):
+                summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_missing_task_dir_fails(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp)
+            import shutil
+            shutil.rmtree(root / "spatial" / "xvla" / "libero_spatial" / "task_9")
+            with self.assertRaisesRegex(ValueError, "task dirs"):
+                summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_hidden_skips_and_false_successes_fail(self):
+        for mutation, message in (("skipped", "recomputed skipped"),
+                                  ("success", "recomputed successes")):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                root = self._make_run(tmp)
+                path = root / "spatial/xvla/libero_spatial/task_0/result.json"
+                data = json.loads(path.read_text())
+                for ep in data["episodes"]:
+                    ep[mutation] = mutation == "skipped"
+                path.write_text(json.dumps(data))
+                with self.assertRaisesRegex(ValueError, message):
+                    summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_malformed_summary_and_wrong_percentage_fail(self):
+        for text in ("not a result", "Success rate: 100.00% (8/10)",
+                     "Success rate: 80.00% (8/10)\nSkipped: 1/10"):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                root = self._make_run(tmp)
+                (root / "spatial/xvla/libero_spatial/task_0/summary.txt").write_text(text)
+                with self.assertRaisesRegex(ValueError, "summary"):
+                    summary.validate_run_episodes(root, suites=("spatial",))
+
+    def test_cli_checks_every_model_and_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for arch in ("xr0", "turbovla", "xvla"):
+                for run in ("cpp", "python"):
+                    self._make_run(Path(tmp) / arch / run, arch=arch, suites=summary.SUITE_ORDER)
+            dest = Path(tmp) / "report"
+            argv = ["aggregate", "--outputs", tmp, "--out-dir", str(dest), "--require-full-matrix"]
+            with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()):
+                summary.main()
+            data = json.loads((dest / "eval_summary.json").read_text())
+            self.assertEqual(set(data["models"]), {"xr0", "turbovla", "xvla"})
+            for variants in data["models"].values():
+                self.assertEqual(len(variants), 2)
+                for run in variants.values():
+                    self.assertEqual(run["overall_episodes"], 400)
+
+    def test_cli_rejects_partial_episodes_without_creating_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp, suites=summary.SUITE_ORDER, episodes=1, successes=1)
+            dest = Path(tmp) / "report"
+            argv = ["aggregate", "--outputs", str(root), "--out-dir", str(dest), "--require-full-matrix"]
+            with patch.object(sys, "argv", argv), self.assertRaisesRegex(ValueError, "episode ids"):
+                summary.main()
+            self.assertFalse(dest.exists())
+
+    def test_cli_accepts_explicit_fifty_episode_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_run(tmp, arch="xr0", suites=summary.SUITE_ORDER, episodes=50)
+            dest = Path(tmp) / "report"
+            argv = ["aggregate", "--outputs", str(root), "--out-dir", str(dest),
+                    "--require-full-matrix", "--episodes-per-task", "50"]
+            with patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()):
+                summary.main()
+            data = json.loads((dest / "eval_summary.json").read_text())
+            self.assertEqual(data["models"]["xr0"]["run:unlabelled"]["overall_episodes"], 2000)
+
+
+if __name__ == "__main__":
+    unittest.main()

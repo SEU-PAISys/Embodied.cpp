@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -27,26 +28,42 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(1, str(ROOT))
 
-import gymnasium as gym
 import numpy as np
 try:
     import torch
 except ModuleNotFoundError:
     torch = None
 
-import sim.libero  # noqa: F401  side-effect: registers gymnasium envs
 from adapter.sim.libero import LIBEROSimAdapter
 try:
     from client.libero_profile import LiberoSuiteProfiler
+    from client.libero_profile import TURBOVLA_INFERENCE_DEFINITION
 except ModuleNotFoundError:
     LiberoSuiteProfiler: Any = None
-from client.lingbot_world_client import LingBotWorldClient
-from client.inference_timeline import timeline_path_for_video, write_inference_timeline
+try:
+    from client.inference_timeline import timeline_path_for_video, write_inference_timeline
+except ImportError:
+    # Upstream ships this import without the module; degrade gracefully so the
+    # LIBERO direct client keeps working without inference timelines.
+    def timeline_path_for_video(video_path):
+        return None
+
+    def write_inference_timeline(*args, **kwargs):
+        return None
 from client.reproducibility import derive_episode_noise_seed
 from client.vla_cpp_client import ARCH_PRESETS as VLA_ARCH_PRESETS
 from client.vla_cpp_client import VlaCppClient
 
-ARCH_CHOICES = ["pi05", "groot_n1", "lingbot_va", "smolvla"]
+ARCH_CHOICES = ["pi05", "lingbot_va", "xr0", "turbovla", "xvla", "groot_n1", "smolvla"]
+PROFILE_LABELS = {
+    "groot_n1": ("GR00T N1.7", "Qwen3-VL-16L"),
+    "pi05": ("pi0.5", "PaliGemma"),
+    "lingbot_va": ("LingBot-VA", "LingBot-VLM"),
+    "smolvla": ("SmolVLA", "SmolVLM2-500M"),
+    "xr0": ("Xiaomi-Robotics-0", "Qwen3-VL-4B"),
+    "turbovla": ("TurboVLA", "DINOv3 + BERT"),
+    "xvla": ("X-VLA", "Florence-2 DaViT + BART"),
+}
 LIBERO_SUITE_TASK_COUNTS = {
     "libero_spatial": 10,
     "libero_object": 10,
@@ -132,6 +149,10 @@ def resolve_task_ids(args) -> list[int]:
 
 
 def build_client(args):
+    if args.control_mode is None:
+        args.control_mode = "absolute" if args.arch == "xvla" else "relative"
+    if args.real_action_dim is None:
+        args.real_action_dim = 10 if args.arch == "xvla" else 7
     if args.arch in VLA_ARCH_PRESETS:
         preset = VLA_ARCH_PRESETS[args.arch]
         args.max_length = (
@@ -145,6 +166,47 @@ def build_client(args):
     else:
         args.max_length = args.max_length if args.max_length is not None else 512
         args.n_action_steps = args.n_action_steps if args.n_action_steps is not None else 1
+
+    if args.implementation == "python":
+        if args.arch == "xvla":
+            if not args.hf_dir:
+                raise ValueError("--implementation python requires --hf-dir")
+            from scripts.rollout_xvla_reference import XVLAReferenceClient
+            return LIBEROSimAdapter(XVLAReferenceClient(
+                Path(args.hf_dir), precision=args.xvla_precision,
+                n_action_steps=args.n_action_steps, noise_seed=args.noise_seed,
+            ))
+        if args.arch == "xr0":
+            if not args.hf_dir:
+                raise ValueError("--implementation python requires --hf-dir")
+            from scripts.rollout_xr0_reference import XR0ReferenceClient
+            return LIBEROSimAdapter(XR0ReferenceClient(
+                Path(args.hf_dir), vision_dtype=args.xr0_vision_dtype,
+                policy_precision=args.xr0_policy_precision,
+                n_action_steps=args.n_action_steps, noise_seed=args.noise_seed,
+            ))
+        if args.arch == "turbovla":
+            from scripts.rollout_turbovla_reference import (
+                TurboReferenceClient, load_reference_model, load_norm_arrays,
+            )
+            required = ("checkpoint", "official_root", "bert_path", "norm_gguf")
+            missing = [name for name in required if not getattr(args, f"turbovla_{name}")]
+            if missing:
+                raise ValueError("TurboVLA Python requires " + ", ".join(
+                    "--turbovla-" + name.replace("_", "-") for name in missing))
+            import torch
+            reference_args = argparse.Namespace(
+                **{name: Path(getattr(args, f"turbovla_{name}")) for name in required},
+                precision=args.turbovla_precision, checkpoint_key=args.turbovla_checkpoint_key,
+                device="cuda" if torch.cuda.is_available() else "cpu",
+            )
+            model, _ = load_reference_model(reference_args)
+            return LIBEROSimAdapter(TurboReferenceClient(
+                model, load_norm_arrays(reference_args.norm_gguf),
+                precision=args.turbovla_precision, n_action_steps=args.n_action_steps,
+            ))
+        raise ValueError(
+            f"--implementation python supports xvla, xr0 and turbovla, got {args.arch!r}")
 
     default_lerobot_image_keys = ["observation.images.image", "observation.images.image2"]
     lingbot_image_keys = (
@@ -174,6 +236,7 @@ def build_client(args):
                 recv_timeout_ms=args.recv_timeout_ms,
                 n_action_steps=args.n_action_steps,
                 noise_seed=args.noise_seed,
+                xr0_noise_dtype=args.xr0_policy_precision,
             )
         )
     from client.lingbot_world_client import LingBotWorldClient
@@ -200,17 +263,23 @@ def run_one_task(
     task: str,
     task_id: int,
     profiler: Any = None,
+    implementation: str = "cpp",
 ) -> dict[str, Any]:
+    import gymnasium as gym
+    import sim.libero  # noqa: F401  registers gymnasium envs
+
     output_dir = Path(args.output_dir) / args.arch / task / f"task_{task_id}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     env_kwargs = {
         "seed": args.seed,
         "video_fps": args.fps,
-        "output_video_dir": output_dir,
+        "output_video_dir": None if args.no_video else output_dir,
         "video_view_mode": args.view_mode,
+        "control_mode": args.control_mode,
         "observation_width": args.observation_width,
         "observation_height": args.observation_height,
+        "num_steps_wait": args.num_steps_wait,
     }
     if args.arch == "lingbot_va":
         # Match robbyant/lingbot-va's official LIBERO client: 128px cameras,
@@ -232,6 +301,70 @@ def run_one_task(
     episode_results: list[dict[str, Any]] = []
     skipped = 0
     lingbot_noise_gen = None
+
+    def _finalize_episode(aborted: bool, info: dict[str, Any], reward: float, steps: int) -> None:
+        """Record one episode exactly once, whether it completed or aborted.
+
+        Aborted episodes are kept in the per-episode details and in the
+        profiler (skipped=True) but never contribute to the success count,
+        since they never reached a terminal observation.
+        """
+        nonlocal success_count
+        avg_t = (sum(run_times) / len(run_times)) if run_times else 0.0
+        inference_times.append(avg_t)
+        success = (not aborted) and bool(info.get("is_success", 0.0))
+        if not aborted:
+            success_count += info.get("is_success", 0.0)
+        if aborted:
+            print(f"- Episode aborted after {steps} steps (terminated mid-step).")
+        else:
+            print(f"- Episode finished after {steps} steps.")
+            print(f"- Final reward: {reward:.2f}")
+            print(f"- Episode Information:\n{info}")
+        print(f"- Average inference time per step: {round(1000 * avg_t, 2)} ms")
+        if args.arch == "lingbot_va" and args.lingbot_print_timing:
+            def _avg(values: list[float]) -> float:
+                return sum(values) / len(values) if values else 0.0
+            print(
+                "- LingBot timing summary: "
+                f"predict_wall_ms_avg={_avg(lingbot_predict_wall_ms):.2f} "
+                f"predict_server_ms_avg={_avg(lingbot_predict_server_ms):.2f} "
+                f"cache_wall_ms_avg={_avg(lingbot_cache_wall_ms):.2f} "
+                f"cache_server_ms_avg={_avg(lingbot_cache_server_ms):.2f}",
+                flush=True,
+            )
+        if profiler is not None:
+            profiler.record_episode(
+                task=task,
+                task_id=task_id,
+                episode=episode,
+                success=success,
+                skipped=aborted,
+                environment_steps=steps,
+            )
+        video_path = output_dir / f"episode_{episode:06d}.mp4"
+        _timeline_out = timeline_path_for_video(video_path)
+        write_inference_timeline(
+            _timeline_out,
+            implementation=implementation,
+            task=task,
+            task_id=task_id,
+            episode=episode,
+            n_action_steps=args.n_action_steps,
+            environment_steps=steps,
+            video_has_initial_frame=True,
+            requests=inference_requests,
+        )
+        episode_results.append({
+            "episode": episode,
+            "noise_seed": episode_noise_seed,
+            "success": success,
+            "skipped": aborted,
+            "environment_steps": steps,
+            "average_step_ms": round(1000 * avg_t, 2),
+            **(first_noise_meta or {}),
+        })
+
     if args.arch == "lingbot_va" and args.lingbot_noise_mode == "torch_cuda_seed":
         if torch is None or not torch.cuda.is_available():
             raise RuntimeError("--lingbot-noise-mode torch_cuda_seed requires CUDA torch")
@@ -245,7 +378,10 @@ def run_one_task(
     for episode in range(args.n_episodes):
         print(f"*** {task}/task_{task_id} Episode {episode + 1}/{args.n_episodes}")
 
-        if args.arch == "smolvla" and args.noise_seed is not None:
+        derive_noise = args.noise_seed is not None and (
+            args.arch == "smolvla" or args.derive_episode_noise
+        )
+        if derive_noise:
             episode_noise_seed = derive_episode_noise_seed(
                 args.noise_seed, task, task_id, episode
             )
@@ -257,6 +393,7 @@ def run_one_task(
         run_times, step_id = [], 0
         inference_requests: list[dict[str, float | int]] = []
         last_inference_sequence: int | None = None
+        first_noise_meta: dict[str, str | int | None] | None = None
         episode_aborted = False
         done = False
         truncated = False
@@ -395,94 +532,73 @@ def run_one_task(
                             }
                         )
                         last_inference_sequence = sequence
+                        if first_noise_meta is None and \
+                                inference_profile.get("noise_checksum"):
+                            first_noise_meta = {
+                                key: inference_profile[key]
+                                for key in ("noise_mode", "noise_seed", "noise_checksum",
+                                            "noise_device", "noise_dtype")
+                                if key in inference_profile
+                            }
                 if profiler is not None:
                     profiler.capture_inference(client)
                     profiler.record_step(1000.0 * action_dt)
 
                 try:
                     obs, reward, done, truncated, info = env.step(action)
+                    step_id += 1
+                    if args.max_steps > 0 and step_id >= args.max_steps:
+                        truncated = True
                 except ValueError as e:
                     if "terminated episode" not in str(e):
                         raise
                     print(f"- Episode aborted (env reported terminated mid-step): {e}")
+                    # Set the flag and fall through to the shared finalize
+                    # point at the bottom of the loop; do not break here or
+                    # the episode would be recorded zero times.
                     episode_aborted = True
-                    break
-                step_id += 1
-                if args.max_steps > 0 and step_id >= args.max_steps:
-                    truncated = True
 
+            # Single finalize point for both branches (LingBot and generic):
+            # an aborted episode sets the flag, lands here, and is recorded
+            # exactly once with skipped=True before moving to the next episode.
             if done or truncated or episode_aborted:
-                avg_t = sum(run_times) / len(run_times)
-                inference_times.append(avg_t)
-                success_count += info.get("is_success", 0.0)
-
-                print(f"- Episode finished after {step_id} steps.")
-                print(f"- Final reward: {reward:.2f}")
-                print(f"- Episode Information:\n{info}")
-                print(f"- Average inference time per step: {round(1000 * avg_t, 2)} ms")
-                if args.arch == "lingbot_va" and args.lingbot_print_timing:
-                    def _avg(values: list[float]) -> float:
-                        return sum(values) / len(values) if values else 0.0
-                    print(
-                        "- LingBot timing summary: "
-                        f"predict_wall_ms_avg={_avg(lingbot_predict_wall_ms):.2f} "
-                        f"predict_server_ms_avg={_avg(lingbot_predict_server_ms):.2f} "
-                        f"cache_wall_ms_avg={_avg(lingbot_cache_wall_ms):.2f} "
-                        f"cache_server_ms_avg={_avg(lingbot_cache_server_ms):.2f}",
-                        flush=True,
-                    )
-                if profiler is not None:
-                    profiler.record_episode(
-                        task=task,
-                        task_id=task_id,
-                        episode=episode,
-                        success=bool(info.get("is_success", 0.0)),
-                        skipped=episode_aborted,
-                        environment_steps=step_id,
-                    )
-                video_path = output_dir / f"episode_{episode:06d}.mp4"
-                write_inference_timeline(
-                    timeline_path_for_video(video_path),
-                    implementation="cpp",
-                    task=task,
-                    task_id=task_id,
-                    episode=episode,
-                    n_action_steps=args.n_action_steps,
-                    environment_steps=step_id,
-                    video_has_initial_frame=True,
-                    requests=inference_requests,
-                )
-                episode_results.append({
-                    "episode": episode,
-                    "noise_seed": episode_noise_seed,
-                    "success": bool(info.get("is_success", 0.0)),
-                    "skipped": episode_aborted,
-                    "environment_steps": step_id,
-                    "average_step_ms": round(1000 * avg_t, 2),
-                })
+                _finalize_episode(episode_aborted, info, reward, step_id)
                 break
 
         if episode_aborted:
             skipped += 1
 
     env.close()
-    counted = max(1, args.n_episodes - skipped)
+    # effective is the number of episodes that produced a result (completed
+    # or aborted); counted guards against division by zero in the rates. The
+    # summary/rate denominator must report the effective count so an
+    # all-aborted task reads 0/0 (not 0/1) and stays consistent with the
+    # episodes_counted field in result.json.
+    effective = args.n_episodes - skipped
+    counted = max(1, effective)
     avg_inf_ms = (round(1000 * sum(inference_times) / len(inference_times), 2)
                   if inference_times else 0.0)
     result = {
         "arch": args.arch,
+        "implementation": implementation,
         "suite": task,
         "task_id": task_id,
         "episodes_requested": args.n_episodes,
-        "episodes_counted": args.n_episodes - skipped,
+        "episodes_counted": effective,
         "successes": int(success_count),
         "skipped": skipped,
         "success_rate": success_count / counted,
         "average_step_ms": avg_inf_ms,
         "seed": args.seed,
         "noise_seed": args.noise_seed,
+        "derive_episode_noise": args.derive_episode_noise,
         "n_action_steps": args.n_action_steps,
         "episodes": episode_results,
+        "observation_width": args.observation_width,
+        "observation_height": args.observation_height,
+        "image_size": args.image_size,
+        "control_mode": args.control_mode,
+        "num_steps_wait": args.num_steps_wait,
     }
     with (output_dir / "result.json").open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
@@ -491,7 +607,7 @@ def run_one_task(
         f.write(f"Arch: {args.arch}\n")
         f.write(f"Task: {task}/task_{task_id}\n")
         f.write(f"n_action_steps: {args.n_action_steps}\n")
-        f.write(f"Success rate: {success_count / counted:.2%}  ({int(success_count)}/{counted})\n")
+        f.write(f"Success rate: {success_count / counted:.2%}  ({int(success_count)}/{effective})\n")
         f.write(f"Skipped (terminated mid-step): {skipped}/{args.n_episodes}\n")
         f.write(f"Average inference time per step: {avg_inf_ms} ms\n")
         if args.arch == "lingbot_va" and args.lingbot_print_timing:
@@ -503,12 +619,12 @@ def run_one_task(
             f.write(f"LingBot cache server ms avg: {_avg(lingbot_cache_server_ms):.2f}\n")
 
     print(f"*** {task}/task_{task_id} completed.")
-    print(f"- Success rate: {success_count / counted:.2%}  ({int(success_count)}/{counted})")
+    print(f"- Success rate: {success_count / counted:.2%}  ({int(success_count)}/{effective})")
     print(f"- Skipped (terminated mid-step): {skipped}/{args.n_episodes}")
-    print(f"- Saved videos to: {output_dir.resolve()}")
+    print(f"- Saved results to: {output_dir.resolve()} (video={'off' if args.no_video else 'on'})")
     return result
 
-if __name__ == "__main__":
+def parse_args(argv=None):
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument(
         "--conf", "--config",
@@ -516,7 +632,7 @@ if __name__ == "__main__":
         default=None,
         help="YAML benchmark config. Relative names are resolved under eval/conf/.",
     )
-    conf_args, _ = pre_parser.parse_known_args()
+    conf_args, _ = pre_parser.parse_known_args(argv)
     conf_defaults = _load_yaml_config(conf_args.conf)
 
     parser = argparse.ArgumentParser(
@@ -540,15 +656,23 @@ if __name__ == "__main__":
     parser.add_argument("--task-ids", nargs="+", type=int, default=None,
         help="Task variation ids to run. YAML configs may also set task_ids: all.")
     parser.add_argument("--n-episodes", type=int, default=30)
+    parser.add_argument("--num-steps-wait", type=int, default=10,
+        help="Settling steps performed by the environment after reset.")
     parser.add_argument("--max-steps", type=int, default=0,
         help="Stop each episode after this many env steps for smoke tests. "
              "0 means run until done/truncated.")
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--observation-width", type=int, default=360,
+    parser.add_argument("--derive-episode-noise", action="store_true",
+                        help="derive per-episode action-noise seeds from "
+                             "(noise_seed, suite, task, episode) like the SmolVLA "
+                             "PR mechanism; default off keeps historical noise sequences")
+    parser.add_argument("--observation-width", type=int, default=256,
         help="Raw LIBERO camera width before model preprocessing.")
-    parser.add_argument("--observation-height", type=int, default=360,
+    parser.add_argument("--observation-height", type=int, default=256,
         help="Raw LIBERO camera height before model preprocessing.")
     parser.add_argument("--output-dir", type=str, default="outputs")
+    parser.add_argument("--no-video", action="store_true",
+                        help="Save metrics/timelines without rendering evaluation videos.")
     parser.add_argument(
         "--view-mode",
         choices=["single-view", "multi-view"], default="multi-view",
@@ -557,10 +681,34 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42,
         help="Seed for the LIBERO env reset/init-state rollout (default: 42).")
     parser.add_argument("--noise-seed", type=int, default=None,
-        help="Deterministic SmolVLA action-noise seed. Each task/episode gets a stable derived seed.")
+        help="Non-negative action-noise seed. SmolVLA derives per-episode seeds by default; "
+             "XR0/X-VLA require --derive-episode-noise for episode derivation.")
+
+    parser.add_argument("--observation-size", type=int, default=None,
+        help="Set both raw camera dimensions; cannot be combined with explicit "
+             "--observation-width/height. Model resize is controlled by --image-size.")
+    parser.add_argument("--control-mode", choices=["relative", "absolute"],
+        default=None,
+        help="LIBERO controller mode (default: absolute for xvla, relative "
+             "otherwise). xvla emits absolute ee6d targets and needs 'absolute'.")
 
     parser.add_argument("--arch", choices=ARCH_CHOICES, default="lingbot_va",
         help="Model/client path. Also namespaces the output dir.")
+    parser.add_argument("--implementation", choices=("cpp", "python"), default="cpp",
+        help="Inference implementation; Python supports X-VLA, XR0 and TurboVLA references.")
+    parser.add_argument("--hf-dir", type=str, default=None,
+        help="Official Hugging Face checkpoint directory for --implementation python.")
+    parser.add_argument("--xvla-precision", choices=("bf16", "f32"), default="bf16",
+        help="Official Python X-VLA compute precision.")
+    parser.add_argument("--xr0-vision-dtype", choices=("bf16", "f16"), default="f16",
+        help="Official Python XR0 vision tower dtype (f16 matches the deployed mmproj).")
+    parser.add_argument("--xr0-policy-precision", choices=("bf16", "f32"), default="bf16",
+        help="Python XR0 policy and both clients' noise dtype; for C++ f32 also set VLA_XR0_F32_WEIGHTS=1 on the server.")
+    for option in ("checkpoint", "official-root", "bert-path", "norm-gguf"):
+        parser.add_argument(f"--turbovla-{option}", type=str, default=None,
+                            help="TurboVLA Python reference asset (matching checkpoint/source).")
+    parser.add_argument("--turbovla-checkpoint-key", default="model_state_dict")
+    parser.add_argument("--turbovla-precision", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--vla-addr", type=str, default="tcp://localhost:5555",
         help="ZMQ address of the C++ inference daemon, for example vla-server or vla-server.")
     parser.add_argument("--tokenizer", type=str, default=None,
@@ -570,12 +718,14 @@ if __name__ == "__main__":
     parser.add_argument("--max-state-dim", type=int, default=None,
         help="Override the state vector length sent to the VLA server "
              "(default: arch preset).")
-    parser.add_argument("--real-action-dim", type=int, default=7)
+    parser.add_argument("--real-action-dim", type=int, default=None,
+        help="Action dims consumed from each chunk row (default: 10 for xvla "
+             "absolute ee6d rows, 7 otherwise).")
     parser.add_argument("--image-keys", nargs="+",
         default=["observation.images.image", "observation.images.image2"])
     parser.add_argument("--max-length", type=int, default=None,
         help="Maximum language token count. Defaults to the selected arch preset "
-             "(pi05=200, lingbot_va=512).")
+             "(pi05=200, lingbot_va=512, xr0=512, turbovla=64).")
     parser.add_argument("--recv-timeout-ms", type=int, default=900_000,
         help="ZMQ receive timeout for the selected C++ inference server.")
     parser.add_argument("--lingbot-session-id", type=int, default=1,
@@ -631,10 +781,49 @@ if __name__ == "__main__":
             )
         parser.set_defaults(**conf_defaults)
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.noise_seed is not None and args.noise_seed < 0:
+        parser.error("--noise-seed must be non-negative")
+    if args.derive_episode_noise:
+        if args.noise_seed is None:
+            parser.error("--derive-episode-noise requires --noise-seed")
+        if args.arch not in ("smolvla", "xr0", "xvla"):
+            parser.error("--derive-episode-noise is implemented for smolvla/xr0/xvla only; "
+                         "TurboVLA has no action-noise input and LingBot uses its own noise flags")
+    cli = sys.argv[1:] if argv is None else argv
+    dimensions = ("--observation-width", "--observation-height")
+    explicit_dimensions = {arg.split("=", 1)[0] for arg in cli} & set(dimensions)
+    if args.observation_size is not None:
+        if explicit_dimensions:
+            if any(arg.split("=", 1)[0] == "--observation-size" for arg in cli):
+                parser.error("use --observation-size or --observation-width/height, not both")
+            # Explicit CLI dimensions override the YAML square-size default.
+            if "--observation-width" not in explicit_dimensions:
+                args.observation_width = args.observation_size
+            if "--observation-height" not in explicit_dimensions:
+                args.observation_height = args.observation_size
+        else:
+            args.observation_width = args.observation_height = args.observation_size
     if args.observation_width <= 0 or args.observation_height <= 0:
         parser.error("--observation-width and --observation-height must be positive")
-    requested_suite = args.libero_suite or args.task
+    if args.arch == "xr0" and (
+        args.observation_width % 32
+        or args.observation_height % 32
+        or args.observation_width != args.observation_height
+    ):
+        parser.error("xr0 camera must be square and divisible by 32; use --observation-size 256")
+    if args.n_episodes <= 0 or args.num_steps_wait < 0:
+        parser.error("--n-episodes must be positive and --num-steps-wait non-negative")
+    # Suite precedence: an explicitly spelled CLI --libero-suite/--task wins
+    # over a YAML default; with neither on the command line, the YAML
+    # libero_suite (or the --task fallback default) applies.
+    cli_flags = {arg.split("=", 1)[0] for arg in cli}
+    if "--libero-suite" in cli_flags:
+        requested_suite = args.libero_suite
+    elif "--task" in cli_flags:
+        requested_suite = args.task
+    else:
+        requested_suite = args.libero_suite or args.task
     args.task = normalize_libero_suite(requested_suite)
     if args.task not in LIBERO_SUITE_TASK_COUNTS:
         raise ValueError(
@@ -642,6 +831,12 @@ if __name__ == "__main__":
             "spatial, object, goal, 10, long, libero_spatial, libero_object, "
             "libero_goal, libero_10, libero_90."
         )
+    resolve_task_ids(args)
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
     task_ids = resolve_task_ids(args)
 
     client = build_client(args)
@@ -651,13 +846,26 @@ if __name__ == "__main__":
             raise RuntimeError(
                 "client.libero_profile is required when --profile-output is set"
             )
-        default_labels = {
-            "groot_n1": ("GR00T N1.7", "Qwen3-VL-16L"),
-            "pi05": ("pi0.5", "PaliGemma"),
-            "lingbot_va": ("LingBot-VA", "LingBot-VLM"),
-            "smolvla": ("SmolVLA", "SmolVLM2-500M"),
-        }
-        model_default, backbone_default = default_labels[args.arch]
+        model_default, backbone_default = PROFILE_LABELS[args.arch]
+        # TurboVLA runs vision + text + fusion + action head as one fused
+        # graph, so its "inference" figure is the whole graph execution, not
+        # an action-head-only phase; say so where the number is published.
+        inference_definition = None
+        vram_target_label = "VLA server"
+        if args.arch == "turbovla":
+            inference_definition = TURBOVLA_INFERENCE_DEFINITION
+        if args.implementation == "python":
+            inference_definition = (
+                "official PyTorch model forward from preprocessed tensors through "
+                "complete CPU action read-back; image/token preprocessing is excluded"
+            )
+            vram_target_label = "official Python reference process"
+            if args.arch == "turbovla":
+                inference_definition = (
+                    "official PyTorch forward including internal text tokenization, "
+                    "input transfer, CPU action read-back and action denormalization; "
+                    "host image/state preprocessing is excluded; phase breakdown unavailable"
+                )
         profiler = LiberoSuiteProfiler(
             output_path=Path(args.profile_output),
             model_label=args.profile_model_label or model_default,
@@ -667,16 +875,24 @@ if __name__ == "__main__":
             replay_chunk_size=args.n_action_steps,
             expected_episodes=len(task_ids) * args.n_episodes,
             server_address=args.vla_addr,
-            server_pid=args.profile_server_pid,
+            server_pid=(args.profile_server_pid if args.implementation == "cpp"
+                        else args.profile_server_pid or os.getpid()),
             vram_interval_s=args.profile_vram_interval_s,
             warmup_requests=args.profile_warmup_requests,
+            implementation=args.implementation,
+            inference_source_label=("server-side model forward"
+                                    if args.implementation == "cpp"
+                                    else "official Python model forward"),
+            vram_target_label=vram_target_label,
+            **({"inference_definition": inference_definition} if inference_definition else {}),
         )
         profiler.start()
 
     complete = False
     try:
         for task_id in task_ids:
-            run_one_task(args, client, args.task, task_id, profiler)
+            run_one_task(args, client, args.task, task_id, profiler,
+                         implementation=args.implementation)
         complete = True
     finally:
         if profiler is not None:
@@ -686,3 +902,7 @@ if __name__ == "__main__":
             if complete:
                 print(f"- Profile table: {profiler.output_path.with_suffix('.md').resolve()}")
                 print(f"- Table ready: {result['table_ready']}")
+
+
+if __name__ == "__main__":
+    main()

@@ -41,6 +41,9 @@ Available checked-in configurations are:
 | SmolVLA | [`libero_smolvla_eval.yaml`](../../conf/libero_smolvla_eval.yaml) |
 | GR00T N1.7 | [`libero_groot_n1_eval.yaml`](../../conf/libero_groot_n1_eval.yaml) |
 | LingBot-VA | [`libero_lingbot_va_eval.yaml`](../../conf/libero_lingbot_va_eval.yaml) |
+| Xiaomi-Robotics-0 | [`libero_xr0_eval.yaml`](../../conf/libero_xr0_eval.yaml) |
+| TurboVLA | [`libero_turbovla_eval.yaml`](../../conf/libero_turbovla_eval.yaml) |
+| X-VLA | [`libero_xvla_eval.yaml`](../../conf/libero_xvla_eval.yaml) |
 
 ## Suites and Tasks
 

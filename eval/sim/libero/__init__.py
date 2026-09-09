@@ -22,5 +22,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+# The upstream checkout uses ``libero/libero`` without an outer
+# ``__init__.py``.  Add the checkout root so ``libero.libero`` resolves after
+# setup_libero.sh, without requiring every evaluator command to set PYTHONPATH.
+LIBERO_CHECKOUT = Path(__file__).resolve().parent / "LIBERO"
+if LIBERO_CHECKOUT.is_dir():
+    sys.path.insert(0, str(LIBERO_CHECKOUT))
+
 from sim.libero.libero_env import register_libero_envs
 register_libero_envs()

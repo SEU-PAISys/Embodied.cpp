@@ -10,10 +10,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(MODEL_BUILD_VLA_PI05 "Build pi0.5 runtime support" OFF)
 option(MODEL_BUILD_VLA_HY_VLA "Build HY-VLA runtime support" OFF)
 option(MODEL_BUILD_VLA_GROOT_N1 "Build NVIDIA GR00T N1 runtime support" OFF)
-option(MODEL_BUILD_WAM_LINGBOT_VA "Build LingBot-VA runtime support" OFF)
 option(MODEL_BUILD_WAM_COSMOS3 "Build Cosmos3 WAM runtime support" OFF)
 option(MODEL_BUILD_VLA_SMOLVLA "Build SmolVLA runtime support" OFF)
-
+option(MODEL_BUILD_WAM_LINGBOT_VA "Build LingBot-VA runtime support" OFF)
+option(MODEL_BUILD_VLA_XR0 "Build Xiaomi-Robotics-0 runtime support" OFF)
+option(MODEL_BUILD_VLA_TURBOVLA "Build TurboVLA runtime support" OFF)
+option(MODEL_BUILD_VLA_XVLA "Build X-VLA runtime support" OFF)
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
@@ -38,14 +40,23 @@ endif()
 if(MODEL_BUILD_VLA_GROOT_N1)
     target_sources(vla_core PRIVATE models/groot_n1.cpp)
 endif()
-if(MODEL_BUILD_WAM_LINGBOT_VA)
-    target_sources(vla_core PRIVATE models/lingbot_va.cpp)
-endif()
 if(MODEL_BUILD_WAM_COSMOS3)
     target_sources(vla_core PRIVATE models/cosmos3.cpp)
 endif()
 if(MODEL_BUILD_VLA_SMOLVLA)
     target_sources(vla_core PRIVATE models/smolvla.cpp)
+endif()
+if(MODEL_BUILD_WAM_LINGBOT_VA)
+    target_sources(vla_core PRIVATE models/lingbot_va.cpp)
+endif()
+if(MODEL_BUILD_VLA_XR0)
+    target_sources(vla_core PRIVATE models/xr0.cpp)
+endif()
+if(MODEL_BUILD_VLA_TURBOVLA)
+    target_sources(vla_core PRIVATE models/turbovla.cpp)
+endif()
+if(MODEL_BUILD_VLA_XVLA)
+    target_sources(vla_core PRIVATE models/xvla.cpp)
 endif()
 target_include_directories(vla_core
     PUBLIC
@@ -58,10 +69,12 @@ target_compile_definitions(vla_core PUBLIC
     MODEL_BUILD_VLA_PI05=$<BOOL:${MODEL_BUILD_VLA_PI05}>
     MODEL_BUILD_VLA_HY_VLA=$<BOOL:${MODEL_BUILD_VLA_HY_VLA}>
     MODEL_BUILD_VLA_GROOT_N1=$<BOOL:${MODEL_BUILD_VLA_GROOT_N1}>
-    MODEL_BUILD_WAM_LINGBOT_VA=$<BOOL:${MODEL_BUILD_WAM_LINGBOT_VA}>
     MODEL_BUILD_WAM_COSMOS3=$<BOOL:${MODEL_BUILD_WAM_COSMOS3}>
     MODEL_BUILD_VLA_SMOLVLA=$<BOOL:${MODEL_BUILD_VLA_SMOLVLA}>
-)
+    MODEL_BUILD_WAM_LINGBOT_VA=$<BOOL:${MODEL_BUILD_WAM_LINGBOT_VA}>
+    MODEL_BUILD_VLA_XR0=$<BOOL:${MODEL_BUILD_VLA_XR0}>
+    MODEL_BUILD_VLA_TURBOVLA=$<BOOL:${MODEL_BUILD_VLA_TURBOVLA}>
+    MODEL_BUILD_VLA_XVLA=$<BOOL:${MODEL_BUILD_VLA_XVLA}>)
 target_link_libraries(vla_core PUBLIC llama ggml mtmd)
 
 set(EMBODIED_ENABLED_MODELS "")
@@ -74,14 +87,23 @@ endif()
 if(MODEL_BUILD_VLA_GROOT_N1)
     list(APPEND EMBODIED_ENABLED_MODELS "VLA/GR00T-N1")
 endif()
-if(MODEL_BUILD_WAM_LINGBOT_VA)
-    list(APPEND EMBODIED_ENABLED_MODELS "WAM/LingBot-VA")
-endif()
 if(MODEL_BUILD_WAM_COSMOS3)
     list(APPEND EMBODIED_ENABLED_MODELS "WAM/Cosmos3")
 endif()
 if(MODEL_BUILD_VLA_SMOLVLA)
     list(APPEND EMBODIED_ENABLED_MODELS "VLA/SmolVLA")
+endif()
+if(MODEL_BUILD_WAM_LINGBOT_VA)
+    list(APPEND EMBODIED_ENABLED_MODELS "WAM/LingBot-VA")
+endif()
+if(MODEL_BUILD_VLA_XR0)
+    list(APPEND EMBODIED_ENABLED_MODELS "VLA/Xiaomi-Robotics-0")
+endif()
+if(MODEL_BUILD_VLA_TURBOVLA)
+    list(APPEND EMBODIED_ENABLED_MODELS "VLA/TurboVLA")
+endif()
+if(MODEL_BUILD_VLA_XVLA)
+    list(APPEND EMBODIED_ENABLED_MODELS "VLA/X-VLA")
 endif()
 if(EMBODIED_ENABLED_MODELS)
     string(REPLACE ";" ", " EMBODIED_ENABLED_MODELS_STR "${EMBODIED_ENABLED_MODELS}")
@@ -306,8 +328,27 @@ function(add_vla_server_target target_name)
     )
 endfunction()
 
-if(MODEL_BUILD_VLA_PI05 OR MODEL_BUILD_VLA_HY_VLA OR MODEL_BUILD_VLA_GROOT_N1 OR MODEL_BUILD_VLA_SMOLVLA)
+if(MODEL_BUILD_VLA_PI05 OR MODEL_BUILD_VLA_HY_VLA OR MODEL_BUILD_VLA_GROOT_N1 OR MODEL_BUILD_VLA_SMOLVLA
+   OR MODEL_BUILD_VLA_XR0 OR MODEL_BUILD_VLA_TURBOVLA OR MODEL_BUILD_VLA_XVLA)
     add_vla_server_target(vla-server)
+endif()
+
+if(MODEL_BUILD_VLA_XR0)
+    add_executable(xr0-parity tools/xr0_parity.cpp)
+    target_include_directories(xr0-parity PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/runtime
+    )
+    target_link_libraries(xr0-parity PRIVATE vla_core)
+endif()
+
+if(MODEL_BUILD_VLA_XVLA)
+    add_executable(xvla-parity tools/xvla_parity.cpp)
+    target_include_directories(xvla-parity PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/runtime
+    )
+    target_link_libraries(xvla-parity PRIVATE vla_core)
 endif()
 
 if(MODEL_BUILD_WAM_LINGBOT_VA)

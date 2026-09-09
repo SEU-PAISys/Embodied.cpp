@@ -50,6 +50,7 @@ class Pi05LIBEROParser:
         return model_inputs
 
     def parse_embodied_observation(self, obs: dict[str, Any]) -> EmbodiedObservation:
+        model_inputs = self.parse_observation(obs)
         pixels = obs.get("pixels", {})
         images = []
         for key in ("image", "image2"):
@@ -58,14 +59,109 @@ class Pi05LIBEROParser:
         return EmbodiedObservation(
             instruction=str(obs.get("task_description", "")),
             images=images,
-            proprioception=TensorStream("libero_state", _extract_pi05_libero_state(obs)),
-            model_inputs=self.parse_observation(obs),
+            # Keep the typed state identical to the model compatibility view:
+            # Pi05/XR0/TurboVLA use 8 float32 values; X-VLA uses 20 (ee6d).
+            proprioception=TensorStream("libero_state", model_inputs["observation.state"]),
+            model_inputs=model_inputs,
             raw=obs,
         )
 
     def parse_action(self, action: np.ndarray) -> np.ndarray:
         return np.asarray(action[:7], dtype=np.float32)
 
+
+class TurboVLALIBEROParser(Pi05LIBEROParser):
+    """TurboVLA parser for LIBERO.
+
+    TurboVLA adopts pi0.5's two-camera / 8-D state / task-text LIBERO layout, so
+    observation parsing and CHW float01 image preprocessing (rotation included)
+    are inherited. The C++ runtime already de-normalises the 7-DoF arm into
+    world units and maps the gripper to a binary +1/-1, so no transform is
+    applied to the returned action otherwise.
+    """
+
+    def parse_action(self, action: np.ndarray) -> np.ndarray:
+        return np.asarray(action[:7], dtype=np.float32)
+
+
+class XiaomiRobotics0LIBEROParser(Pi05LIBEROParser):
+    """Xiaomi-Robotics-0 parser for LIBERO.
+
+    Xiaomi-Robotics-0 adopts the same two-camera / task-text LIBERO layout as pi0.5, so
+    observation parsing and CHW float01 image preprocessing are inherited.
+    The 8-D LIBERO state is zero-padded to the 32-D proprioceptive input in
+    the client (VlaCppClient._predict_chunk_xr0); images stay at their native
+    resolution (must be a multiple of 32) and the action output is the 7-DoF
+    arm + gripper taken from the 30-step chunk.
+    """
+
+    def parse_action(self, action: np.ndarray) -> np.ndarray:
+        return np.asarray(action[:7], dtype=np.float32)
+
+
+def _to_chw_float01_raw(image: Any) -> np.ndarray:
+    """CHW float01 without the 180-degree flip (X-VLA wrist camera)."""
+    arr = np.asarray(image, dtype=np.float32)
+    if arr.ndim != 3 or arr.shape[-1] != 3:
+        raise ValueError(f"expected HWC image with 3 channels, got {arr.shape}")
+    return np.transpose(arr / 255.0, (2, 0, 1)).astype(np.float32, copy=False)
+
+
+def _rotate6d_to_axisangle(r6d: np.ndarray) -> np.ndarray:
+    import robosuite.utils.transform_utils as T
+
+    a1 = np.asarray(r6d, dtype=np.float64).reshape(-1)[0:3]
+    a2 = np.asarray(r6d, dtype=np.float64).reshape(-1)[3:6]
+    b1 = a1 / (np.linalg.norm(a1) + 1e-6)
+    b2 = a2 - np.dot(b1, a2) * b1
+    b2 = b2 / (np.linalg.norm(b2) + 1e-6)
+    b3 = np.cross(b1, b2)
+    quat = T.mat2quat(np.stack([b1, b2, b3], axis=-1))
+    return np.asarray(T.quat2axisangle(quat), dtype=np.float64)
+
+
+def _extract_xvla_libero_state(obs: dict[str, Any]) -> np.ndarray:
+    """Official X-VLA LIBERO proprioception: [pos(3), ori6d(6), grip(1)]
+    followed by a zero legacy copy (20 dims); the gripper channel stays 0."""
+    robot_state = obs.get("robot_state", {})
+    eef = robot_state.get("eef", {})
+    pos = np.asarray(eef.get("pos", np.zeros(3)), dtype=np.float64).reshape(-1)[:3]
+    mat = np.asarray(eef.get("mat"), dtype=np.float64).reshape(3, 3)
+    ori6d = np.concatenate([mat[:3, 0], mat[:3, 1]])
+    cur = np.concatenate([pos, ori6d, [0.0]]).astype(np.float32)
+    return np.concatenate([cur, np.zeros_like(cur)]).astype(np.float32)
+
+
+class XVLALIBEROParser(Pi05LIBEROParser):
+    """X-VLA parser for LIBERO (mirrors the official evaluation/libero client).
+
+    - proprio: [pos3, ori6d6, grip1] + zero legacy copy -> 20 dims, gripper 0
+    - agentview image flipped 180 degrees, wrist camera sent unflipped
+      (matches the official client's _flip_agentview usage)
+    - domain_id fixed to 3 (the embodiment row X-VLA-Libero is evaluated with)
+    - actions: chunk rows are absolute ee6d targets [pos3, rot6d6, grip1];
+      converted to [pos3, axis-angle3, grip(+/-1)] for the LIBERO env running
+      in absolute control mode (robot.controller.use_delta=False).
+    """
+
+    def parse_observation(self, obs: dict[str, Any]) -> dict[str, Any]:
+        images = obs.get("pixels", {})
+        model_inputs = {
+            "observation.images.image": _to_chw_float01(images["image"]),
+            "observation.state": _extract_xvla_libero_state(obs),
+            "task": str(obs.get("task_description", "")),
+            "domain_id": 3,
+        }
+        if "image2" in images:
+            model_inputs["observation.images.image2"] = _to_chw_float01_raw(images["image2"])
+        return model_inputs
+
+    def parse_action(self, action: np.ndarray) -> np.ndarray:
+        a = np.asarray(action, dtype=np.float64).reshape(-1)[:10]
+        pos = a[0:3]
+        ori = _rotate6d_to_axisangle(a[3:9])
+        grip = 1.0 if a[9] > 0.5 else -1.0
+        return np.concatenate([pos, ori, [grip]]).astype(np.float32)
 
 class GrootN1LIBEROParser:
     def parse_observation(self, obs: dict[str, Any]) -> dict[str, Any]:
@@ -95,6 +191,9 @@ class GrootN1LIBEROParser:
         )
 
     def parse_action(self, action: np.ndarray) -> np.ndarray:
+        # GR00T N1.7 emits a 7-D end-effector delta action; the last channel
+        # is an open/close logit that LIBERO stores as +1/-1, so map it to
+        # the sign convention the simulator expects.
         result = np.asarray(action[:7], dtype=np.float32).copy()
         result[-1] = -np.sign(2.0 * result[-1] - 1.0)
         return result
@@ -106,6 +205,9 @@ LIBERO_PARSER_REGISTRY = {
     "smolvla": Pi05LIBEROParser,
     "groot_n1": GrootN1LIBEROParser,
     "lingbot_va": LingBotLIBEROParser,
+    "turbovla": TurboVLALIBEROParser,
+    "xr0": XiaomiRobotics0LIBEROParser,
+    "xvla": XVLALIBEROParser,
 }
 
 

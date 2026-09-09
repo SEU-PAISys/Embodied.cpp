@@ -125,10 +125,13 @@ void usage(const char * prog) {
         "usage: %s [--bind ADDR] [--timing-detail none|phase] [--config PATH] "
         "[--backbone PATH] "
         "[<mmproj.gguf>] <ckpt>\n"
-        "  <mmproj.gguf>           pi0.5 vision-tower mmproj GGUF. Omit for HY-VLA\n"
-        "                          and LingBot-VA combined GGUF checkpoints.\n"
-        "  <ckpt>                  pi0.5, HY-VLA, or LingBot-VA GGUF checkpoint; the\n"
-        "                          architecture is auto-detected from metadata.\n"
+        "  <mmproj.gguf>           Vision-tower mmproj GGUF for pi0.5, GR00T N1.7\n"
+        "                          SmolVLA and Xiaomi-Robotics-0. Omit for HY-VLA,\n"
+        "                          LingBot-VA, TurboVLA and X-VLA, whose checkpoints are\n"
+        "                          single self-contained GGUFs.\n"
+        "  <ckpt>                  Model GGUF checkpoint; the architecture is\n"
+        "                          auto-detected from metadata. See README 2.5 for the\n"
+        "                          exact (mmproj, ckpt) pairs per model.\n"
         "  --bind ADDR             ZMQ bind address (default: tcp://*:5555)\n"
         "  --timing-detail LEVEL   per-request timing breakdown (default: none)\n"
         "                          'none'  : single ms_inference\n"
@@ -237,13 +240,17 @@ int main(int argc, char ** argv) {
     zmq::pollitem_t poll[] = {{ static_cast<void*>(sock), 0, ZMQ_POLLIN, 0 }};
 
     uint64_t served = 0;
+    int exit_status = 0;
     while (!g_shutdown.load(std::memory_order_relaxed)) {
 
         try {
             zmq::poll(poll, 1, std::chrono::milliseconds(200));
         } catch (const zmq::error_t & e) {
-            if (e.num() == EINTR) continue;
-            throw;
+            if (e.num() == EINTR || e.num() == EAGAIN) continue;
+            std::fprintf(stderr, "vla-server: fatal poll error errno=%d (%s); stopping\n",
+                         e.num(), e.what());
+            exit_status = 1;
+            break;
         }
         if (!(poll[0].revents & ZMQ_POLLIN)) continue;
 
@@ -252,8 +259,11 @@ int main(int argc, char ** argv) {
             auto rr = sock.recv(req_msg, zmq::recv_flags::none);
             if (!rr) continue;
         } catch (const zmq::error_t & e) {
-            if (e.num() == EINTR) continue;
-            throw;
+            if (e.num() == EINTR || e.num() == EAGAIN) continue;
+            std::fprintf(stderr, "vla-server: fatal recv error errno=%d (%s); stopping\n",
+                         e.num(), e.what());
+            exit_status = 1;
+            break;
         }
 
         vla::PredictRequest req;
@@ -422,6 +432,8 @@ int main(int argc, char ** argv) {
 
         embodied::adapter::Observation observation;
         observation.instruction = req.language_text();
+        observation.language_text = req.language_text();
+        observation.domain_id = req.domain_id();
         observation.language_tokens.assign(req.lang_tokens().begin(), req.lang_tokens().end());
         observation.proprioception.assign(req.state().begin(), req.state().end());
         observation.images = std::move(img_views);
@@ -548,5 +560,5 @@ int main(int argc, char ** argv) {
     zctx.close();
     vla::model_free(model);
     google::protobuf::ShutdownProtobufLibrary();
-    return 0;
+    return exit_status;
 }

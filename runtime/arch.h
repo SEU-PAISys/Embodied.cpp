@@ -42,6 +42,9 @@ enum class Arch {
     PI05,       ///< Physical Intelligence pi0.5 policy.
     LINGBOT_VA, ///< Robbyant LingBot-VA video-action world model.
     HY_VLA,     ///< Tencent Hy-Embodied-0.5-VLA dual-tower flow policy.
+    XR0,        ///< Xiaomi-Robotics-0 (Qwen3-VL backbone + DiT flow-matching head).
+    TURBOVLA,   ///< TurboVLA direct V+L->A policy (DINOv3 + BERT + bidirectional cross-attn fusion).
+    XVLA,       ///< X-VLA (Florence-2 DaViT + BART encoder + domain-conditioned flow head).
     COSMOS3,    ///< NVIDIA Cosmos3 video-action world model.
     GROOT_N1,   ///< NVIDIA GR00T N1 vision-language-action policy.
     SMOLVLA,    ///< LeRobot SmolVLA (SigLIP + SmolLM2 + flow-matching action expert).
@@ -140,6 +143,67 @@ std::unique_ptr<ModelArchBase> groot_n1_create(const std::string& mmproj_path,
 std::unique_ptr<ModelArchBase> smolvla_create(const std::string& mmproj_path,
                                                const std::string& ckpt_path,
                                                const std::string& config_path);
+
+/**
+ * @brief Build a Xiaomi-Robotics-0 model (Qwen3-VL-4B backbone + 16-layer
+ *        DiT flow-matching action head cross-attending to backbone KV).
+ *
+ * Weights are split across two GGUFs:
+ *   - @p mmproj_path: Qwen3-VL vision tower in llama.cpp mmproj format
+ *     (produced by llama.cpp's convert_hf_to_gguf.py --mmproj), including
+ *     the three deepstack mergers.
+ *   - @p ckpt_path: text backbone + DiT head + per-robot action statistics
+ *     (produced by scripts/convert_xr0_to_gguf.py).
+ *
+ * @param mmproj_path Path to the Xiaomi-Robotics-0 mmproj GGUF (vision tower).
+ * @param ckpt_path   Path to the Xiaomi-Robotics-0 main GGUF.
+ * @param config_path Optional JSON override; pass empty to use bundled config.
+ * @return Owning pointer to the constructed model.
+ */
+std::unique_ptr<ModelArchBase> xr0_create(const std::string& mmproj_path,
+                                          const std::string& ckpt_path,
+                                          const std::string& config_path);
+
+/**
+ * @brief Build a TurboVLA model (DINOv3 ViT + BERT + bidirectional
+ *        cross-attn fusion + ACT-style transformer-decoder action head).
+ *
+ * Unlike the LLM-based policies above, TurboVLA has no language backbone:
+ * it is a direct vision+language-to-action (V+L->A) policy that produces a
+ * fixed 12-step non-autoregressive action chunk. The whole model (text
+ * encoder, vision tower, fusion blocks, action head) lives in a single
+ * GGUF produced by scripts/convert_turbovla_to_gguf.py, so @p mmproj_path
+ * is ignored. The runtime tokenizes the raw instruction with a bundled
+ * WordPiece vocab via @ref Inputs::language_text.
+ *
+ * @param mmproj_path Ignored for TurboVLA (vision tower is baked into the ckpt).
+ * @param ckpt_path   Path to the TurboVLA GGUF.
+ * @param config_path Optional JSON override; pass empty to use bundled config.
+ * @return Owning pointer to the constructed model.
+ */
+std::unique_ptr<ModelArchBase> turbovla_create(const std::string& mmproj_path,
+                                               const std::string& ckpt_path,
+                                               const std::string& config_path);
+
+/**
+ * @brief Build an X-VLA model (Florence-2 DaViT vision tower + BART text
+ *        encoder + SoftPromptedTransformer domain-conditioned flow head).
+ *
+ * The whole model lives in a single GGUF produced by
+ * scripts/convert_xvla_to_gguf.py, so @p mmproj_path is ignored. The runtime
+ * expects BartTokenizer ids via @ref Inputs::lang_tokens (padded to 50 with
+ * pad id 1 client-side), bicubic-resized 224x224 RGB views, proprioception
+ * via @ref Inputs::state, initial noise via @ref Inputs::noise, and the
+ * embodiment's soft-prompt domain via @ref Inputs::domain_id.
+ *
+ * @param mmproj_path Ignored for X-VLA (vision tower is baked into the ckpt).
+ * @param ckpt_path   Path to the X-VLA GGUF.
+ * @param config_path Optional JSON override; pass empty to use bundled config.
+ * @return Owning pointer to the constructed model.
+ */
+std::unique_ptr<ModelArchBase> xvla_create(const std::string& mmproj_path,
+                                           const std::string& ckpt_path,
+                                           const std::string& config_path);
 
 /**
  * @brief Inspect a GGUF and identify the architecture tag.

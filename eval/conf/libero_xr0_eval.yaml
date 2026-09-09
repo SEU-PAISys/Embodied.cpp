@@ -1,0 +1,56 @@
+# Xiaomi-Robotics-0 (xr0) C++ server on LIBERO-object.
+# Override with --task-id from CLI for single-task smoke tests.
+#
+# Start the server first (from the repo root):
+#   ./build/vla-server checkpoints/xr0/xr0-mmproj.gguf \
+#                      checkpoints/xr0/xr0.gguf --bind tcp://*:5555
+#
+# Then:
+#   python eval/client/run_sim_client_direct.py --conf libero_xr0_eval.yaml
+
+arch: xr0
+libero_suite: object
+task_ids:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+n_episodes: 20
+max_steps: 0
+seed: 42
+
+# Example tokenizer location: populate from the same upstream HF snapshot
+# used for conversion, or pass --tokenizer /path/to/that/snapshot.
+# The GGUF converter does not create this directory (see scripts/README.md).
+tokenizer: checkpoints/xr0/hf
+vla_addr: tcp://127.0.0.1:5555
+
+output_dir: outputs/xr0_libero_object
+view_mode: multi-view
+fps: 30
+
+# No image_size: Xiaomi-Robotics-0 consumes LIBERO frames at their native
+# resolution (sides must be a multiple of 32).
+observation_width: 256
+observation_height: 256
+max_state_dim: 32
+real_action_dim: 7
+image_keys:
+  - observation.images.image
+  - observation.images.image2
+max_length: 512
+# The official evaluator replans every 10 steps from the 30-step flow chunk.
+n_action_steps: 10
+recv_timeout_ms: 900000
+
+profile_output: outputs/profiles/xr0_libero_object.json
+profile_model_label: Xiaomi-Robotics-0
+profile_backbone_label: Qwen3-VL-4B
+profile_vram_interval_s: 0.25
+profile_warmup_requests: 5

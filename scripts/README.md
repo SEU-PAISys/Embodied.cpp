@@ -14,9 +14,9 @@ package is available:
 ```
 
 Conversion scripts require a Python environment with `torch`, `numpy`, and
-`safetensors`. Quantization scripts additionally load `libggml-base.so` from a
-configured build. Use the library from the same build configuration that will
-run the resulting model.
+`safetensors`. Q8_0/Q4_0 storage quantization uses vendored `gguf-py` directly;
+Q6_K additionally loads `libggml-base.so` from a configured build. Use the
+library from the same build configuration that will run the resulting model.
 
 Each converter accepts `--help`. Run its `--dry-run` mode first where available
 to validate paths and tensor mappings before writing a large GGUF file.
@@ -31,9 +31,14 @@ to validate paths and tensor mappings before writing a large GGUF file.
 | LingBot-VA | `convert_lingbot_va_to_gguf.py` | `quantize_lingbot_wan_gguf.py` |
 | Cosmos3-Nano | `convert_cosmos3_full_w8_to_gguf.py` | Use the upstream full_w8 bundle |
 | SmolVLA | `convert_smolvla_to_gguf.py`, `convert_smolvla_mmproj_to_gguf.py` | Output type selected during conversion |
+| Xiaomi-Robotics-0 | `convert_xr0_to_gguf.py` | `quantize_xr0_gguf.py` (q8_0/q6_k/q5_k/q4_k) |
+| TurboVLA | `convert_turbovla_to_gguf.py` | `quantize_vla_gguf.py` (q8_0/q6_k/q4_0/q4_k; storage quantization) |
+| X-VLA | `convert_xvla_to_gguf.py` | `quantize_vla_gguf.py` (q8_0/q6_k/q4_0/q4_k; storage quantization) |
 
 Place final artifacts under the `checkpoints/` layout shown in the top-level
 README, then use the matching build and evaluation configuration.
+The [shared evaluation entry and results index](../eval/README.md)
+describe Python/C++ selection, model-specific precision options and profiling.
 
 ## pi0.5
 
@@ -158,9 +163,179 @@ Run `--help` to inspect optional dtype and validation flags. The converter
 checks the VLM/action-expert layer topology and preserves the serialized
 processor metadata required by the LIBERO client.
 
+## Xiaomi-Robotics-0
+
+Xiaomi-Robotics-0 uses a policy GGUF (Qwen3-VL-4B backbone + DiT
+flow-matching action head) plus a llama.cpp Qwen3-VL mmproj file converted
+from the same checkpoint:
+
+```bash
+python scripts/convert_xr0_to_gguf.py \
+  --checkpoint <XIAOMI_ROBOTICS_0_HF_DIR> \
+  --output checkpoints/xr0/xr0.gguf \
+  --mmproj checkpoints/xr0/xr0-mmproj.gguf
+```
+
+Keep the source HF snapshot for client-side tokenization and pass
+`--tokenizer <XIAOMI_ROBOTICS_0_HF_DIR>` to the eval client. The converter
+writes GGUFs, not `checkpoints/xr0/hf`; that YAML path is only an example.
+
+K-quantize selected big matmul weights in the backbone and DiT action head
+while keeping norms, embeddings and other unselected tensors at source precision:
+
+```bash
+python scripts/quantize_xr0_gguf.py \
+  --input checkpoints/xr0/xr0.gguf \
+  --output checkpoints/xr0/xr0-q8_0.gguf \
+  --outtype q8_0        # q8_0 | q6_k | q5_k | q4_k
+```
+
+Parity tools: `tools/xr0_parity.cpp`, `scripts/parity_xr0_reference.py`,
+`scripts/parity_xr0_compare.py`.
+
+## TurboVLA
+
+TurboVLA converts to one self-contained GGUF (DINOv3 ViT + BERT +
+bidirectional cross-attn fusion + ACT decoder). The bundled WordPiece vocab
+is required so the server can tokenize raw instructions:
+
+```bash
+python scripts/convert_turbovla_to_gguf.py \
+  --ckpt <TURBOVLA_CHECKPOINT.pth> \
+  --vocab <TURBOVLA_VOCAB.TXT> \
+  --out checkpoints/turbovla/turbovla.gguf
+```
+
+Parity scripts: `scripts/parity_turbovla_reference.py`,
+`scripts/parity_turbovla_cpp.py` (final-action acceptance `atol=0.01`).
+
+Use `--norm-gguf` to read the exact converted normalization arrays. The
+reference explicitly selects `model_state_dict` (or `--checkpoint-key` for
+an EMA release). Transformers **4.57.1** was validated for the post-final-LN
+DINO features used by this runtime; 4.57.6 changes `hidden_states[-1]` to
+pre-LN features, and the reference now refuses that semantic mismatch.
+The reference fixture records the dependency versions and weight hashes.
+
+For optional stage diagnostics, start the server with
+`VLA_TURBOVLA_DUMP_DIR=<existing parity directory>`, then pass `--stages` to
+the comparison script. Each request replaces the dumps. Disable this variable
+for performance measurements. Reconvert historical GGUFs missing
+`turbovla.pad_layout_instr` / `turbovla.pad_layout_len` to preserve the
+checkpoint's per-instruction BERT encoding lengths.
+
+`scripts/rollout_turbovla_reference.py` connects the official model to the
+same LIBERO adapter and episode loop as the C++ client: native 256px dual
+views, 8-D state, 12-action replay, relative control. This is a shared-protocol
+model comparison, not the official release-policy CLI. The common C++
+runner's `--no-video` option retains results without writing videos.
+
+## X-VLA
+
+X-VLA converts to a single policy GGUF (Florence-2 DaViT vision + BART
+encoder + domain-conditioned flow head):
+
+```bash
+python scripts/convert_xvla_to_gguf.py \
+  --hf-dir <XVLA_HF_SNAPSHOT> \
+  --output checkpoints/xvla/xvla-libero.gguf
+```
+
+Parity and rollout tooling: `tools/xvla_parity.cpp`,
+`scripts/parity_xvla_reference.py`, `scripts/rollout_xvla_reference.py`.
+
+Pass `--tokenizer <XVLA_HF_SNAPSHOT>` to the eval client. It must contain the
+matching BART tokenizer assets (`vocab.json`, `merges.txt` and tokenizer
+configuration, or a compatible fast-tokenizer snapshot). Conversion does
+not create the example `checkpoints/xvla/hf` directory. TurboVLA instead
+uses the WordPiece vocabulary embedded in its GGUF; it needs no client tokenizer.
+
+X-VLA conversion retains source F32 values and refuses an existing output.
+`VLA_XVLA_F32_WEIGHTS=1` is a **runtime** residency choice, not a converter
+rounding switch. A file named `f32` does not prove F32 computation or correct
+per-domain matrix layout; see the controlled repair evidence (artifact not retained).
+
+## Fixed-input deployment timing
+
+`scripts/bench_vla_boundary.py` supports all three public C++ model clients and
+the TurboVLA/XR0 references plus the official X-VLA Python model. It consumes a saved fixture (two native
+256px CHW views, raw 8-D state, instruction; XR0 also needs matched seeded
+30×32 noise, X-VLA fixed 30×20 noise), performs warmup, and records raw samples
+plus mean/std/p50/p95/p99. TurboVLA and X-VLA images must be float values in [0, 1].
+Use `--backend cpp --server-pid <PID>` for process VRAM, or `--backend python`
+with the reference's model paths. `--n 100 --warmup 5` is the default.
+Process memory uses 20 **additional untimed** requests after latency sampling
+(`--memory-requests 20`); no GPU-memory query runs in the timing window.
+
+The timing boundary is raw CPU input to full CPU actions (TurboVLA 12×7;
+XR0 30×32, five flow steps), including preprocessing and device transfers.
+For the deployed XR0 F16 mmproj, use `--xr0-vision-dtype f16` on the Python
+reference while keeping its text/action policy BF16; record both precisions.
+C++ X-VLA uses 30×20 output, 224px preprocessing and `--domain-id 3` by default.
+Its Python path uses the official HF model and processor. Use only a GGUF
+converted from that exact HF snapshot: an unrelated historical GGUF is not a
+valid denominator. `--xvla-precision bf16|f32` selects Python precision; select
+the matching C++ residency separately (`VLA_XVLA_F32_WEIGHTS=1` for F32).
+The fixture's explicit 30×20 noise must match `--xvla-noise-seed` (default 42)
+on the Python device/dtype; a mismatch is rejected before timing. The original
+historical X-VLA checkpoint comparison remains Pending even when a new pair
+is benchmarked. The Python branch requires the official snapshot's optional
+import dependencies as well as compatible Transformers/PyTorch versions.
+C++ additionally includes ZMQ transport, so label results as deployment/API
+latency, not GPU-only speedup. Do not benchmark while another evaluation is
+running. JSON and final actions use new output files; original results are
+never overwritten. Unavailable per-process VRAM remains null, not zero.
+
 ## Verify Outputs
+
+For TurboVLA and X-VLA **storage** quantization, use:
+
+```bash
+python scripts/quantize_vla_gguf.py \
+  --input checkpoints/turbovla/turbovla.gguf \
+  --output checkpoints/turbovla/turbovla-q8_0.gguf --outtype q8_0
+```
+
+The script uses vendored `gguf-py` codecs (and its Python dependencies),
+preserves metadata array types, and refuses existing output paths. Supported
+outputs are `q8_0`, `q4_0`, `q6_k`, and `q4_k`; inputs must be original F32/BF16 GGUFs.
+Q6_K reuses the shared GGML quantizer and additionally requires PyTorch and a
+built `libggml-base.so` (override its path with `--ggml-lib`). It selects matrix
+rows divisible by 256; ineligible tensors retain their original type. Q8_0 and
+Q4_0 do not require PyTorch or that shared library.
+Both runtimes dequantize these files to **BF16 residency by default**.
+Smaller files alone do not establish native low-bit inference or VRAM savings.
 
 Confirm that the generated files are in the expected `checkpoints/` directory,
 then load them with the matching server from the top-level README. For a
 simulator-level check, use the configuration in `eval/conf/` for the target
 model and benchmark.
+
+## X-VLA checkpoint provenance (2026-09-05)
+
+The X-VLA baseline for all current work is the official release, not the
+previously used server snapshot (`3f16a4b6…`, quarantined as an
+unknown-origin package — see `eval/xvla_checkpoint_gate_a_20260905.md`):
+
+- Source: Hugging Face `2toINF/X-VLA-Libero` (revision `129e7146`,
+  accessed 2026-09-05), `model.safetensors` SHA-256
+  `260cc58869125b826e93bcaa60bca3ea37bcc7aaf893d368a991ca14fde9f0c8`
+  (official claim: 98.1% LIBERO; local official-protocol control 10/10).
+- Conversion to GGUF (F32 storage, ~3.5 GB, both precisions served from this
+  one file: default BF16 residency, `VLA_XVLA_F32_WEIGHTS=1` for F32):
+
+  ```bash
+  python scripts/convert_xvla_to_gguf.py \
+    --hf-dir <official_libero_dir> \
+    --output xvla-libero-official.gguf
+  # GGUF SHA-256 2c828fe612c76db99ebf0fe66d1baec7ffcfcea0be904721dcad415b22e8d9b3
+  ```
+
+- Quantized variants derive from that GGUF with `quantize_vla_gguf.py`
+  (`--outtype q8_0|q6_k|q4_0|q4_k`); SHA-256 values are recorded in the
+  phase-2 manifest under `/tmp/xvla_gatea/phase2/manifest.json`.
+- Weights are not committed; the repo carries this provenance record only.
+  The GGUF is regenerable from the HF source with the command above.
+- The evaluation protocol for matched Python/C++ runs is
+  `--seed 42 --noise-seed 42 --derive-episode-noise` (identical
+  episode-derived noise on both sides; per-request `noise_checksum` in the
+  run records must match across sides).

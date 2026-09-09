@@ -1,167 +1,153 @@
-# Local agent / assistant state
-.codex/
-.claude/
 
+!.env.example
 # Build
-build/
-build-*/
-out/
-cmake-build-*/
-_workdir*
-dist/
-release/
-debug/
-
 # CMake
-CMakeCache.txt
-CMakeFiles/
-CMakeScripts/
-cmake_install.cmake
-install_manifest.txt
-compile_commands.json
-CTestTestfile.cmake
-_deps/
-Testing/
-CMakeUserPresets.json
-
 # Compiled objects / libraries / generated binaries
+# Debugger session dumps
+# Editors / OS
+# Generated protobuf code
+# Local Cosmos3 parity / capture helpers
+# Local Python reference evaluations
+# Local agent / assistant state
+# Local development notes (docs/results/ is tracked: evaluation reports)
+# Local evaluation launchers
+# Local large-scale evaluation plans
+# Local notes and accidental shell-redirection files
+# Local porting notes
+# Logs
+# Models / data
+# Python
+# Runtime outputs
+# Scratch space for one-off debug scripts (never committed)
+# Simulator/runtime dependencies populated by setup scripts
+# Third-party code populated by setup scripts
+# test
+# validate
+#artifacts
+#test cpp
+*$py.class
 *.a
-*.dylib
+*.bin
+*.ckpt
+*.d
 *.dll
+*.dylib
+*.egg-info/
+*.engine
 *.exe
+*.gguf
+*.h5
+*.incomplete
+*.log
+*.npy
+*.npz
 *.o
 *.obj
-*.so
-*.so.*
-*.d
-
-# Generated protobuf code
-*_pb2.py
-*_pb2_grpc.py
+*.onnx
 *.pb.cc
 *.pb.h
-
-# Models / data
-*.gguf
-*.bin
-*.safetensors
-*.incomplete
+*.pid
+*.plan
 *.pt
 *.pth
-*.ckpt
-*.h5
-*.npz
-*.npy
-*.onnx
-*.tflite
-*.engine
-*.plan
-checkpoints/
-weights/
-datasets/
-data/
-model_cache/
-hf_cache/
-models/paligemma-3b-pt-224-tokenizer
-
-# Python
-__pycache__/
 *.py[cod]
-*$py.class
-*.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+*.safetensors
+*.so
+*.so.*
+*.swo
+*.swp
+*.temp
+*.tflite
+*.tmp
+*_pb2.py
+*_pb2_grpc.py
+.DS_Store
+.claude/
+.codex/
 .coverage
-htmlcov/
-.venv/
-.venv-*/
-venv/
 .env
 .env.*
-!.env.example
-
-# Editors / OS
-.vscode/
 .idea/
-*.swp
-*.swo
-.DS_Store
-
-# Logs
-*.log
-*.pid
-*.tmp
-*.temp
-
-# Runtime outputs
-outputs/
-wandb/
-runs/
-eval/conf/*.local.yaml
-
-# Local development notes
-docs/
-
-# Local evaluation launchers
-eval/run_*.sh
-eval/client/python_*.py
-eval/client/replay_lingbot_npz_request.py
-
-# Local large-scale evaluation plans
-eval/conf/*20task*
-eval/conf/*200ep*
-eval/utils/*200ep*.py
-
-# Local Cosmos3 parity / capture helpers
-models/cosmos3_legacy.cpp
-scripts/bench_cosmos3_w8_native_vs_marlin.py
-scripts/cosmos3_*_reference.json
-scripts/analyze_*
-scripts/capture_*
-scripts/check_*
-scripts/inspect_*
-
-# Third-party code populated by setup scripts
-third_party/*
-
-# Simulator/runtime dependencies populated by setup scripts
-eval/sim/libero/LIBERO/
-eval/sim/libero/libero_uv/
-eval/sim/robotwin/RoboTwin/
-eval/sim/robotwin/robotwin_uv/
-
-# Local notes and accidental shell-redirection files
-CLAUDE.md
-=*
-
-#artifacts
-artifacts/
-
-
-#test cpp
-models/lingbot_va_original.cpp
-
-# Local porting notes
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv-*/
+.venv/
+.vscode/
 /HY_VLA_PORT_PLAN.md
 /HY_VLA_PROGRESS.md
 /LINGBOT_VA_PORT_PLAN.md
 /LINGBOT_VA_PROGRESS.md
-
-# validate
-/scripts/validate_*.py
-
-# test
-eval/conf/libero_groot_n1_profile_eval.yaml
-
-# Local Python reference evaluations
 /LOCAL_README.md
-/eval/client/run_pi05_libero_python.py
-/eval/client/run_groot_libero_python.py
 /eval/client/inference_timeline.py
-/eval/conf/libero_pi05_python_eval.yaml
+/eval/client/run_groot_libero_python.py
+/eval/client/run_pi05_libero_python.py
 /eval/conf/libero_groot_n1_python_eval.yaml
-/eval/sim/libero/setup_pi05_python_conda.sh
+/eval/conf/libero_pi05_python_eval.yaml
 /eval/sim/libero/setup_groot_python_conda.sh
+/eval/sim/libero/setup_pi05_python_conda.sh
+/gdb.txt
+/gdb_cmds.txt
 /scripts/create_groot_comparison_halves.py
 /scripts/create_pi05_comparison_halves.py
+/scripts/validate_*.py
+=*
+CLAUDE.md
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+CMakeUserPresets.json
+CTestTestfile.cmake
+Testing/
+__pycache__/
+_deps/
+_scratch/
+_workdir*
+artifacts/
+build-*/
+build/
+checkpoints/
+cmake-build-*/
+cmake_install.cmake
+compile_commands.json
+data/
+datasets/
+debug/
+dist/
+docs/*
+!docs/results/
+eval/client/python_*.py
+eval/client/replay_lingbot_npz_request.py
+eval/conf/*.local.yaml
+eval/conf/*200ep*
+eval/conf/*20task*
+eval/conf/libero_groot_n1_profile_eval.yaml
+eval/run_*.sh
+eval/sim/libero/LIBERO/
+eval/sim/libero/libero_uv/
+eval/sim/robotwin/RoboTwin/
+eval/sim/robotwin/robotwin_uv/
+eval/utils/*200ep*.py
+hf_cache/
+htmlcov/
+install_manifest.txt
+model_cache/
+models/cosmos3_legacy.cpp
+models/lingbot_va_original.cpp
+models/paligemma-3b-pt-224-tokenizer
+out/
+outputs/
+release/
+runs/
+scripts/.tmp_*
+scripts/analyze_*
+scripts/bench_cosmos3_w8_native_vs_marlin.py
+scripts/capture_*
+scripts/check_*
+scripts/cosmos3_*_reference.json
+scripts/inspect_*
+third_party/*
+venv/
+wandb/
+weights/
+codex_handoff/
