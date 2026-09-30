@@ -280,6 +280,7 @@ def run_one_task(
         "observation_width": args.observation_width,
         "observation_height": args.observation_height,
         "num_steps_wait": args.num_steps_wait,
+        "settling_gripper_action": args.settling_gripper_action,
     }
     if args.arch == "lingbot_va":
         # Match robbyant/lingbot-va's official LIBERO client: 128px cameras,
@@ -356,6 +357,7 @@ def run_one_task(
             requests=inference_requests,
         )
         episode_results.append({
+            "task_id": task_id,
             "episode": episode,
             "noise_seed": episode_noise_seed,
             "success": success,
@@ -593,12 +595,22 @@ def run_one_task(
         "noise_seed": args.noise_seed,
         "derive_episode_noise": args.derive_episode_noise,
         "n_action_steps": args.n_action_steps,
+        "flow_steps": args.flow_steps,
         "episodes": episode_results,
         "observation_width": args.observation_width,
         "observation_height": args.observation_height,
         "image_size": args.image_size,
+        "max_state_dim": args.max_state_dim,
+        "real_action_dim": args.real_action_dim,
+        "max_length": args.max_length,
+        "image_keys": list(args.image_keys),
+        "prompt_policy": (
+            "smolvla_trailing_newline" if args.arch == "smolvla" else "model_default"
+        ),
+        "generated_action_horizon": args.generated_action_horizon,
         "control_mode": args.control_mode,
         "num_steps_wait": args.num_steps_wait,
+        "settling_action": [0.0] * 6 + [args.settling_gripper_action],
     }
     with (output_dir / "result.json").open("w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
@@ -658,6 +670,9 @@ def parse_args(argv=None):
     parser.add_argument("--n-episodes", type=int, default=30)
     parser.add_argument("--num-steps-wait", type=int, default=10,
         help="Settling steps performed by the environment after reset.")
+    parser.add_argument("--settling-gripper-action", type=float, default=0.0,
+        help="Gripper command used during reset settling steps; must be finite "
+             "and within [-1, 1]. The default 0 preserves historical behavior.")
     parser.add_argument("--max-steps", type=int, default=0,
         help="Stop each episode after this many env steps for smoke tests. "
              "0 means run until done/truncated.")
@@ -757,6 +772,14 @@ def parse_args(argv=None):
              "re-querying the model. Defaults to the selected arch preset "
                "(pi05=10, groot_n1=8, lingbot_va=1).",
     )
+    parser.add_argument(
+        "--flow-steps", type=int, default=10,
+        help="Flow-matching steps recorded for the SmolVLA Object protocol.",
+    )
+    parser.add_argument(
+        "--generated-action-horizon", type=int, default=50,
+        help="Number of model actions generated per SmolVLA request.",
+    )
     parser.add_argument("--profile-output", type=str, default=None,
         help="Write full-suite table metrics to this JSON path; CSV and Markdown "
              "rows are written beside it after a complete run.")
@@ -814,6 +837,14 @@ def parse_args(argv=None):
         parser.error("xr0 camera must be square and divisible by 32; use --observation-size 256")
     if args.n_episodes <= 0 or args.num_steps_wait < 0:
         parser.error("--n-episodes must be positive and --num-steps-wait non-negative")
+    if not np.isfinite(args.settling_gripper_action) or not (
+        -1.0 <= args.settling_gripper_action <= 1.0
+    ):
+        parser.error("--settling-gripper-action must be finite and in [-1, 1]")
+    if args.flow_steps <= 0:
+        parser.error("--flow-steps must be positive")
+    if args.generated_action_horizon <= 0:
+        parser.error("--generated-action-horizon must be positive")
     # Suite precedence: an explicitly spelled CLI --libero-suite/--task wins
     # over a YAML default; with neither on the command line, the YAML
     # libero_suite (or the --task fallback default) applies.
