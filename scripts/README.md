@@ -30,7 +30,7 @@ to validate paths and tensor mappings before writing a large GGUF file.
 | HY-VLA | `convert_hy_vla_to_gguf.py` | `quantize_hy_vla_gguf.py` |
 | LingBot-VA | `convert_lingbot_va_to_gguf.py` | `quantize_lingbot_wan_gguf.py` |
 | Cosmos3-Nano | `convert_cosmos3_full_w8_to_gguf.py` | Use the upstream full_w8 bundle |
-| SmolVLA | `convert_smolvla_to_gguf.py`, `convert_smolvla_mmproj_to_gguf.py` | Output type selected during conversion |
+| SmolVLA | `convert_smolvla_to_gguf.py`, `convert_smolvla_mmproj_to_gguf.py` | `quantize_smolvla_full_gguf.py` (Q8_0 only; native residency) |
 | Xiaomi-Robotics-0 | `convert_xr0_to_gguf.py` | `quantize_xr0_gguf.py` (q8_0/q6_k/q5_k/q4_k) |
 | TurboVLA | `convert_turbovla_to_gguf.py` | `quantize_vla_gguf.py` (q8_0/q6_k/q4_0/q4_k; storage quantization) |
 | X-VLA | `convert_xvla_to_gguf.py` | `quantize_vla_gguf.py` (q8_0/q6_k/q4_0/q4_k; storage quantization) |
@@ -163,6 +163,152 @@ Run `--help` to inspect optional dtype and validation flags. The converter
 checks the VLM/action-expert layer topology and preserves the serialized
 processor metadata required by the LIBERO client.
 
+Create the full-model Q8_0 native-residency variant used by the Object precision gate:
+
+```bash
+python scripts/quantize_smolvla_full_gguf.py \
+  --input checkpoints/smolvla/smolvla.gguf \
+  --output checkpoints/smolvla/smolvla-q8_0-full.gguf \
+  --qtype Q8_0 \
+  --ggml-lib <BUILD_DIR>/bin/libggml-base.so
+```
+
+The Q8_0-only quantizer selects the eligible SmolLM2 backbone, action-expert,
+connector, and action/time projection matrices. Norms, biases, embeddings,
+statistics, sensitive state/output projections, and incompatible tensors remain
+at their source dtype. It refuses existing outputs, emits deterministic JSON
+inventory/provenance, and supports a dry-run byte estimate. The C++ loader
+keeps selected tensors Q8_0 in resident GGML memory and consumes them directly
+with quantized matmul; startup evidence separately reports source storage and
+resident tensor types/bytes. The paired SigLIP mmproj remains a separate GGUF.
+
+The Object gate configuration is
+`eval/conf/libero_smolvla_object_q8_eval.yaml`. Capture evidence after the
+server has printed its startup line and **before** the first rollout. The
+helper parses that line, hashes the local model/tokenizer inputs, snapshots
+the config, records repository/build identity, and refuses overwrites.
+
+Task-0 three-episode preflight (replace the identity values with the values
+from the actual local build and keep the quoted commands identical to the
+commands that will be run):
+
+```bash
+stdbuf -oL build/bin/vla-server \
+  checkpoints/smolvla/mmproj-smolvla.gguf \
+  checkpoints/smolvla/smolvla-q8_0-full.gguf \
+  > outputs/smolvla-q8-server.log 2>&1 &
+VLA_SERVER_PID=$!
+
+for _ in $(seq 1 60); do
+  if grep -q 'vla(smolvla): startup_evidence ' outputs/smolvla-q8-server.log; then
+    break
+  fi
+  if ! kill -0 "$VLA_SERVER_PID" 2>/dev/null; then
+    echo "SmolVLA server exited before startup evidence was written" >&2
+    tail -n 80 outputs/smolvla-q8-server.log >&2
+    exit 1
+  fi
+  sleep 1
+done
+if ! grep -q 'vla(smolvla): startup_evidence ' outputs/smolvla-q8-server.log; then
+  echo "Timed out waiting for SmolVLA startup evidence" >&2
+  tail -n 80 outputs/smolvla-q8-server.log >&2
+  exit 1
+fi
+if ! kill -0 "$VLA_SERVER_PID" 2>/dev/null; then
+  echo "SmolVLA server exited after writing startup evidence" >&2
+  tail -n 80 outputs/smolvla-q8-server.log >&2
+  exit 1
+fi
+
+python scripts/capture_smolvla_object_evidence.py \
+  --output-root outputs/smolvla_object_q8_smoke \
+  --config eval/conf/libero_smolvla_object_q8_eval.yaml \
+  --quantizer-manifest checkpoints/smolvla/smolvla-q8_0-full.gguf.manifest.json \
+  --server-log outputs/smolvla-q8-server.log \
+  --source-policy checkpoints/smolvla/smolvla.gguf \
+  --quantized-policy checkpoints/smolvla/smolvla-q8_0-full.gguf \
+  --mmproj checkpoints/smolvla/mmproj-smolvla.gguf \
+  --tokenizer /root/checkpoints/smolvla_tokenizer \
+  --profile-path profile.json --task-ids 0 --episodes 3 \
+  --server-command 'stdbuf -oL build/bin/vla-server checkpoints/smolvla/mmproj-smolvla.gguf checkpoints/smolvla/smolvla-q8_0-full.gguf > outputs/smolvla-q8-server.log 2>&1 &' \
+  --client-command 'python eval/client/run_sim_client_direct.py --conf eval/conf/libero_smolvla_object_q8_eval.yaml --task-ids 0 --n-episodes 3 --output-dir outputs/smolvla_object_q8_smoke --profile-output outputs/smolvla_object_q8_smoke/profile.json --profile-warmup-requests 5 --profile-server-pid $VLA_SERVER_PID' \
+  --arxiv-reference arXiv:2607.02501 --arxiv-revision-date 2026-08-09 \
+  --build-type Release --cmake-flags=-DGGML_CUDA=ON \
+  --cuda-architecture sm_89 --compiler 'gcc 13.3.0' \
+  --cuda-version 12.8 --driver-version 570.00 --gpu 'NVIDIA GPU' \
+  --repo-remote "$REPO_REMOTE" --repo-commit "$REPO_COMMIT" \
+  --repo-branch "$REPO_BRANCH" --repo-dirty-state "$REPO_DIRTY_STATE"
+
+python eval/client/run_sim_client_direct.py \
+  --conf eval/conf/libero_smolvla_object_q8_eval.yaml \
+  --task-ids 0 --n-episodes 3 \
+  --output-dir outputs/smolvla_object_q8_smoke \
+  --profile-output outputs/smolvla_object_q8_smoke/profile.json \
+  --profile-warmup-requests 5 --profile-server-pid "$VLA_SERVER_PID"
+
+python scripts/aggregate_smolvla_object_eval.py \
+  --outputs outputs/smolvla_object_q8_smoke \
+  --task-ids 0 --episodes 3 \
+  --out-dir outputs/smolvla_object_q8_smoke-summary
+```
+
+For full-suite raw evidence, use a fresh output root, omit the smoke shape
+arguments from capture/aggregation, and run the complete config:
+
+```bash
+python scripts/capture_smolvla_object_evidence.py \
+  --output-root outputs/smolvla_object_q8_200 \
+  --config eval/conf/libero_smolvla_object_q8_eval.yaml \
+  --quantizer-manifest checkpoints/smolvla/smolvla-q8_0-full.gguf.manifest.json \
+  --server-log outputs/smolvla-q8-server.log \
+  --source-policy checkpoints/smolvla/smolvla.gguf \
+  --quantized-policy checkpoints/smolvla/smolvla-q8_0-full.gguf \
+  --mmproj checkpoints/smolvla/mmproj-smolvla.gguf \
+  --tokenizer /root/checkpoints/smolvla_tokenizer --profile-path profile.json \
+  --server-command 'stdbuf -oL build/bin/vla-server checkpoints/smolvla/mmproj-smolvla.gguf checkpoints/smolvla/smolvla-q8_0-full.gguf > outputs/smolvla-q8-server.log 2>&1 &' \
+  --client-command 'python eval/client/run_sim_client_direct.py --conf eval/conf/libero_smolvla_object_q8_eval.yaml --output-dir outputs/smolvla_object_q8_200 --profile-output outputs/smolvla_object_q8_200/profile.json --profile-warmup-requests 5 --profile-server-pid $VLA_SERVER_PID' \
+  --arxiv-reference arXiv:2607.02501 --arxiv-revision-date 2026-08-09 \
+  --build-type Release --cmake-flags=-DGGML_CUDA=ON \
+  --cuda-architecture sm_89 --compiler 'gcc 13.3.0' \
+  --cuda-version 12.8 --driver-version 570.00 --gpu 'NVIDIA GPU' \
+  --repo-remote "$REPO_REMOTE" --repo-commit "$REPO_COMMIT" \
+  --repo-branch "$REPO_BRANCH" --repo-dirty-state "$REPO_DIRTY_STATE"
+
+python eval/client/run_sim_client_direct.py \
+  --conf eval/conf/libero_smolvla_object_q8_eval.yaml \
+  --output-dir outputs/smolvla_object_q8_200 \
+  --profile-output outputs/smolvla_object_q8_200/profile.json \
+  --profile-warmup-requests 5 --profile-server-pid "$VLA_SERVER_PID"
+
+python scripts/aggregate_smolvla_object_eval.py \
+  --outputs outputs/smolvla_object_q8_200 \
+  --out-dir outputs/smolvla_object_q8_200-summary
+```
+
+The strict validator accepts only these two shapes: smoke task 0×3 or full
+tasks 0–9×20. The full run is `full_suite` integration evidence and sets
+`promotion_eligible` to false. Table 3 promotion requires a matched Python
+baseline under the [benchmark standard](../eval/VLA_BENCHMARK_STANDARD.md).
+The validator requires derived CPU float32 noise checksums, at least five
+excluded warmup requests, at least 100 post-warmup inference/action samples,
+VRAM samples from process-used memory or the device-total fallback, with server
+PID and GPU UUID metadata, matching policy/config hashes, and native Q8_0
+startup residency. The captured config and every result must record native
+360×360 LIBERO camera observations; SmolVLA still resizes those observations
+to 512×512 model inputs. Smoke output is marked non-promotional. Reports
+remain raw only and do not manufacture normalized Table 3 ratios without
+matching baseline evidence.
+
+`REPO_REMOTE`, `REPO_COMMIT`, `REPO_BRANCH`, and `REPO_DIRTY_STATE` are
+explicit provenance values, not claims inferred by the helper. In a WSL
+linked worktree whose `.git` file contains a Windows `C:/...` gitdir, obtain
+these four values first with Windows Git (for example, `git.exe -C
+C:\\embodied.cpp\\hy-vla-quant-exp ...`) and export/pass them to the WSL
+capture command. Omit all four flags only when native `git` discovery works.
+The `sm_89` value above is the local-machine example; use the actual CUDA
+architecture reported by the build on another machine.
+
 ## Xiaomi-Robotics-0
 
 Xiaomi-Robotics-0 uses a policy GGUF (Qwen3-VL-4B backbone + DiT
@@ -256,15 +402,23 @@ per-domain matrix layout; see the controlled repair evidence (artifact not retai
 
 ## Fixed-input deployment timing
 
-`scripts/bench_vla_boundary.py` supports all three public C++ model clients and
-the TurboVLA/XR0 references plus the official X-VLA Python model. It consumes a saved fixture (two native
-256px CHW views, raw 8-D state, instruction; XR0 also needs matched seeded
-30×32 noise, X-VLA fixed 30×20 noise), performs warmup, and records raw samples
-plus mean/std/p50/p95/p99. TurboVLA and X-VLA images must be float values in [0, 1].
+`scripts/bench_vla_boundary.py` supports the TurboVLA, XR0, X-VLA, and SmolVLA
+C++ clients and their Python reference paths. It consumes a saved fixture (two
+CPU CHW views, raw state, and instruction; XR0 also needs matched seeded 30×32
+noise, X-VLA fixed 30×20 noise, and SmolVLA fixed 50×32 noise), performs
+warmup, and records every raw sample plus mean/std/p50/p95/p99. TurboVLA,
+X-VLA, and SmolVLA images must be float values in [0, 1]; SmolVLA uses two
+512px views and returns the complete postprocessed 50×7 CPU action chunk.
 Use `--backend cpp --server-pid <PID>` for process VRAM, or `--backend python`
 with the reference's model paths. `--n 100 --warmup 5` is the default.
 Process memory uses 20 **additional untimed** requests after latency sampling
 (`--memory-requests 20`); no GPU-memory query runs in the timing window.
+Pass `--formal` for report evidence; it rejects fewer than five warmups, 100
+timed requests, or 20 separate memory requests. Run Python first, then pass its
+JSON to C++ with `--compare-with`: the tool refuses mismatched backends,
+measurement plans, boundary/script/fixture/instruction/checkpoint/tokenizer
+hashes, output horizon, memory source, or GPU UUID, and writes the three
+Python-normalized ratios directly into the C++ JSON.
 
 The timing boundary is raw CPU input to full CPU actions (TurboVLA 12×7;
 XR0 30×32, five flow steps), including preprocessing and device transfers.
@@ -283,7 +437,48 @@ import dependencies as well as compatible Transformers/PyTorch versions.
 C++ additionally includes ZMQ transport, so label results as deployment/API
 latency, not GPU-only speedup. Do not benchmark while another evaluation is
 running. JSON and final actions use new output files; original results are
-never overwritten. Unavailable per-process VRAM remains null, not zero.
+never overwritten. SmolVLA runs are strictly offline and require explicit
+source/storage/runtime precision metadata plus hashes for the server, policy
+GGUF, and mmproj. Unavailable per-process VRAM remains null, not zero. On WSL,
+`nvidia-smi` may expose the correct process PID and GPU UUID but report its
+memory as `N/A`; the JSON then records `device_total_fallback` and
+`process_level_vram=false`. Such a same-source isolated-GPU ratio is auditable,
+but it must not be relabeled as a process-attributed VRAM measurement.
+
+For SmolVLA, use the same fixture and exact instruction on both sides. The
+formal Python command is:
+
+When a Windows-managed Git worktree is executed through WSL, first export the
+worktree's mounted `GIT_DIR` and `GIT_WORK_TREE` if `git rev-parse HEAD` fails;
+otherwise the benchmark deliberately records a null revision. Native Linux
+checkouts need no override. Use the same environment for both commands.
+
+```bash
+python scripts/bench_vla_boundary.py --formal \
+  --arch smolvla --backend python \
+  --fixture outputs/tools/smolvla_live_parity_task0_20260928_v2/inputs.npz \
+  --instruction 'pick up the alphabet soup and place it in the basket' \
+  --hf-dir /root/checkpoints/smolvla_processor \
+  --checkpoint /root/checkpoints/smolvla_libero \
+  --output outputs/smolvla_boundary_formal/python.json
+```
+
+After starting the Q8_0 server alone on the same GPU, run C++ with its exact
+PID and provenance (use `--build-flags=...` because the value begins with `-`):
+
+```bash
+python scripts/bench_vla_boundary.py --formal \
+  --arch smolvla --backend cpp \
+  --fixture outputs/tools/smolvla_live_parity_task0_20260928_v2/inputs.npz \
+  --instruction 'pick up the alphabet soup and place it in the basket' \
+  --hf-dir /root/checkpoints/smolvla_processor --server-pid <PID> \
+  --source-checkpoint-sha256 <PYTHON_POLICY_TREE_SHA256> \
+  --source-storage-type safetensors --runtime-weight-type Q8_0 \
+  --runtime-compute-type F32 --build-flags=<EXACT_CMAKE_FLAGS> \
+  --artifact <VLA_SERVER> --artifact <Q8_POLICY_GGUF> --artifact <MMPROJ_GGUF> \
+  --compare-with outputs/smolvla_boundary_formal/python.json \
+  --output outputs/smolvla_boundary_formal/q8.json
+```
 
 ## Verify Outputs
 

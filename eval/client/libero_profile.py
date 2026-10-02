@@ -193,6 +193,13 @@ def _table_number(value: float | int | None, digits: int = 1) -> str:
     return f"{value:.{digits}f}"
 
 
+def _nonnegative_metric(value: float | int, name: str) -> float:
+    number = float(value)
+    if not math.isfinite(number) or number < 0.0:
+        raise ValueError(f"{name} must be finite and non-negative, got {value!r}")
+    return number
+
+
 class LiberoSuiteProfiler:
     def __init__(
         self,
@@ -260,7 +267,8 @@ class LiberoSuiteProfiler:
             self._sampler.stop()
 
     def record_step(self, wall_ms: float) -> None:
-        self.step_wall_ms.append(float(wall_ms))
+        wall_ms = _nonnegative_metric(wall_ms, "step wall latency")
+        self.step_wall_ms.append(wall_ms)
         self.step_request_indices.append(len(self.server_requests) - 1)
 
     def record_inference(
@@ -273,14 +281,24 @@ class LiberoSuiteProfiler:
         prefill_ms: float | None = None,
         denoise_ms: float | None = None,
     ) -> None:
+        total_ms = _nonnegative_metric(total_ms, "server total latency")
+        phase_values = {
+            "server vision latency": vision_ms,
+            "server inference latency": action_inference_ms,
+            "server prefill latency": prefill_ms,
+            "server denoise latency": denoise_ms,
+        }
+        for name, value in phase_values.items():
+            if value is not None:
+                phase_values[name] = _nonnegative_metric(value, name)
         self.server_requests.append(
             {
                 "sequence": len(self.server_requests),
-                "server_total_ms": float(total_ms),
-                "server_vision_ms": vision_ms,
-                "server_inference_ms": action_inference_ms,
-                "server_prefill_ms": prefill_ms,
-                "server_denoise_ms": denoise_ms,
+                "server_total_ms": total_ms,
+                "server_vision_ms": phase_values["server vision latency"],
+                "server_inference_ms": phase_values["server inference latency"],
+                "server_prefill_ms": phase_values["server prefill latency"],
+                "server_denoise_ms": phase_values["server denoise latency"],
                 "model_chunk_size": int(model_chunk_size),
             }
         )
@@ -295,6 +313,16 @@ class LiberoSuiteProfiler:
         sequence = int(profile["sequence"])
         if sequence == self._last_inference_sequence:
             return
+        for key in (
+            "server_total_ms",
+            "server_vision_ms",
+            "server_inference_ms",
+            "server_prefill_ms",
+            "server_denoise_ms",
+        ):
+            value = profile.get(key)
+            if value is not None:
+                _nonnegative_metric(value, key)
         self._last_inference_sequence = sequence
         self.server_requests.append(profile)
 

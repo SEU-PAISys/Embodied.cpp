@@ -143,6 +143,7 @@ scripts/.tmp_*
 scripts/analyze_*
 scripts/bench_cosmos3_w8_native_vs_marlin.py
 scripts/capture_*
+!scripts/capture_smolvla_object_evidence.py
 scripts/check_*
 scripts/cosmos3_*_reference.json
 scripts/inspect_*

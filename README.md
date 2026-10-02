@@ -384,7 +384,7 @@ configuration and runner for the model and benchmark you want to evaluate.
 | Model | Benchmark | Configuration | Results | Server |
 |---|---|---|---|---|
 | pi0.5 | LIBERO | [pi0.5](eval/conf/libero_pi05_eval.yaml) | - | Manual |
-| SmolVLA | LIBERO | [SmolVLA](eval/conf/libero_smolvla_eval.yaml) | - | Manual |
+| SmolVLA | LIBERO | [SmolVLA](eval/conf/libero_smolvla_eval.yaml) | [Q8_0 Object follow-up](eval/smolvla_q8_object_followup_20260930.md) | Manual |
 | GR00T N1.7 | LIBERO | [GR00T](eval/conf/libero_groot_n1_eval.yaml) | - | Manual |
 | LingBot-VA | LIBERO | [LingBot](eval/conf/libero_lingbot_va_eval.yaml) | - | Manual |
 | HY-VLA | RoboTwin | [HY-VLA](eval/conf/robotwin_hy_vla_eval.yaml) | - | Managed |
