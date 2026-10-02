@@ -1,8 +1,8 @@
 # SmolVLA Q8_0 LIBERO-Object follow-up (2026-09-30)
 
 This follow-up records the requested SmolVLA Q8_0 quantization experiment and
-its matched Python baseline. It provides Table 3-style normalized success and
-VRAM values plus a separately caveated deployment-latency indicator. The Q8_0
+its matched Python baseline. It provides Table 3-style normalized latency and
+success values plus a same-source isolated-device VRAM ratio. The Q8_0
 run uses the full policy-model
 quantization scope: every eligible
 main-model matrix is stored and kept resident as native Q8_0, while tensors
@@ -13,41 +13,58 @@ retain their required floating-point types.
 
 The [2026-08-09 technical-report revision](https://arxiv.org/abs/2607.02501v3)
 reports VLA deployment results as three ratios relative to the same model's
-Python baseline, which is set to 1.00. SmolVLA's matched success and VRAM ratios,
-plus the closest retained deployment-latency indicator, are:
+Python baseline, which is set to 1.00. SmolVLA's matched results are:
 
-| Model | Latency Python | Latency C++ 8-bit† | Success Python | Success C++ 8-bit | VRAM Python | VRAM C++ 8-bit |
+| Model | Latency Python | Latency C++ 8-bit | Success Python | Success C++ 8-bit | VRAM Python | VRAM C++ 8-bit |
 |---|---:|---:|---:|---:|---:|---:|
-| SmolVLA | 1.00 | **0.58** | 1.00 | **0.97** | 1.00 | **0.39** |
+| SmolVLA | 1.00 | **0.63** | 1.00 | **0.97** | 1.00 | **0.62** |
 
-The unrounded values are 5.473689 / 9.445762 = 0.579486 for the caveated
-latency indicator,
-83.00 / 86.00 = 0.965116 for success rate, and 1029 / 2658.5 = 0.387060
+The unrounded values are 6.160599 / 9.815109 = 0.627665 for latency,
+83.00 / 86.00 = 0.965116 for success rate, and 1029 / 1671 = 0.615799
 for VRAM. Lower latency and VRAM are better; higher success rate is better.
 
 | Backend | Inference latency | Success rate | Peak device VRAM |
 |---|---:|---:|---:|
-| Python baseline | 9.446 ms/generated action | 86.00% (172/200) | 2658.5 MiB |
-| C++ Q8_0, full policy-model scope | 5.474 ms/generated action | 83.00% (166/200) | 1029 MiB |
+| Python baseline | 9.815 ms/generated action | 86.00% (172/200) | 1671 MiB |
+| C++ Q8_0, full policy-model scope | 6.161 ms/generated action | 83.00% (166/200) | 1029 MiB |
 
-For the daggered latency indicator, the Q8 numerator is the client-observed
-`get_action` wall time (273.684432 ms/request) and the Python denominator is the
-CUDA-synchronized `_get_action_chunk` wall time (472.288079 ms/request); both are
-divided by the 50-action generated horizon. This is the closest retained
-deployment boundary: the Q8 measurement additionally includes local RPC and
-serialization, while the Python measurement starts after language-token
-preprocessing. Consequently, the daggered 0.58 cell is a conservative
-deployment indicator, **not** a strict Table 3 latency result. A publication
-cell requires remeasurement of both backends from the same
-raw-observation-to-CPU-action-chunk boundary.
-The narrower Q8 server-only value, 5.186601 ms/generated action, remains in the
-raw measurements below and is not used for normalization.
+Latency was remeasured on 2026-10-02 with the same fixed-input deployment
+boundary on both sides: two CPU CHW images, raw 8-D state, exact instruction,
+and exact 50x32 action noise through preprocessing/tokenization, host-to-device
+transfer, model generation, postprocessing/action denormalization, and complete
+50x7 CPU action readback. C++ additionally includes its public local ZMQ
+transport. Each backend used five untimed warmups and 100 timed requests; every
+raw sample is retained. The table divides each request by the generated horizon
+of 50, not by replayed environment actions.
 
-Both VRAM values represent whole-device used memory on the same otherwise-idle
-GPU. Q8 was polled with `nvidia-smi` (`device_total_fallback`); Python sampled
-the equivalent total-minus-free quantity with `torch.cuda.mem_get_info()` after
-each request. The checkpoint, task/episode matrix, seeds, image sizes, flow
-steps, action horizon, reset behavior, and control mode are matched.
+VRAM used a separate 20-request untimed phase. WSL exposed the correct process
+PID and GPU UUID but reported per-process `used_memory` as `N/A`, so both
+isolated runs use the same `nvidia-smi memory.used` whole-device fallback on the
+same otherwise-idle GPU. The evidence explicitly records
+`process_level_vram=false`; the 0.62 value is a same-source device ratio and is
+not relabelled as process-attributed memory.
+
+The compact checked-in evidence, including all 100+100 latency samples and all
+VRAM samples, is
+[`eval/smolvla_q8_fixed_boundary_20261002.json`](smolvla_q8_fixed_boundary_20261002.json).
+Its pair gate verifies the backend pair, measurement plan, boundary and script
+hashes, fixture/instruction/checkpoint/tokenizer identities, output shape and
+horizon, GPU UUID, and memory source before writing normalized values.
+
+### Fixed-boundary performance protocol
+
+| Field | Value |
+|---|---|
+| Boundary | raw CPU observation to complete 50x7 CPU action chunk |
+| Fixed noise | exact 50x32 float32 array |
+| Warmup / timed requests | 5 / 100 per backend |
+| Memory phase | 20 additional untimed requests per backend |
+| Python request mean / p50 / p95 / p99 | 490.755 / 489.818 / 511.586 / 518.767 ms |
+| Q8 request mean / p50 / p95 / p99 | 308.030 / 301.968 / 384.434 / 393.719 ms |
+| Python generated-action mean | 9.815109 ms |
+| Q8 generated-action mean | 6.160599 ms |
+| Repository revision | `3a3468cfe634e88d93d08aafcae89bd3ef0fb5a2` |
+| Script SHA-256 | `dee5573089d882ec5fcade6c99ede546ab810c22526c894c68bbca471175a892` |
 
 ## Protocol
 
@@ -110,6 +127,9 @@ The Python baseline uses the same 10 tasks and 20 episodes per task. It produced
 After five warm-up requests per task, the baseline retained 33,866 latency
 samples. Its mean generated-action latency was 9.445762 ms (p50 9.332979 ms,
 p95 10.044731 ms, p99 11.544108 ms). Peak whole-device VRAM was 2658.5 MiB.
+These closed-loop profiler values remain useful diagnostics, but they are not
+the Python denominator for the normalized deployment row above: their timing
+starts inside the policy and their memory includes the simulator process.
 One raw request sample from task 1 (sample 2274, 180864.500452 ms) was excluded
 from latency aggregation because the user-requested host process suspension
 occurred inside that timing interval. The raw sample remains in
@@ -123,7 +143,12 @@ The final aggregation explicitly passed
 `--exclude-latency-sample "1:2274:user-requested host process suspension"`.
 Exclusions require an exact task/index and reason; there is no implicit filter.
 
-## Raw deployment measurements
+## Historical closed-loop deployment diagnostics
+
+The following retained Q8 rollout measurements use the simulator/control-loop
+profiler and are not used for the strict fixed-boundary latency or VRAM ratios
+above. In particular, the former 0.58 latency indicator derived from these
+values is superseded by the 0.627665 fixed-boundary result.
 
 The first five inference requests were excluded as profiler warm-up samples.
 
@@ -136,9 +161,9 @@ The first five inference requests were excluded as profiler warm-up samples.
 | Device VRAM | 17,515 | 1014.37 MiB | 1009 MiB | 1029 MiB | 1029 MiB |
 
 Peak observed device VRAM was 1029 MiB. The profiler recorded
-`device_total_fallback`, not process-attributed VRAM. The normalized comparison
-therefore uses the Python whole-device total-minus-free measurement rather than
-PyTorch's process allocator peak.
+`device_total_fallback`, not process-attributed VRAM. The superseded historical
+comparison paired it with Python whole-device total-minus-free memory rather
+than PyTorch's process allocator peak.
 
 ## Quantization and startup evidence
 
@@ -162,11 +187,13 @@ Artifact SHA-256 values:
 
 | Artifact | SHA-256 |
 |---|---|
-| Source policy | `ddfbc78bafcdad9ae17ce3ed1596f7126b5d691e8241ec1f2535a228c48697dd` |
+| Source F32 policy GGUF | `ddfbc78bafcdad9ae17ce3ed1596f7126b5d691e8241ec1f2535a228c48697dd` |
+| Source Python policy tree | `4c18d39c74af6f7d73ee0e9565bdbf390bd0f2d63e9e501a574f3977a18b506a` |
 | Q8_0 policy | `dbe036a7886f9b911162b48383819d994b88a3b3e572b4ccb2008831b5397bc5` |
 | mmproj | `d4b9f78400b80dee86b58ad1b112636ef37a1fdb46e6076447d60fc8683d1140` |
-| Tokenizer tree | `025bfe9eeedead50c7ea5fc815ef01532c29e5373e5cb745fae076fec09353ae` |
+| Tokenizer tree | `01614d37024f17471bb6106b3aacbebc70d0de19773c2feec1cd6ad9b8638ebc` |
 | Experiment server binary | `e45398c0bf2cd069a166e504a309683535988cc9f888e4f41257959034981210` |
+| Fixed-boundary script | `dee5573089d882ec5fcade6c99ede546ab810c22526c894c68bbca471175a892` |
 
 ## Environment and evidence handling
 

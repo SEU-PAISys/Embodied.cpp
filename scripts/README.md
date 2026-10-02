@@ -402,15 +402,23 @@ per-domain matrix layout; see the controlled repair evidence (artifact not retai
 
 ## Fixed-input deployment timing
 
-`scripts/bench_vla_boundary.py` supports all three public C++ model clients and
-the TurboVLA/XR0 references plus the official X-VLA Python model. It consumes a saved fixture (two native
-256px CHW views, raw 8-D state, instruction; XR0 also needs matched seeded
-30×32 noise, X-VLA fixed 30×20 noise), performs warmup, and records raw samples
-plus mean/std/p50/p95/p99. TurboVLA and X-VLA images must be float values in [0, 1].
+`scripts/bench_vla_boundary.py` supports the TurboVLA, XR0, X-VLA, and SmolVLA
+C++ clients and their Python reference paths. It consumes a saved fixture (two
+CPU CHW views, raw state, and instruction; XR0 also needs matched seeded 30×32
+noise, X-VLA fixed 30×20 noise, and SmolVLA fixed 50×32 noise), performs
+warmup, and records every raw sample plus mean/std/p50/p95/p99. TurboVLA,
+X-VLA, and SmolVLA images must be float values in [0, 1]; SmolVLA uses two
+512px views and returns the complete postprocessed 50×7 CPU action chunk.
 Use `--backend cpp --server-pid <PID>` for process VRAM, or `--backend python`
 with the reference's model paths. `--n 100 --warmup 5` is the default.
 Process memory uses 20 **additional untimed** requests after latency sampling
 (`--memory-requests 20`); no GPU-memory query runs in the timing window.
+Pass `--formal` for report evidence; it rejects fewer than five warmups, 100
+timed requests, or 20 separate memory requests. Run Python first, then pass its
+JSON to C++ with `--compare-with`: the tool refuses mismatched backends,
+measurement plans, boundary/script/fixture/instruction/checkpoint/tokenizer
+hashes, output horizon, memory source, or GPU UUID, and writes the three
+Python-normalized ratios directly into the C++ JSON.
 
 The timing boundary is raw CPU input to full CPU actions (TurboVLA 12×7;
 XR0 30×32, five flow steps), including preprocessing and device transfers.
@@ -429,7 +437,48 @@ import dependencies as well as compatible Transformers/PyTorch versions.
 C++ additionally includes ZMQ transport, so label results as deployment/API
 latency, not GPU-only speedup. Do not benchmark while another evaluation is
 running. JSON and final actions use new output files; original results are
-never overwritten. Unavailable per-process VRAM remains null, not zero.
+never overwritten. SmolVLA runs are strictly offline and require explicit
+source/storage/runtime precision metadata plus hashes for the server, policy
+GGUF, and mmproj. Unavailable per-process VRAM remains null, not zero. On WSL,
+`nvidia-smi` may expose the correct process PID and GPU UUID but report its
+memory as `N/A`; the JSON then records `device_total_fallback` and
+`process_level_vram=false`. Such a same-source isolated-GPU ratio is auditable,
+but it must not be relabeled as a process-attributed VRAM measurement.
+
+For SmolVLA, use the same fixture and exact instruction on both sides. The
+formal Python command is:
+
+When a Windows-managed Git worktree is executed through WSL, first export the
+worktree's mounted `GIT_DIR` and `GIT_WORK_TREE` if `git rev-parse HEAD` fails;
+otherwise the benchmark deliberately records a null revision. Native Linux
+checkouts need no override. Use the same environment for both commands.
+
+```bash
+python scripts/bench_vla_boundary.py --formal \
+  --arch smolvla --backend python \
+  --fixture outputs/tools/smolvla_live_parity_task0_20260928_v2/inputs.npz \
+  --instruction 'pick up the alphabet soup and place it in the basket' \
+  --hf-dir /root/checkpoints/smolvla_processor \
+  --checkpoint /root/checkpoints/smolvla_libero \
+  --output outputs/smolvla_boundary_formal/python.json
+```
+
+After starting the Q8_0 server alone on the same GPU, run C++ with its exact
+PID and provenance (use `--build-flags=...` because the value begins with `-`):
+
+```bash
+python scripts/bench_vla_boundary.py --formal \
+  --arch smolvla --backend cpp \
+  --fixture outputs/tools/smolvla_live_parity_task0_20260928_v2/inputs.npz \
+  --instruction 'pick up the alphabet soup and place it in the basket' \
+  --hf-dir /root/checkpoints/smolvla_processor --server-pid <PID> \
+  --source-checkpoint-sha256 <PYTHON_POLICY_TREE_SHA256> \
+  --source-storage-type safetensors --runtime-weight-type Q8_0 \
+  --runtime-compute-type F32 --build-flags=<EXACT_CMAKE_FLAGS> \
+  --artifact <VLA_SERVER> --artifact <Q8_POLICY_GGUF> --artifact <MMPROJ_GGUF> \
+  --compare-with outputs/smolvla_boundary_formal/python.json \
+  --output outputs/smolvla_boundary_formal/q8.json
+```
 
 ## Verify Outputs
 

@@ -20,6 +20,159 @@ def load_script(name):
 
 
 class EvidenceToolTests(unittest.TestCase):
+    def test_smolvla_fixture_loader_preserves_raw_fixed_inputs(self):
+        module = load_script("bench_vla_boundary")
+        with tempfile.TemporaryDirectory() as scratch:
+            fixture = Path(scratch) / "smolvla.npz"
+            image = np.full((3, 512, 512), 0.25, np.float32)
+            image2 = np.full((3, 512, 512), 0.75, np.float32)
+            state = np.arange(8, dtype=np.float32)
+            noise = np.arange(50 * 32, dtype=np.float32).reshape(50, 32)
+            np.savez(fixture, image=image, image2=image2, state_raw=state, noise=noise)
+            images, loaded_state, task, loaded_noise = module.load_fixture(
+                fixture, "smolvla", "pick up the alphabet soup")
+            np.testing.assert_array_equal(images, np.stack((image, image2)))
+            np.testing.assert_array_equal(loaded_state, state)
+            np.testing.assert_array_equal(loaded_noise, noise)
+            self.assertEqual(task, "pick up the alphabet soup")
+
+    def test_smolvla_processor_overrides_force_local_tokenizer_and_cuda(self):
+        module = load_script("bench_vla_boundary")
+        overrides = module.smolvla_processor_overrides(Path("/local/tokenizer"))
+        self.assertEqual(overrides["tokenizer_processor"]["tokenizer_name"],
+                         str(Path("/local/tokenizer")))
+        self.assertEqual(overrides["device_processor"], {"device": "cuda"})
+        self.assertEqual(overrides["rename_observations_processor"], {"rename_map": {}})
+
+    def test_jsonable_converts_nested_paths(self):
+        module = load_script("bench_vla_boundary")
+        self.assertEqual(module.jsonable({"one": Path("a"), "many": [Path("b")]}),
+                         {"one": str(Path("a")), "many": [str(Path("b"))]})
+
+    def test_smolvla_python_predictor_times_official_full_chunk_path(self):
+        import torch
+        module = load_script("bench_vla_boundary")
+        calls = []
+
+        class Policy(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.zeros(1))
+
+            def predict_action_chunk(self, batch, noise):
+                calls.append(("policy", batch, noise.detach().cpu().numpy().copy()))
+                return torch.ones((1, 50, 7), dtype=torch.float32) * 2
+
+        def preprocessor(batch):
+            calls.append(("pre", batch))
+            result = dict(batch)
+            result["preprocessed"] = True
+            return result
+
+        def postprocessor(actions):
+            calls.append(("post", actions.detach().cpu().numpy().copy()))
+            return actions + 1
+
+        images = np.zeros((2, 3, 512, 512), np.float32)
+        state = np.arange(8, dtype=np.float32)
+        noise = np.zeros((50, 32), np.float32)
+        predict = module.smolvla_predictor(
+            Policy(), preprocessor, postprocessor, images, state, "pick", noise)
+        actions = predict()
+
+        self.assertEqual([call[0] for call in calls], ["pre", "policy", "post"])
+        raw = calls[0][1]
+        self.assertEqual(raw["observation.images.image"].device.type, "cpu")
+        self.assertEqual(tuple(raw["observation.images.image"].shape), (1, 3, 512, 512))
+        self.assertEqual(tuple(raw["observation.state"].shape), (1, 8))
+        self.assertEqual(raw["task"], ["pick"])
+        self.assertTrue(calls[1][1]["preprocessed"])
+        self.assertEqual(calls[1][2].shape, (1, 50, 32))
+        self.assertEqual(actions.shape, (50, 7))
+        self.assertEqual(actions.dtype, np.float32)
+        self.assertTrue(actions.flags.c_contiguous)
+        np.testing.assert_array_equal(actions, np.full((50, 7), 3, np.float32))
+
+    def test_cpp_predictor_returns_environment_action_chunk_inside_boundary(self):
+        module = load_script("bench_vla_boundary")
+        calls = []
+
+        class Client:
+            def _predict_chunk(self, observation):
+                calls.append(observation)
+                return np.arange(50 * 32, dtype=np.float32).reshape(50, 32)
+
+        observation = {"task": "pick"}
+        actions = module.cpp_predictor(Client(), observation, 7)()
+        self.assertEqual(calls, [observation])
+        self.assertEqual(actions.shape, (50, 7))
+        self.assertTrue(actions.flags.c_contiguous)
+        np.testing.assert_array_equal(
+            actions, np.arange(50 * 32, dtype=np.float32).reshape(50, 32)[:, :7])
+
+    def test_boundary_pair_validation_rejects_noncomparable_evidence(self):
+        module = load_script("bench_vla_boundary")
+        base = {
+            "arch": "smolvla",
+            "backend": "python",
+            "measurement_plan": {"n": 100, "warmup": 5, "memory_requests": 20,
+                                 "formal": True},
+            "boundary_id": module.BOUNDARY_ID,
+            "script_sha256": "same-script",
+            "fixture_sha256": "same",
+            "instruction_sha256": "same-instruction",
+            "source_checkpoint_sha256": "same-checkpoint",
+            "tokenizer_sha256": "same-tokenizer",
+            "shape": [50, 7],
+            "generated_action_horizon": 50,
+            "vram_sources": ["process_used_memory"],
+            "gpu_uuids": ["GPU-test"],
+        }
+        peer_base = dict(base)
+        peer_base["backend"] = "cpp"
+        module.validate_comparable_results(base, peer_base)
+        for key, value in (
+            ("boundary_id", "wrong"),
+            ("script_sha256", "different-script"),
+            ("fixture_sha256", "different"),
+            ("instruction_sha256", "different-instruction"),
+            ("source_checkpoint_sha256", "different-checkpoint"),
+            ("tokenizer_sha256", "different-tokenizer"),
+            ("shape", [1, 7]),
+            ("generated_action_horizon", 1),
+            ("vram_sources", ["device_total_fallback"]),
+            ("gpu_uuids", ["GPU-other"]),
+        ):
+            with self.subTest(key=key):
+                peer = dict(base)
+                peer["backend"] = "cpp"
+                peer[key] = value
+                with self.assertRaisesRegex(ValueError, key):
+                    module.validate_comparable_results(base, peer)
+        same_backend = dict(base)
+        with self.assertRaisesRegex(ValueError, "backend"):
+            module.validate_comparable_results(base, same_backend)
+        different_plan = dict(peer_base)
+        different_plan["measurement_plan"] = dict(peer_base["measurement_plan"], n=99)
+        with self.assertRaisesRegex(ValueError, "measurement_plan"):
+            module.validate_comparable_results(base, different_plan)
+
+    def test_formal_plan_gate_and_normalized_ratios(self):
+        module = load_script("bench_vla_boundary")
+        module.validate_measurement_plan(100, 5, 20, True)
+        for values in ((99, 5, 20), (100, 4, 20), (100, 5, 19)):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                module.validate_measurement_plan(*values, formal=True)
+        python = {"backend": "python", "latency_ms": {"mean": 500.0},
+                  "generated_action_step_ms": {"mean": 10.0}, "sampled_peak_mib": 2000}
+        cpp = {"backend": "cpp", "latency_ms": {"mean": 250.0},
+               "generated_action_step_ms": {"mean": 5.0}, "sampled_peak_mib": 800}
+        self.assertEqual(module.normalized_to_python(cpp, python), {
+            "latency_per_request": 0.5,
+            "latency_per_generated_action": 0.5,
+            "vram_peak": 0.4,
+        })
+
     def test_turbo_benchmark_records_actual_requested_vision_precision(self):
         module = load_script("bench_vla_boundary")
         import rollout_turbovla_reference as reference
@@ -172,6 +325,9 @@ class EvidenceToolTests(unittest.TestCase):
             def start(self):
                 self.__class__.started_after_calls = Client.calls
                 self.ident = 1
+
+            def sample_once(self):
+                pass
 
             def stop(self):
                 pass
