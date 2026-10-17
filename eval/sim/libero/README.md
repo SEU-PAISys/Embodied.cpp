@@ -39,6 +39,7 @@ Available checked-in configurations are:
 |---|---|
 | pi0.5 | [`libero_pi05_eval.yaml`](../../conf/libero_pi05_eval.yaml) |
 | SmolVLA | [`libero_smolvla_eval.yaml`](../../conf/libero_smolvla_eval.yaml) |
+| SmolVLA Q8_0 Object gate | [`libero_smolvla_object_q8_eval.yaml`](../../conf/libero_smolvla_object_q8_eval.yaml) |
 | GR00T N1.7 | [`libero_groot_n1_eval.yaml`](../../conf/libero_groot_n1_eval.yaml) |
 | LingBot-VA | [`libero_lingbot_va_eval.yaml`](../../conf/libero_lingbot_va_eval.yaml) |
 | Xiaomi-Robotics-0 | [`libero_xr0_eval.yaml`](../../conf/libero_xr0_eval.yaml) |
@@ -82,3 +83,19 @@ eval/sim/libero/libero_uv/.venv/bin/python \
 
 See [`eval/conf/README.md`](../../conf/README.md) for model-specific evaluation
 settings and configuration fields.
+
+The SmolVLA Q8_0 Object gate uses tasks 0--9, 20 episodes per task,
+environment and action-noise seed 1000, relative control, one replayed action,
+ten flow steps, native 360x360 camera observations resized to 512x512 model
+inputs, and no video. Validate its machine-readable output with
+`scripts/aggregate_smolvla_object_eval.py`; the validator requires raw latency
+and VRAM samples plus native Q8_0 startup evidence.
+Use `scripts/capture_smolvla_object_evidence.py` before rollout. The default
+validator shape is the full 10×20 suite completeness gate; it produces
+`full_suite` integration evidence. Table 3 promotion requires a matched Python
+baseline under the [benchmark standard](../../VLA_BENCHMARK_STANDARD.md).
+The only explicit smoke shape is `--task-ids 0 --episodes 3`, which is labeled
+non-promotional.
+The documented launch uses line-buffered server logging and explicit profiler
+warmup/PID arguments so capture and validation consume real startup and VRAM
+evidence.

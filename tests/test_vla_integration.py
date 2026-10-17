@@ -9,6 +9,7 @@ from collections import deque
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import runpy
@@ -59,7 +60,7 @@ def fake_client(arch):
         SerializeToString=lambda: b"request",
     )
     chunk_size, action_dim = {"xr0": (30, 32), "xvla": (30, 20),
-                              "turbovla": (12, 7)}[arch]
+                              "turbovla": (12, 7), "smolvla": (50, 32)}[arch]
     response = SimpleNamespace(
         error="", request_id=0, chunk_size=chunk_size, action_dim=action_dim,
         action_chunk=np.zeros(chunk_size * action_dim, dtype=np.float32),
@@ -122,6 +123,21 @@ class ConfigTests(unittest.TestCase):
                       ["--observation-size", "256", "--observation-width", "320"]):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 runner.parse_args(flags)
+
+    def test_settling_gripper_defaults_and_smolvla_q8_config_are_explicit(self):
+        self.assertEqual(runner.parse_args(["--arch", "xvla"]).settling_gripper_action, 0.0)
+        args = runner.parse_args(["--conf", "libero_smolvla_object_q8_eval.yaml"])
+        self.assertEqual(args.settling_gripper_action, -1.0)
+        overridden = runner.parse_args([
+            "--conf", "libero_smolvla_object_q8_eval.yaml",
+            "--settling-gripper-action", "0.0",
+        ])
+        self.assertEqual(overridden.settling_gripper_action, 0.0)
+
+        for value in ("nan", "inf", "-1.01", "1.01"):
+            with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()), \
+                 self.assertRaises(SystemExit):
+                runner.parse_args(["--settling-gripper-action", value])
 
     def test_legacy_wrapper_uses_shared_config_and_protocol(self):
         args = runner.parse_args(shared_arguments([
@@ -287,11 +303,51 @@ class AdapterCompatibilityTests(unittest.TestCase):
         self.assertEqual(client.get_action.call_count, 1)  # queue: no new inference
 
 
+class ProfileNegativeLatencyTests(unittest.TestCase):
+    def _profiler(self):
+        return LiberoSuiteProfiler(
+            output_path=Path("unused-negative-latency-profile.json"),
+            model_label="test",
+            backbone_label="test",
+            arch="smolvla",
+            suite="libero_object",
+            replay_chunk_size=1,
+            expected_episodes=1,
+            server_address="tcp://127.0.0.1:5555",
+            server_pid=123,
+            vram_interval_s=0.25,
+            warmup_requests=0,
+        )
+
+    def test_capture_inference_rejects_negative_server_phase_latency(self):
+        for key in ("server_total_ms", "server_vision_ms", "server_inference_ms"):
+            profiler = self._profiler()
+            client = SimpleNamespace(get_last_inference_profile=lambda: {
+                "sequence": 1,
+                "server_total_ms": 1.0,
+                "server_vision_ms": 0.5,
+                "server_inference_ms": 0.5,
+                key: -0.001,
+            })
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "non-negative"):
+                profiler.capture_inference(client)
+            self.assertEqual(profiler.server_requests, [])
+
+    def test_direct_profile_and_step_records_reject_negative_latency(self):
+        profiler = self._profiler()
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            profiler.record_inference(-0.001, model_chunk_size=50)
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            profiler.record_step(-0.001)
+        self.assertEqual(profiler.server_requests, [])
+        self.assertEqual(profiler.step_wall_ms, [])
+
+
 class EpisodeAccountingTests(unittest.TestCase):
     """Aborted (terminated mid-step) episodes must be recorded exactly once."""
 
     def _run_task(self, abort_flags, arch="xvla", real_profiler=False, no_video=False,
-                  derive_noise=False):
+                  derive_noise=False, settling_gripper_action=None):
         """Run the real run_one_task against a fake env; flags say which abort."""
         client, _obs = fake_client(arch)
         workdir = tempfile.mkdtemp()
@@ -304,6 +360,8 @@ class EpisodeAccountingTests(unittest.TestCase):
             argv += ["--no-video"]
         if derive_noise:
             argv += ["--noise-seed", "7", "--derive-episode-noise"]
+        if settling_gripper_action is not None:
+            argv += ["--settling-gripper-action", str(settling_gripper_action)]
         args = runner.parse_args(argv)
         if real_profiler:
             profiler = LiberoSuiteProfiler(
@@ -341,6 +399,10 @@ class EpisodeAccountingTests(unittest.TestCase):
              contextlib.redirect_stdout(io.StringIO()):
             result = runner.run_one_task(args, client, "libero_object", 0, profiler)
         video_dir = fake_gym.make.call_args.kwargs["output_video_dir"]
+        self.last_env_kwargs = fake_gym.make.call_args.kwargs
+        self.last_result_path = (
+            Path(workdir) / arch / "libero_object" / "task_0" / "result.json"
+        )
         self.assertEqual(video_dir is None, no_video)
         summary = (Path(workdir) / arch / "libero_object" / "task_0" / "summary.txt").read_text(
             encoding="utf-8")
@@ -356,6 +418,22 @@ class EpisodeAccountingTests(unittest.TestCase):
         legacy, _, _ = self._run_task([False])
         self.assertFalse(legacy["derive_episode_noise"])
         self.assertIsNone(legacy["episodes"][0]["noise_seed"])
+
+    def test_runner_passes_and_records_settling_action_without_changing_other_arch_default(self):
+        default, _, _ = self._run_task([False], arch="xvla")
+        self.assertEqual(self.last_env_kwargs["settling_gripper_action"], 0.0)
+        self.assertEqual(default["settling_action"], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        default_json = json.loads(self.last_result_path.read_text(encoding="utf-8"))
+        self.assertEqual(default_json["settling_action"], default["settling_action"])
+
+        smolvla, _, _ = self._run_task(
+            [False], arch="smolvla", settling_gripper_action=-1.0
+        )
+        self.assertEqual(self.last_env_kwargs["settling_gripper_action"], -1.0)
+        expected = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]
+        self.assertEqual(smolvla["settling_action"], expected)
+        smolvla_json = json.loads(self.last_result_path.read_text(encoding="utf-8"))
+        self.assertEqual(smolvla_json["settling_action"], expected)
 
     def test_no_video_preserves_episode_metrics(self):
         result, _, summary = self._run_task([False], no_video=True)

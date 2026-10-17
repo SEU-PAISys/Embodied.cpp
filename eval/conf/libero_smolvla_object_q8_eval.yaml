@@ -1,0 +1,50 @@
+# SmolVLA LIBERO-Object native Q8_0 precision gate.
+#
+# This is intentionally separate from libero_smolvla_eval.yaml, which remains
+# the one-task integration smoke configuration. Start the server with the
+# policy produced by scripts/quantize_smolvla_full_gguf.py and its matching
+# SigLIP mmproj. The server startup evidence must prove native Q8_0 residency.
+
+arch: smolvla
+libero_suite: object
+task_ids:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  - 7
+  - 8
+  - 9
+n_episodes: 20
+max_steps: 0
+seed: 1000
+noise_seed: 1000
+derive_episode_noise: true
+
+tokenizer: /root/checkpoints/smolvla_tokenizer
+vla_addr: tcp://127.0.0.1:5566
+
+output_dir: outputs/smolvla_object_q8_200
+no_video: true
+view_mode: multi-view
+fps: 30
+num_steps_wait: 10
+settling_gripper_action: -1.0
+control_mode: relative
+
+observation_width: 360
+observation_height: 360
+image_size: 512
+max_state_dim: 32
+real_action_dim: 7
+image_keys:
+  - observation.images.image
+  - observation.images.image2
+max_length: 48
+n_action_steps: 1
+flow_steps: 10
+generated_action_horizon: 50
+recv_timeout_ms: 900000

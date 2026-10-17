@@ -105,6 +105,10 @@ struct gguf_reader {
     std::string str(const char * k) const { return gguf_get_val_str(gctx, gguf_find_key(gctx, k)); }
 
     const ggml_tensor * meta(const char * name) const { return ggml_get_tensor(meta_ctx, name); }
+    ggml_type tensor_type(const char * name) const {
+        const ggml_tensor * t = meta(name);
+        return t ? t->type : GGML_TYPE_COUNT;
+    }
 
     bool read_raw(const char * name, void * buf) const {
         const int64_t id = gguf_find_tensor(gctx, name);
@@ -118,14 +122,34 @@ struct gguf_reader {
     std::vector<uint8_t> read_convert(const char * name, ggml_type target) {
         const ggml_tensor * t = meta(name);
         if (!t) { std::fprintf(stderr, "vla(smolvla): missing tensor %s\n", name); return {}; }
+        if (target == t->type && ggml_is_quantized(target)) {
+            std::vector<uint8_t> raw(ggml_nbytes(t));
+            if (!read_raw(name, raw.data())) return {};
+            return raw;
+        }
         const int64_t n = ggml_nelements(t);
         std::vector<float> f32(n);
         if (t->type == GGML_TYPE_F32) {
             if (!read_raw(name, f32.data())) return {};
+        } else if (t->type == GGML_TYPE_F16) {
+            std::vector<ggml_fp16_t> tmp(n);
+            if (!read_raw(name, tmp.data())) return {};
+            ggml_fp16_to_fp32_row(tmp.data(), f32.data(), n);
         } else if (t->type == GGML_TYPE_BF16) {
             std::vector<ggml_bf16_t> tmp(n);
             if (!read_raw(name, tmp.data())) return {};
             ggml_bf16_to_fp32_row(tmp.data(), f32.data(), n);
+        } else if (ggml_is_quantized(t->type)) {
+            const size_t qbytes = ggml_nbytes(t);
+            std::vector<uint8_t> raw(qbytes);
+            if (!read_raw(name, raw.data())) return {};
+            const ggml_type_traits * traits = ggml_get_type_traits(t->type);
+            if (!traits || !traits->to_float) {
+                std::fprintf(stderr, "vla(smolvla): no dequantizer for tensor %s type %d\n",
+                             name, (int) t->type);
+                return {};
+            }
+            traits->to_float(raw.data(), f32.data(), n);
         } else {
             std::fprintf(stderr, "vla(smolvla): tensor %s has unsupported type %d\n", name, (int) t->type);
             return {};
@@ -152,23 +176,45 @@ struct gguf_reader {
             std::fprintf(stderr, "vla(smolvla): %s shape unfit for row-fetch\n", name); return false;
         }
         const int64_t rows = t->ne[1];
-        if (t->type != GGML_TYPE_F32 && t->type != GGML_TYPE_BF16) {
+        const bool is_f32 = t->type == GGML_TYPE_F32;
+        const bool is_f16 = t->type == GGML_TYPE_F16;
+        const bool is_bf16 = t->type == GGML_TYPE_BF16;
+        const bool is_quantized = ggml_is_quantized(t->type);
+        if (is_quantized && t->type != GGML_TYPE_Q8_0) {
+            std::fprintf(stderr,
+                         "vla(smolvla): token row tensor %s has unsupported quantized type %d; "
+                         "only Q8_0 is supported\n",
+                         name, (int) t->type);
+            return false;
+        }
+        if (!is_f32 && !is_f16 && !is_bf16 && !is_quantized) {
             std::fprintf(stderr, "vla(smolvla): tensor %s has unsupported row type %d\n",
                          name, (int) t->type);
             return false;
         }
         const int64_t id   = gguf_find_tensor(gctx, name);
         const size_t  base = data_off + gguf_get_tensor_offset(gctx, id);
-        const size_t  elsz = (t->type == GGML_TYPE_F32) ? 4u : 2u;
-        const size_t  rb   = (size_t) cols * elsz;
+        const size_t  elsz = is_f32 ? 4u : 2u;
+        const size_t  rb   = is_quantized ? ggml_row_size(t->type, cols) : (size_t) cols * elsz;
         std::vector<uint8_t> row(rb);
+        std::vector<float> decoded(is_quantized ? (size_t) cols : 0u);
         for (size_t k = 0; k < row_ids.size(); ++k) {
             const int32_t r = row_ids[k];
             if (r < 0 || r >= rows) { std::fprintf(stderr, "vla(smolvla): row %d out of range for %s\n", r, name); return false; }
             if (!seek_absolute(fp, base + (size_t) r * rb)) return false;
             if (std::fread(row.data(), 1, rb, fp) != rb) return false;
-            if (elsz == 4) std::memcpy(dst + k * cols, row.data(), rb);
-            else ggml_bf16_to_fp32_row(reinterpret_cast<ggml_bf16_t *>(row.data()), dst + k * cols, cols);
+            if (is_quantized) {
+                const ggml_type_traits * traits = ggml_get_type_traits(t->type);
+                if (!traits || !traits->to_float) return false;
+                traits->to_float(row.data(), decoded.data(), cols);
+                std::memcpy(dst + k * cols, decoded.data(), (size_t) cols * sizeof(float));
+            } else if (is_f32) {
+                std::memcpy(dst + k * cols, row.data(), rb);
+            } else if (is_f16) {
+                ggml_fp16_to_fp32_row(reinterpret_cast<ggml_fp16_t *>(row.data()), dst + k * cols, cols);
+            } else {
+                ggml_bf16_to_fp32_row(reinterpret_cast<ggml_bf16_t *>(row.data()), dst + k * cols, cols);
+            }
         }
         return true;
     }
@@ -400,7 +446,10 @@ SmolVLAModelArch::~SmolVLAModelArch() {
 }
 
 std::vector<float> SmolVLAModelArch::predict(const Inputs& in) {
-    using clk = std::chrono::high_resolution_clock;
+    // Wall clocks can jump backwards under WSL/virtualized hosts.  All values
+    // exported through PredictResponse are elapsed durations, so use one
+    // monotonic clock for the vision, inference, and total samples.
+    using clk = std::chrono::steady_clock;
     const auto t0 = clk::now();
     stats = Stats{};
 
@@ -911,10 +960,21 @@ std::unique_ptr<ModelArchBase> smolvla_create(const std::string & mmproj_path,
     c.expert_h        = m->expert_h;       // share so stats logging is consistent
     c.expert_inter    = m->expert_inter;
 
+    const std::string storage_quantization =
+        g.has_key("smolvla.quantization") ? g.str("smolvla.quantization") : "none";
+    const std::string storage_scope =
+        g.has_key("smolvla.quantization_scope") ? g.str("smolvla.quantization_scope") : "none";
+    if (storage_quantization != "none" && storage_quantization != "Q8_0") {
+        std::fprintf(stderr,
+                     "vla(smolvla): unsupported storage qtype %s; expected none or Q8_0\n",
+                     storage_quantization.c_str());
+        return nullptr;
+    }
     std::printf("vla(smolvla): hidden=%lld inter=%lld heads=%lldq/%lldkv x%lld n_vlm=%lld "
                 "expert_h=%lld expert_inter=%lld n_aex=%lld "
                 "chunk=%lld steps=%d real_state=%lld real_action=%lld "
-                "state_norm=%s action_norm=%s matmul_weights=%s\n",
+                "state_norm=%s action_norm=%s unquantized_matmul_type=%s "
+                "storage_qtype=%s storage_scope=%s\n",
                 (long long) c.hidden, (long long) c.intermediate,
                 (long long) c.n_q_heads, (long long) c.n_kv_heads, (long long) c.head_dim,
                 (long long) c.n_layers,
@@ -922,7 +982,8 @@ std::unique_ptr<ModelArchBase> smolvla_create(const std::string & mmproj_path,
                 (long long) m->smolvla_chunk_size, c.num_steps,
                 (long long) c.real_state_dim, (long long) c.real_action_dim,
                 m->state_norm_mode.c_str(), m->action_norm_mode.c_str(),
-                m->matmul_type == GGML_TYPE_F32 ? "F32" : "BF16");
+                m->matmul_type == GGML_TYPE_F32 ? "F32" : "BF16",
+                storage_quantization.c_str(), storage_scope.c_str());
 
     // backend
     {
@@ -995,8 +1056,44 @@ std::unique_ptr<ModelArchBase> smolvla_create(const std::string & mmproj_path,
         weights.push_back(t);
         return t;
     };
-    auto mk_mm  = [&](const char * name) -> ggml_tensor * { return mk(name, m->matmul_type); };
-    auto mk_f32 = [&](const char * name) -> ggml_tensor * { return mk(name, GGML_TYPE_F32); };
+    auto mk_mm  = [&](const char * name) -> ggml_tensor * {
+        const ggml_type src_type = g.tensor_type(name);
+        if (ggml_is_quantized(src_type)) {
+            if (src_type != GGML_TYPE_Q8_0) {
+                std::fprintf(stderr,
+                             "vla(smolvla): quantized tensor %s has unsupported type %d; "
+                             "only Q8_0 is supported\n",
+                             name, (int) src_type);
+                return nullptr;
+            }
+            return mk(name, src_type);
+        }
+        return mk(name, m->matmul_type);
+    };
+    auto mk_q8_or_f32 = [&](const char * name) -> ggml_tensor * {
+        const ggml_type src_type = g.tensor_type(name);
+        if (src_type == GGML_TYPE_Q8_0) {
+            return mk(name, src_type);
+        }
+        if (ggml_is_quantized(src_type)) {
+            std::fprintf(stderr,
+                         "vla(smolvla): quantized tensor %s has unsupported type %d; "
+                         "only Q8_0 is supported\n",
+                         name, (int) src_type);
+            return nullptr;
+        }
+        return mk(name, GGML_TYPE_F32);
+    };
+    auto mk_f32 = [&](const char * name) -> ggml_tensor * {
+        const ggml_type src_type = g.tensor_type(name);
+        if (ggml_is_quantized(src_type)) {
+            std::fprintf(stderr,
+                         "vla(smolvla): sensitive tensor %s must remain unquantized\n",
+                         name);
+            return nullptr;
+        }
+        return mk(name, GGML_TYPE_F32);
+    };
 
     auto load_layer = [&](const char * tower, int64_t i, GemmaLayerW & lw) -> bool {
         char b[256];
@@ -1022,11 +1119,11 @@ std::unique_ptr<ModelArchBase> smolvla_create(const std::string & mmproj_path,
     }
     m->vlm_final_norm = mk_f32("vlm.output_norm.weight");
     m->ex_final_norm  = mk_f32("aex.output_norm.weight");
-    m->W_ain  = mk_f32("action_in_proj.weight");       m->b_ain  = mk_f32("action_in_proj.bias");
+    m->W_ain  = mk_q8_or_f32("action_in_proj.weight"); m->b_ain  = mk_f32("action_in_proj.bias");
     m->W_aout = mk_f32("action_out_proj.weight");      m->b_aout = mk_f32("action_out_proj.bias");
-    m->W_tmlp_in  = mk_f32("action_time_mlp_in.weight");  m->b_tmlp_in  = mk_f32("action_time_mlp_in.bias");
-    m->W_tmlp_out = mk_f32("action_time_mlp_out.weight"); m->b_tmlp_out = mk_f32("action_time_mlp_out.bias");
-    m->W_connector = mk_f32("connector.weight");
+    m->W_tmlp_in  = mk_q8_or_f32("action_time_mlp_in.weight");  m->b_tmlp_in  = mk_f32("action_time_mlp_in.bias");
+    m->W_tmlp_out = mk_q8_or_f32("action_time_mlp_out.weight"); m->b_tmlp_out = mk_f32("action_time_mlp_out.bias");
+    m->W_connector = mk_q8_or_f32("connector.weight");
     m->b_connector = mk_f32("connector.bias");
     m->W_state_proj = mk_f32("state_proj.weight");
     m->b_state_proj = mk_f32("state_proj.bias");
@@ -1049,6 +1146,35 @@ std::unique_ptr<ModelArchBase> smolvla_create(const std::string & mmproj_path,
         }
         ggml_backend_tensor_set(t, bytes.data(), 0, bytes.size());
     }
+
+    size_t resident_quantized_tensors = 0;
+    size_t resident_quantized_bytes = 0;
+    size_t resident_f32_bytes = 0;
+    size_t resident_bf16_bytes = 0;
+    for (ggml_tensor * t : weights) {
+        if (ggml_is_quantized(t->type)) {
+            ++resident_quantized_tensors;
+            resident_quantized_bytes += ggml_nbytes(t);
+        } else if (t->type == GGML_TYPE_F32) {
+            resident_f32_bytes += ggml_nbytes(t);
+        } else if (t->type == GGML_TYPE_BF16) {
+            resident_bf16_bytes += ggml_nbytes(t);
+        }
+    }
+    const char * backend_name = m->is_cuda ? "CUDA" : "CPU";
+    std::printf(
+        "vla(smolvla): startup_evidence backend=%s model_path=%s mmproj_path=%s "
+        "storage_qtype=%s resident_qtype=%s resident_quantized_tensors=%zu "
+        "resident_quantized_bytes=%zu resident_f32_bytes=%zu resident_bf16_bytes=%zu "
+        "resident_weight_bytes=%zu resident_buffer_bytes=%zu "
+        "flow_steps=%d generated_action_horizon=%lld\n",
+        backend_name, ckpt_path.c_str(), mmproj_path.c_str(),
+        storage_quantization.c_str(), resident_quantized_tensors ? "Q8_0" : "none",
+        resident_quantized_tensors, resident_quantized_bytes, resident_f32_bytes,
+        resident_bf16_bytes,
+        resident_quantized_bytes + resident_f32_bytes + resident_bf16_bytes,
+        ggml_backend_buffer_get_size(m->weight_buf), c.num_steps,
+        (long long) m->smolvla_chunk_size);
 
     // Validate connector dimensions used by the backend graph.
     {

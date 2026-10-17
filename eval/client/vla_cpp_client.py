@@ -21,7 +21,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-import zmq
+try:
+    import zmq
+except ModuleNotFoundError:  # allow CPU-only parser/profile tests without pyzmq
+    zmq = None
 
 from client.reproducibility import generate_action_noise, generate_xr0_noise, noise_checksum
 import json
@@ -385,6 +388,8 @@ class VlaCppClient:
         noise_seed: int | None = None,
         xr0_noise_dtype: str = "bf16",
     ):
+        if zmq is None:
+            raise RuntimeError("pyzmq is required to construct a live VLA client")
         if xr0_noise_dtype not in ("bf16", "f32"):
             raise ValueError("xr0_noise_dtype must be bf16 or f32")
         self.xr0_noise_dtype = xr0_noise_dtype
@@ -655,6 +660,7 @@ class VlaCppClient:
                 req.attention_mask.extend(lang_attention_mask.tolist())
         req.state.extend(state_padded.tolist())
 
+        explicit_noise = observations.get("action_noise") is not None
         action_noise = observations.get("action_noise")
         if (
             action_noise is None
@@ -667,7 +673,30 @@ class VlaCppClient:
             )
         if action_noise is not None:
             noise = np.ascontiguousarray(action_noise, dtype=np.float32).reshape(-1)
+            if not np.isfinite(noise).all():
+                raise ValueError("action_noise must contain only finite values")
+            if explicit_noise:
+                noise_mode = "explicit"
+                noise_seed = None
+            elif self._episode_noise_seed is not None:
+                noise_mode = "derived"
+                noise_seed = self._episode_noise_seed
+            elif self._initial_noise_seed is not None:
+                noise_mode = "seeded"
+                noise_seed = self._initial_noise_seed
+            else:
+                noise_mode = "generated"
+                noise_seed = None
+            self._noise_meta = {
+                "noise_mode": noise_mode,
+                "noise_seed": noise_seed,
+                "noise_checksum": noise_checksum(noise),
+                "noise_device": "cpu",
+                "noise_dtype": "float32",
+            }
             req.noise.extend(noise.tolist())
+        else:
+            self._noise_meta = None
 
         return self._request_chunk(req)
 

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 
 from collections.abc import Iterable, Sequence
@@ -72,9 +73,9 @@ def get_task_init_states(task_suite: Any, i: int) -> np.ndarray:
     init_states = torch.load(init_states_path, weights_only=False)
     return init_states
 
-def get_libero_dummy_action():
+def get_libero_dummy_action(gripper_action: float = 0.0):
 
-    return [0.0] * ACTION_DIM
+    return [0.0] * (ACTION_DIM - 1) + [float(gripper_action)]
 
 ACTION_DIM = 7
 ACTION_LOW = -1.0
@@ -108,6 +109,7 @@ class LiberoEnv(gym.Env):
         camera_name_mapping: dict[str, str] | None = None,
         num_steps_wait: int = 10,
         control_mode: str = "relative",
+        settling_gripper_action: float = 0.0,
     ):
         super().__init__()
         self.task_suite = _get_suite(task_suite_name)
@@ -139,6 +141,14 @@ class LiberoEnv(gym.Env):
             }
         self.camera_name_mapping = camera_name_mapping
         self.num_steps_wait = num_steps_wait
+        settling_gripper_action = float(settling_gripper_action)
+        if not math.isfinite(settling_gripper_action) or not (
+            ACTION_LOW <= settling_gripper_action <= ACTION_HIGH
+        ):
+            raise ValueError(
+                "settling_gripper_action must be finite and in [-1.0, 1.0]"
+            )
+        self.settling_gripper_action = settling_gripper_action
         self.episode_index = episode_index
         self.episode_length = episode_length
 
@@ -322,7 +332,9 @@ class LiberoEnv(gym.Env):
             self.init_state_id += self._reset_stride
 
         for _ in range(self.num_steps_wait):
-            raw_obs, _, _, _ = self._env.step(get_libero_dummy_action())
+            raw_obs, _, _, _ = self._env.step(
+                get_libero_dummy_action(self.settling_gripper_action)
+            )
 
         if self.control_mode == "absolute":
             for robot in self._env.robots:
